@@ -1,13 +1,15 @@
 PREFIX ?= /usr/local
 BUILD_DIR := build
 
+$(shell mkdir -p $(BUILD_DIR))
+
 all: daemon client
 
 daemon:
-	odin build src/daemon -out:$(BUILD_DIR)/clipbenderd
+	odin build src/daemon -out:$(BUILD_DIR)/clipbenderd -warnings-as-errors
 
 client:
-	odin build src/client -out:$(BUILD_DIR)/clipbender
+	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors
 
 test:
 	odin test tests
