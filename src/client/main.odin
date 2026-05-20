@@ -1,10 +1,11 @@
 package main
 
 import "core:fmt"
-import "core:log"
 import "core:os"
 import "core:sys/linux"
 import "core:time"
+
+import "../lib"
 
 uds_connect :: proc(socket_path: string) -> linux.Fd {
     if !os.exists(socket_path) {
@@ -26,6 +27,12 @@ uds_connect :: proc(socket_path: string) -> linux.Fd {
     return socket_fd
 }
 
+command_shutdown :: proc(socket_fd: linux.Fd) {
+    msg := [1]u8{u8(lib.Message_Type.SHUTDOWN)}
+    linux.send(socket_fd, msg[:], {})
+    fmt.println("Shutdown signal sent")
+}
+
 run_gui :: proc(socket_fd: linux.Fd) {
     for {
         fmt.println("You ran the GUI 😻")
@@ -43,7 +50,12 @@ run_cli :: proc(socket_fd: linux.Fd, args: []string) {
     case "clear":
         fmt.println("clear")
     case "shutdown":
+        if len(args[1:]) != 0 {
+            fmt.eprintfln("Command `shutdown` does not take any args")
+            os.exit(1)
+        }
         fmt.println("shutdown")
+        command_shutdown(socket_fd)
     case:
         fmt.eprintfln("Unknown command `%v`", subcommand)
         os.exit(1)
@@ -51,14 +63,7 @@ run_cli :: proc(socket_fd: linux.Fd, args: []string) {
 }
 
 main :: proc() {
-    fmt.println("Hello clipbender client 😹")
-
-    // Get XDG_RUNTIME_DIR, fallback to /tmp
-    socket_dir := os.get_env("XDG_RUNTIME_DIR", context.allocator)
-    if len(socket_dir) == 0 || !os.is_directory(socket_dir) {
-        socket_dir = "/tmp"
-    }
-    socket_path := fmt.tprintf("%s/clipbender.sock", socket_dir)
+    socket_path := lib.clipbender_socket_path()
 
     socket_fd := uds_connect(socket_path)
     defer linux.close(socket_fd)
@@ -70,7 +75,7 @@ main :: proc() {
     if len(args) == 0 {
         run_gui(socket_fd)
     } else {
-        run_cli(socket_fd)
+        run_cli(socket_fd, args)
     }
 }
 

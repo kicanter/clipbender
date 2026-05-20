@@ -6,6 +6,8 @@ import "core:os"
 import "core:sys/linux"
 import "core:sys/linux/uring"
 
+import "../lib"
+
 Event :: enum u8 {
     ACCEPT,
     RECV,
@@ -123,7 +125,18 @@ uds_serve :: proc(socket_path: string) {
                 // Receive data
                 bytes_read := int(cqe.res)
                 if bytes_read > 0 {
-                    fmt.printfln("Got: %s", string(data_buf[:bytes_read]))
+                    msg_type := cast(lib.Message_Type)data_buf[0]
+                    switch msg_type {
+                    case lib.Message_Type.SET:
+                        fmt.printfln("Got set message: %s", string(data_buf[:bytes_read]))
+                    case lib.Message_Type.GET:
+                        fmt.printfln("Got get message: %s", string(data_buf[:bytes_read]))
+                    case lib.Message_Type.CLEAR:
+                        fmt.printfln("Got clear: %s", string(data_buf[:bytes_read]))
+                    case lib.Message_Type.SHUTDOWN:
+                        fmt.printfln("Got shutdown: %s", string(data_buf[:bytes_read]))
+                        running = false
+                    }
                 }
             case Event.SIGNAL:
                 running = false
@@ -134,14 +147,7 @@ uds_serve :: proc(socket_path: string) {
 }
 
 main :: proc() {
-    fmt.println("Hello clipbenderd daemon 😼")
-
-    // Get XDG_RUNTIME_DIR, fallback to /tmp
-    socket_dir := os.get_env("XDG_RUNTIME_DIR", context.allocator)
-    if len(socket_dir) == 0 || !os.is_directory(socket_dir) {
-        socket_dir = "/tmp"
-    }
-    socket_path := fmt.tprintf("%s/clipbender.sock", socket_dir)
+    socket_path := lib.clipbender_socket_path()
 
     // Check for an existing stale socket first
     check_stale_socket(socket_path)
