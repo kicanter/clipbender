@@ -57,19 +57,19 @@ cleanup_socket :: proc(socket_path: string, socket_fd: linux.Fd) {
     os.remove(socket_path)
 }
 
-run_uds_server :: proc(socket_path: string) {
+uds_serve :: proc(socket_path: string) {
     socket_fd, sockerr := linux.socket(.UNIX, .SEQPACKET, {.CLOEXEC}, {})
-    fmt.assertf(sockerr == nil, "Failed to create socket fd: err %d", sockerr)
+    fmt.assertf(sockerr == nil, "Failed to create server socket fd: err %d", sockerr)
 
     socket_addr: linux.Sock_Addr_Un
     socket_addr.sun_family = .UNIX
     copy(socket_addr.sun_path[:], transmute([]u8)socket_path)
 
     binderr := linux.bind(socket_fd, &socket_addr)
-    fmt.assertf(binderr == nil, "Failed to bind fd to socket: %v", binderr)
+    fmt.assertf(binderr == nil, "Failed to bind server fd to socket: %v", binderr)
 
     listenerr := linux.listen(socket_fd, 128)
-    fmt.assertf(listenerr == nil, "Failed to listen to socket fd: %v", listenerr)
+    fmt.assertf(listenerr == nil, "Server failed to listen to socket: %v", listenerr)
 
     // Make sure to clean up socket on exit.
     // Note: doesn't cover SIGKILL, SIGSEGV, or power loss, but stale socket check on next startup cleans it up.
@@ -147,6 +147,6 @@ main :: proc() {
     check_stale_socket(socket_path)
 
     // Run socket event loop
-    run_uds_server(socket_path)
+    uds_serve(socket_path)
 }
 
