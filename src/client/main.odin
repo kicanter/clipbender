@@ -54,7 +54,6 @@ run_cli :: proc(socket_fd: linux.Fd, args: []string) {
             fmt.eprintfln("Command `shutdown` does not take any args")
             os.exit(1)
         }
-        fmt.println("shutdown")
         command_shutdown(socket_fd)
     case:
         fmt.eprintfln("Unknown command `%v`", subcommand)
