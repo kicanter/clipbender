@@ -110,7 +110,7 @@ uds_serve :: proc(socket_path: string) {
             cqe := cqes[i]
 
             switch cast(Event)cqe.user_data {
-            case Event.ACCEPT:
+            case .ACCEPT:
                 // new client
                 if cqe.res < 0 {
                     log.errorf("Client accept failed: %v", cqe.res)
@@ -121,7 +121,7 @@ uds_serve :: proc(socket_path: string) {
                 client_fd := cast(linux.Fd)cqe.res
                 uring.recv(&ring, u64(Event.RECV), client_fd, data_buf[:], {})
                 uring.accept(&ring, u64(Event.ACCEPT), socket_fd, cast(^linux.Sock_Addr_Un)nil, nil, {.CLOEXEC})
-            case Event.RECV:
+            case .RECV:
                 // Receive data
                 bytes_read := int(cqe.res)
                 if bytes_read > 0 {
@@ -134,11 +134,11 @@ uds_serve :: proc(socket_path: string) {
                     case lib.Message_Type.CLEAR:
                         fmt.printfln("Got clear: %s", string(data_buf[:bytes_read]))
                     case lib.Message_Type.SHUTDOWN:
-                        fmt.printfln("Got shutdown: %s", string(data_buf[:bytes_read]))
+                        fmt.printfln("Shutting down: %s", string(data_buf[:bytes_read]))
                         running = false
                     }
                 }
-            case Event.SIGNAL:
+            case .SIGNAL:
                 running = false
             }
         }
