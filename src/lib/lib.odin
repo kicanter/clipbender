@@ -2,23 +2,8 @@ package lib
 
 import "core:fmt"
 import "core:os"
-
-clipbender_socket_path :: proc() -> string {
-    // Get XDG_RUNTIME_DIR, fallback to /tmp
-    socket_dir := os.get_env("XDG_RUNTIME_DIR", context.allocator)
-    if len(socket_dir) == 0 || !os.is_directory(socket_dir) {
-        socket_dir = "/tmp"
-    }
-    return fmt.tprintf("%s/clipbender.sock", socket_dir)
-}
-
-// Kinds of messages passed between client and daemon
-Message_Type :: enum u8 {
-    SET,
-    GET,
-    CLEAR,
-    SHUTDOWN,
-}
+import "core:slice"
+import "core:strings"
 
 // Info related to a single register entry
 Reg_Entry :: struct {
@@ -81,5 +66,266 @@ reg_id_to_named_index :: proc(id: Reg_Id) -> u8 {
 }
 reg_id_to_primary_index :: proc(id: Reg_Id) -> u8 {
     return u8(id - PRIMARY_START)
+}
+
+// Protocol/IPC
+SOCKET_PATH_SUFFIX :: "clipbender.sock"
+clipbender_socket_path :: proc() -> string {
+    // Get XDG_RUNTIME_DIR, fallback to /tmp
+    socket_dir := os.get_env("XDG_RUNTIME_DIR", context.allocator)
+    if len(socket_dir) == 0 || !os.is_directory(socket_dir) {
+        socket_dir = "/tmp"
+    }
+    return fmt.tprintf("%s/%s", socket_dir, SOCKET_PATH_SUFFIX)
+}
+
+// Kinds of messages passed between client and daemon. IPC wire format:
+//
+// SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b source Reg_Id]`
+// SET (INLINE):   `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b mime type len][M mime type][N data]`
+// GET:            `[1b Message_Type][8b Cmd_Get_filter]`
+// CLEAR:          `[1b Message_Type][1b Reg_Id]`
+// SHUTDOWN:       `[1b Message_Type]`
+//
+// > NOTE: SEQPACKET gives us total message size on recv and maintains message boundaries as opposed to a STREAM, so we
+// > don't need to encode the data length in the SET (INLINE) message to determine how many bytes to read.
+Command_Type :: enum u8 {
+    SET,
+    GET,
+    CLEAR,
+    SHUTDOWN,
+}
+
+// Source from which the data is coming from in a SET operation.
+//
+// `REGISTER` indicates that daemon must fetch the data. This may be a numbered/named register that Clipbender just
+// reads from, or it could be the clipboard/primary selection that Clipbender must request the data from at the time of
+// the call.
+//
+// `INLINE` indicates the client is passing the data inline over the wire through the IPC message. These will tend to
+// have "text/plain" as their mime type, but the client must do it's best job interpreting what mime the data most
+// likely is.
+Source_Kind :: enum u8 {
+    REGISTER, // either a numbered/named register or clipboard/primary selection
+    INLINE, // data that's passed inline in the IPC message e.g. stdin or string literal
+}
+
+// Bitmask filter assembled from GET args.
+Cmd_Get_Filter :: bit_set[0 ..= 45;u64]
+// Keywords for GET CLI
+CMD_GET_FILTER_CLIPBOARD :: transmute(Cmd_Get_Filter)u64(0x3FF) // bits 0-9
+CMD_GET_FILTER_NAMED :: transmute(Cmd_Get_Filter)(u64(0x3FFFFFF) << 10) // bits 10-35
+CMD_GET_FILTER_PRIMARY :: transmute(Cmd_Get_Filter)(u64(0x3FF) << 36) // bits 36-45
+CMD_GET_FILTER_NUMBERED :: CMD_GET_FILTER_CLIPBOARD + CMD_GET_FILTER_PRIMARY
+CMD_GET_FILTER_ALL :: CMD_GET_FILTER_NAMED + CMD_GET_FILTER_NUMBERED
+
+// Response status from daemon. IPC wire format:
+//
+// OK:    `[1 byte Response_Status]`
+// ERROR: `[1 byte Response_Status][N bytes error message]`
+// DATA:  `[1 byte Response_Status][1 byte u8 count][count * Resp_Reg]`
+Resp_Status :: enum u8 {
+    OK,
+    ERROR,
+    DATA,
+}
+
+// Register data daemon returns to client for a GET operation. IPC wire format:
+//
+// `[1 byte Reg_Id][8 bytes i64 timestamp][1 byte mime type len][M bytes mime type][4 bytes data length][N bytes data]`
+Resp_Reg :: struct {
+    id:    Reg_Id,
+    entry: Reg_Entry,
+}
+
+free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
+    delete(reg_entry.data)
+    delete(reg_entry.mime_type)
+    reg_entry^ = {}
+}
+
+//// Encoding/decode to/from IPC wire format
+
+// Client-side
+
+// SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b source Reg_Id]`
+encode_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, buf: []byte) -> int {
+    buf[0] = byte(Command_Type.SET)
+    buf[1] = byte(dest)
+    buf[2] = byte(Source_Kind.REGISTER)
+    buf[3] = byte(source)
+    return size_of(Command_Type) + (2 * size_of(Reg_Id)) + size_of(Source_Kind)
+}
+
+// SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b mime type len][M mime type][N data]`
+encode_cmd_set_inline :: proc(dest: Reg_Id, mime: string, data: []byte, buf: []byte) -> int {
+    buf[0] = byte(Command_Type.SET)
+    buf[1] = byte(dest)
+    buf[2] = byte(Source_Kind.INLINE)
+    mime_len := u8(len(mime))
+    buf[3] = byte(mime_len)
+    written := size_of(Command_Type) + size_of(Reg_Id) + size_of(Source_Kind) + size_of(mime_len)
+    copy(buf[written:][:int(mime_len)], mime)
+    written += int(mime_len)
+    copy(buf[written:][:len(data)], data)
+    written += len(data)
+    return written
+}
+
+// GET: `[1b Message_Type][8b Cmd_Get_filter]`
+encode_cmd_get :: proc(filter: Cmd_Get_Filter, buf: []byte) -> int {
+    buf[0] = byte(Command_Type.GET)
+    bytes := transmute([8]byte)filter
+    copy(buf[1:9], bytes[:])
+    return size_of(Command_Type) + size_of(Cmd_Get_Filter)
+}
+
+// CLEAR: `[1b Message_Type][1b Reg_Id]`
+encode_cmd_clear :: proc(reg_id: Reg_Id, buf: []byte) -> int {
+    buf[0] = byte(Command_Type.CLEAR)
+    buf[1] = byte(reg_id)
+    return size_of(Command_Type) + size_of(Reg_Id)
+}
+
+// SHUTDOWN: `[1b Message_Type]`
+encode_cmd_shutdown :: proc(buf: []byte) -> int {
+    buf[0] = byte(Command_Type.SHUTDOWN)
+    return size_of(Command_Type)
+}
+
+encode_cmd :: proc {
+    encode_cmd_set_reg,
+    encode_cmd_set_inline,
+    encode_cmd_get,
+    encode_cmd_clear,
+    encode_cmd_shutdown,
+}
+
+// ok/error responses handled inline
+// DATA: `[1 byte Response_Status][1 byte u8 count][count * Resp_Reg]`
+// buf starts after first Response_Status byte
+decode_resp_data :: proc(buf: []byte, regs: ^[46]Resp_Reg) -> (count: u8) {
+    count = u8(buf[0])
+
+    offset := 1
+    for i in 0 ..< count {
+        reg_id := Reg_Id(buf[offset])
+        offset += size_of(Reg_Id)
+
+        time_bytes: [size_of(i64)]byte
+        copy(time_bytes[:], buf[offset:][:size_of(i64)])
+        time := transmute(i64)time_bytes
+        offset += size_of(i64)
+
+        mime_len := u8(buf[offset])
+        offset += size_of(mime_len)
+        mime := strings.clone(string(buf[offset:][:int(mime_len)]))
+        offset += int(mime_len)
+
+        data_len_bytes: [size_of(u32)]byte
+        copy(data_len_bytes[:], buf[offset:][:size_of(u32)])
+        data_len := transmute(u32)data_len_bytes
+        offset += size_of(u32)
+        data := slice.clone(buf[offset:][:int(data_len)])
+        offset += int(data_len)
+
+        reg_entry := Reg_Entry {
+            data      = data,
+            mime_type = mime,
+            timestamp = time,
+        }
+
+        resp_reg := Resp_Reg {
+            id    = reg_id,
+            entry = reg_entry,
+        }
+
+        regs[i] = resp_reg
+    }
+
+    return count
+}
+
+// Daemon-side
+
+// OK: `1 byte Response_Status]`
+encode_resp_ok :: proc(buf: []byte) -> int {
+    buf[0] = byte(Resp_Status.OK)
+    return size_of(Resp_Status)
+}
+
+// ERROR: `[1 byte Response_Status][N bytes error message]`
+encode_resp_error :: proc(message: string, buf: []byte) -> int {
+    buf[0] = byte(Resp_Status.ERROR)
+    copy(buf[1:][:len(message)], message)
+    return size_of(Resp_Status) + len(message)
+}
+
+// DATA: `[1 byte Response_Status][1 byte u8 count][count * Resp_Reg]`
+encode_resp_data :: proc(regs: []Resp_Reg, buf: []byte) -> int {
+    buf[0] = byte(Resp_Status.DATA)
+    count := u8(len(regs))
+    buf[1] = byte(count)
+    written := size_of(Resp_Status) + size_of(u8)
+
+    for reg in regs {
+        buf[written] = byte(reg.id)
+        written += size_of(Reg_Id)
+
+        time_bytes := transmute([size_of(i64)]byte)reg.entry.timestamp
+        copy(buf[written:][:size_of(i64)], time_bytes[:])
+        written += size_of(i64)
+
+        mime := reg.entry.mime_type
+        mime_len := u8(len(mime))
+        buf[written] = byte(mime_len)
+        written += size_of(mime_len)
+        copy(buf[written:][:int(mime_len)], mime)
+        written += int(mime_len)
+
+        data := reg.entry.data
+        data_len := u32(len(data))
+        data_len_bytes := transmute([size_of(u32)]byte)data_len
+        copy(buf[written:][:size_of(u32)], data_len_bytes[:])
+        written += size_of(u32)
+        copy(buf[written:][:int(data_len)], data)
+        written += int(data_len)
+    }
+
+    return written
+}
+
+encode_resp :: proc {
+    encode_resp_ok,
+    encode_resp_error,
+    encode_resp_data,
+}
+
+// SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b source Reg_Id]`
+// buf starts after first Message_Type byte
+decode_cmd_set_reg :: proc(buf: []byte) -> (dest: Reg_Id, source: Reg_Id) {
+    dest = Reg_Id(buf[0])
+    // source_kind is second byte, but we already know the source_kind is REGISTER
+    source = Reg_Id(buf[2])
+    return dest, source
+}
+
+// SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b mime type len][M mime type][N data]`
+// buf starts after first Message_Type byte
+decode_cmd_set_inline :: proc(buf: []byte) -> (dest: Reg_Id, mime: string, data: []byte) {
+    dest = Reg_Id(buf[0])
+    // source_kind is second byte, but we already know the source_kind is INLINE
+    mime_len := u8(buf[2])
+    mime = strings.clone(string(buf[3:3 + mime_len]))
+    data = slice.clone(buf[3 + mime_len:])
+    return dest, mime, data
+}
+
+// GET: `[1b Message_Type][8b Cmd_Get_filter]`
+// buf starts after first Message_Type byte
+decode_cmd_get :: proc(buf: []byte) -> Cmd_Get_Filter {
+    filter_bytes: [8]byte
+    copy(filter_bytes[:], buf)
+    return transmute(Cmd_Get_Filter)(transmute(u64)(filter_bytes))
 }
 

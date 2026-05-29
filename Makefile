@@ -12,7 +12,13 @@ client:
 	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors -target=linux_amd64
 
 test:
-	odin test tests
+ifdef PKG
+	odin test src/$(PKG)
+else
+	odin test src/lib
+	odin test src/daemon
+	odin test src/client
+endif
 
 clean:
 	rm -rf $(BUILD_DIR)

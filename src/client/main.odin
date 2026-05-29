@@ -28,7 +28,7 @@ uds_connect :: proc(socket_path: string) -> linux.Fd {
 }
 
 command_shutdown :: proc(socket_fd: linux.Fd) {
-    msg := [1]u8{u8(lib.Message_Type.SHUTDOWN)}
+    msg := [1]u8{u8(lib.Command_Type.SHUTDOWN)}
     linux.send(socket_fd, msg[:], {})
     fmt.println("Shutdown signal sent")
 }

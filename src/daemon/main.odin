@@ -125,15 +125,15 @@ uds_serve :: proc(socket_path: string) {
                 // Receive data
                 bytes_read := int(cqe.res)
                 if bytes_read > 0 {
-                    msg_type := cast(lib.Message_Type)data_buf[0]
+                    msg_type := cast(lib.Command_Type)data_buf[0]
                     switch msg_type {
-                    case lib.Message_Type.SET:
+                    case lib.Command_Type.SET:
                         fmt.printfln("Got set message: %s", string(data_buf[:bytes_read]))
-                    case lib.Message_Type.GET:
+                    case lib.Command_Type.GET:
                         fmt.printfln("Got get message: %s", string(data_buf[:bytes_read]))
-                    case lib.Message_Type.CLEAR:
+                    case lib.Command_Type.CLEAR:
                         fmt.printfln("Got clear: %s", string(data_buf[:bytes_read]))
-                    case lib.Message_Type.SHUTDOWN:
+                    case lib.Command_Type.SHUTDOWN:
                         fmt.printfln("Shutting down: %s", string(data_buf[:bytes_read]))
                         running = false
                     }

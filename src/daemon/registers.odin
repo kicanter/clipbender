@@ -16,7 +16,7 @@ Recency_Ring :: struct {
 // Push to head, overwriting any existing value
 push_recency_reg :: proc(ring: ^Recency_Ring, entry: lib.Reg_Entry) {
     ring.head = (ring.head + 1) % lib.RECENCY_SIZE
-    free_reg_entry(&ring.entries[ring.head])
+    lib.free_reg_entry(&ring.entries[ring.head])
     ring.entries[ring.head] = lib.Reg_Entry {
         data      = slice.clone(entry.data),
         mime_type = strings.clone(entry.mime_type),
@@ -36,12 +36,6 @@ get_recency_reg :: proc(ring: ^Recency_Ring, recency: u8) -> (^lib.Reg_Entry, bo
 clipboard_registers: Recency_Ring
 named_registers: [26]lib.Reg_Entry
 primary_registers: Recency_Ring
-
-free_reg_entry :: proc(reg_entry: ^lib.Reg_Entry) {
-    delete(reg_entry.data)
-    delete(reg_entry.mime_type)
-    reg_entry^ = {}
-}
 
 set_clipboard_reg :: proc(data: []byte, mime: string) {
     reg_entry := lib.Reg_Entry{data, mime, time.time_to_unix(time.now())}
@@ -74,7 +68,7 @@ get_reg :: proc(reg_id: lib.Reg_Id) -> (^lib.Reg_Entry, bool) {
 // Overwrite a named reg
 set_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) {
     idx := lib.reg_id_to_named_index(reg_id)
-    free_reg_entry(&named_registers[idx])
+    lib.free_reg_entry(&named_registers[idx])
     named_registers[idx] = lib.Reg_Entry {
         data      = slice.clone(data),
         mime_type = strings.clone(mime),
@@ -114,6 +108,6 @@ append_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) -> bool
 // Zero out a named slot
 clear_named_reg :: proc(reg_id: lib.Reg_Id) {
     idx := lib.reg_id_to_named_index(reg_id)
-    free_reg_entry(&named_registers[idx])
+    lib.free_reg_entry(&named_registers[idx])
 }
 

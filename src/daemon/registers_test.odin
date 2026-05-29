@@ -6,7 +6,7 @@ import "../lib"
 
 free_ring :: proc(ring: ^Recency_Ring) {
     for &entry in ring.entries {
-        free_reg_entry(&entry)
+        lib.free_reg_entry(&entry)
     }
     ring^ = {}
 }
