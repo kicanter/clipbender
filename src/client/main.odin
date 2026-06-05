@@ -22,14 +22,79 @@ uds_connect :: proc(socket_path: string) -> linux.Fd {
 
     // Connect client fd to socket addr
     connecterr := linux.connect(socket_fd, &socket_addr)
-    fmt.assertf(sockerr == nil, "Client failed to connect to socket: err %d", connecterr)
+    fmt.assertf(connecterr == nil, "Client failed to connect to socket: err %d", connecterr)
 
     return socket_fd
 }
 
-command_shutdown :: proc(socket_fd: linux.Fd) {
-    msg := [1]u8{u8(lib.Command_Type.SHUTDOWN)}
-    linux.send(socket_fd, msg[:], {})
+// `args` includes everything after the `clipbender set` subcommand
+cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
+    if len(args) == 2 {     // source reg is passed as an arg
+        // dest, source := parse_cmd_set_reg(args[0], args[1])
+        // msg := [4]byte // SET with source reg is 4-byte message
+        // written := lib.encode_cmd_set_reg(dest, source, msg[:])
+        // linux.send(socket_fd, msg[:written], {})
+    } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is inline
+        // dest, mime, data := parse_cmd_set_inline(args[0], os.stdin)
+        // msg := make([]byte, 4 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
+        // defer delete(msg)
+        // written := lib.encode_cmd_set_inline(dest, mime, data, msg[:])
+        // linux.send(socket_fd, msg[:written], {})
+    } else {
+        // error: missing source
+        fmt.eprintln(
+            "Usage:\n" +
+            "\t`clipbender set <dest-reg> <source-reg>`\n" +
+            "\t`clipbender set <dest-reg>` using stdin as source data",
+        )
+        os.exit(1)
+    }
+    fmt.println("Set signal sent")
+}
+
+// `args` includes everything after the `clipbender get` subcommand
+cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
+    if len(args) < 1 {
+        fmt.eprintln("Usage:\n" + "\t`clipbender get <filter...>`")
+        os.exit(1)
+    }
+
+    // filter := parse_cmd_get(args)
+    filter := lib.CMD_GET_FILTER_ALL // HACK: temp
+
+    msg: [9]byte // GET is 9-byte message
+    written := lib.encode_cmd_get(filter, msg[:])
+    linux.send(socket_fd, msg[:written], {})
+    fmt.println("Get signal sent")
+}
+
+
+// `args` includes everything after the `clipbender clear` subcommand
+cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
+    if len(args) != 1 {
+        fmt.eprintln("Usage:\n" + "\t`clipbender clear <register-id>`")
+        os.exit(1)
+    }
+
+    // reg_id := parse_cmd_clear(args[0])
+    reg_id := lib.Reg_Id(0) // HACK: temp
+
+    msg: [2]byte // CLEAR is 2-byte message
+    written := lib.encode_cmd_clear(reg_id, msg[:])
+    linux.send(socket_fd, msg[:written], {})
+    fmt.println("Clear signal sent")
+}
+
+// `args` includes everything after the `clipbender shutdown` subcommand
+cmd_shutdown :: proc(args: []string, socket_fd: linux.Fd) {
+    if len(args) != 0 {
+        fmt.eprintln("Usage:\n" + "\t`clipbender shutdown`")
+        os.exit(1)
+    }
+
+    msg: [1]byte // SHUTDOWN is 1-byte message
+    written := lib.encode_cmd_shutdown(msg[:])
+    linux.send(socket_fd, msg[:written], {})
     fmt.println("Shutdown signal sent")
 }
 
@@ -40,21 +105,21 @@ run_gui :: proc(socket_fd: linux.Fd) {
     }
 }
 
+// `args` includes everything after the `clipbender` command
 run_cli :: proc(socket_fd: linux.Fd, args: []string) {
     subcommand := args[0]
     switch subcommand {
     case "set":
         fmt.println("set")
+        cmd_set(args[1:], socket_fd)
     case "get":
         fmt.println("get")
+        cmd_get(args[1:], socket_fd)
     case "clear":
         fmt.println("clear")
+        cmd_clear(args[1:], socket_fd)
     case "shutdown":
-        if len(args[1:]) != 0 {
-            fmt.eprintfln("Command `shutdown` does not take any args")
-            os.exit(1)
-        }
-        command_shutdown(socket_fd)
+        cmd_shutdown(args[1:], socket_fd)
     case:
         fmt.eprintfln("Unknown command `%v`", subcommand)
         os.exit(1)

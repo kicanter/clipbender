@@ -79,7 +79,7 @@ clipbender_socket_path :: proc() -> string {
     return fmt.tprintf("%s/%s", socket_dir, SOCKET_PATH_SUFFIX)
 }
 
-// Kinds of messages passed between client and daemon. IPC wire format:
+// Kinds of messages (commands) passed from client to daemon. IPC wire format:
 //
 // SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b source Reg_Id]`
 // SET (INLINE):   `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b mime type len][M mime type][N data]`
