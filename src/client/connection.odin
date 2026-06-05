@@ -26,6 +26,24 @@ uds_connect :: proc(socket_path: string) -> linux.Fd {
     return socket_fd
 }
 
+display_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
+    switch cmd_type {
+    case .SET:
+        fmt.eprintln(
+            "Usage:\n" +
+            "\t`clipbender set <dest-reg> <source-reg>`\n" +
+            "\t`clipbender set <dest-reg>` using stdin as source data",
+        )
+    case .GET:
+        fmt.eprintln("Usage:\n" + "\t`clipbender get <filter...>`")
+    case .CLEAR:
+        fmt.eprintln("Usage:\n" + "\t`clipbender clear <register-id>`")
+    case .SHUTDOWN:
+        fmt.eprintln("Usage:\n" + "\t`clipbender shutdown`")
+    }
+    os.exit(1)
+}
+
 // destination register can be a lowercase/uppercase named register, `clipboard`, or `primary`
 parse_cmd_set_dest_reg :: proc(dest_arg: string) -> (dest: lib.Reg_Id, set_mode: lib.Set_Mode, ok: bool) {
     if len(dest_arg) == 1 {     // single character register
@@ -146,8 +164,50 @@ parse_cmd_set_inline :: proc(
     return dest, set_mode, mime, data, true
 }
 
+// `args` includes everything after the `clipbender set` subcommand
+cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
+    if len(args) == 2 {     // source reg was passed as an arg by client
+        dest_reg, set_mode, source_reg, ok := parse_cmd_set_reg(args[0], args[1])
+        if !ok {
+            display_usage_and_exit(.SET)
+        }
+        msg: [5]byte // SET with source reg is 5-byte message
+        written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
+        linux.send(socket_fd, msg[:written], {})
+    } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is passed inline by client
+        dest, set_mode, mime, data, ok := parse_cmd_set_inline(args[0], os.stdin)
+        if !ok {
+            display_usage_and_exit(.SET)
+        }
+        msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
+        defer delete(msg)
+        written := lib.encode_cmd_set_inline(dest, set_mode, mime, data, msg[:])
+        linux.send(socket_fd, msg[:written], {})
+    } else {
+        display_usage_and_exit(.SET)
+    }
+    fmt.println("Set signal sent")
+}
+
 parse_cmd_get :: proc(filter_args: []string) -> (filter: lib.Cmd_Get_Filter, ok: bool) {
     return {}, {}
+}
+
+// `args` includes everything after the `clipbender get` subcommand
+cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
+    if len(args) < 1 {
+        display_usage_and_exit(.GET)
+    }
+
+    filter, ok := parse_cmd_get(args)
+    if !ok {
+        display_usage_and_exit(.GET)
+    }
+
+    msg: [9]byte
+    written := lib.encode_cmd_get(filter, msg[:])
+    linux.send(socket_fd, msg[:written], {})
+    fmt.println("Get signal sent")
 }
 
 parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, ok: bool) {
@@ -163,76 +223,15 @@ parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, ok: bool) {
     return {}, false
 }
 
-// `args` includes everything after the `clipbender set` subcommand
-cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
-    if len(args) == 2 {     // source reg was passed as an arg by client
-        dest_reg, set_mode, source_reg, ok := parse_cmd_set_reg(args[0], args[1])
-        if !ok {
-            fmt.eprintln(
-                "Usage:\n" +
-                "\t`clipbender set <dest-reg> <source-reg>`\n" +
-                "\t`clipbender set <dest-reg>` using stdin as source data",
-            )
-            os.exit(1)
-        }
-        msg: [5]byte // SET with source reg is 5-byte message
-        written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
-        linux.send(socket_fd, msg[:written], {})
-    } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is passed inline by client
-        dest, set_mode, mime, data, ok := parse_cmd_set_inline(args[0], os.stdin)
-        if !ok {
-            fmt.eprintln(
-                "Usage:\n" +
-                "\t`clipbender set <dest-reg> <source-reg>`\n" +
-                "\t`clipbender set <dest-reg>` using stdin as source data",
-            )
-            os.exit(1)
-        }
-        msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
-        defer delete(msg)
-        written := lib.encode_cmd_set_inline(dest, set_mode, mime, data, msg[:])
-        linux.send(socket_fd, msg[:written], {})
-    } else {
-        fmt.eprintln(
-            "Usage:\n" +
-            "\t`clipbender set <dest-reg> <source-reg>`\n" +
-            "\t`clipbender set <dest-reg>` using stdin as source data",
-        )
-        os.exit(1)
-    }
-    fmt.println("Set signal sent")
-}
-
-// `args` includes everything after the `clipbender get` subcommand
-cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
-    if len(args) < 1 {
-        fmt.eprintln("Usage:\n" + "\t`clipbender get <filter...>`")
-        os.exit(1)
-    }
-
-    filter, ok := parse_cmd_get(args)
-    if !ok {
-        fmt.eprintln("Usage:\n" + "\t`clipbender get <filter...>`")
-        os.exit(1)
-    }
-
-    msg: [9]byte
-    written := lib.encode_cmd_get(filter, msg[:])
-    linux.send(socket_fd, msg[:written], {})
-    fmt.println("Get signal sent")
-}
-
 // `args` includes everything after the `clipbender clear` subcommand
 cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
     if len(args) != 1 {
-        fmt.eprintln("Usage:\n" + "\t`clipbender clear <register-id>`")
-        os.exit(1)
+        display_usage_and_exit(.CLEAR)
     }
 
     reg_id, ok := parse_cmd_clear(args[0])
     if !ok {
-        fmt.eprintln("Usage:\n" + "\t`clipbender clear <register-id>`")
-        os.exit(1)
+        display_usage_and_exit(.CLEAR)
     }
 
     msg: [2]byte
@@ -244,8 +243,7 @@ cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
 // `args` includes everything after the `clipbender shutdown` subcommand
 cmd_shutdown :: proc(args: []string, socket_fd: linux.Fd) {
     if len(args) != 0 {
-        fmt.eprintln("Usage:\n" + "\t`clipbender shutdown`")
-        os.exit(1)
+        display_usage_and_exit(.SHUTDOWN)
     }
 
     msg: [1]byte
