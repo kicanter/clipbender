@@ -59,6 +59,83 @@ cleanup_socket :: proc(socket_path: string, socket_fd: linux.Fd) {
     os.remove(socket_path)
 }
 
+handle_recv :: proc(bytes_read: int) -> (running: bool) {
+    msg_type := cast(lib.Command_Type)data_buf[0]
+    switch msg_type {
+    case lib.Command_Type.SET:
+        // For client SET commands, destination reg has to be named or SELECTION_CLIPBOARD/PRIMARY
+        // Client is not allowed to overwrite numbered registers
+        fmt.printfln("Got set message: %s", string(data_buf[:bytes_read]))
+        dest_reg := lib.Reg_Id(u8(data_buf[1]))
+        set_mode := lib.Set_Mode(u8(data_buf[2]))
+        source_kind := lib.Source_Kind(u8(data_buf[3]))
+        switch (source_kind) {
+        case .REGISTER:
+            source_reg := lib.Reg_Id(u8(data_buf[4]))
+
+            source, ok := get_reg(source_reg) // TODO: handle SELECTION_CLIPBOARD/PRIMARY
+            if !ok {
+                fmt.eprintln("Error: invalid register")
+            }
+
+            if lib.reg_id_is_named(dest_reg) {
+                set_named_reg(set_mode, dest_reg, source.data, source.mime_type)
+            } else if lib.reg_id_is_selection(dest_reg) {
+                // TODO: set_selection_reg()
+            } else {
+                // error response
+            }
+        case .INLINE:
+            mime, data := lib.decode_cmd_set_inline(data_buf[4:bytes_read])
+            if lib.reg_id_is_named(dest_reg) {
+                set_named_reg(set_mode, dest_reg, data, mime)
+            } else if lib.reg_id_is_selection(dest_reg) {
+                // TODO: set_selection_reg()
+            } else {
+                // error response
+            }
+        }
+    case lib.Command_Type.GET:
+        fmt.printfln("Got get message: %s", string(data_buf[:bytes_read]))
+    // data response
+    case lib.Command_Type.CLEAR:
+        fmt.printfln("Got clear: %s", string(data_buf[:bytes_read]))
+    case lib.Command_Type.SHUTDOWN:
+        fmt.println("Shutting down")
+        running = false
+    }
+
+    // ok response
+    return running
+}
+
+dispatch_cqe :: proc(cqe: linux.IO_Uring_CQE, ring: ^uring.Ring, socket_fd: linux.Fd) -> (running: bool) {
+    running = true
+
+    switch cast(Event)cqe.user_data {
+    case .ACCEPT:
+        // new client
+        if cqe.res < 0 {
+            log.errorf("Client accept failed: %v", cqe.res)
+            return running
+        }
+
+        // Submit recv
+        client_fd := cast(linux.Fd)cqe.res
+        uring.recv(ring, u64(Event.RECV), client_fd, data_buf[:], {})
+        uring.accept(ring, u64(Event.ACCEPT), socket_fd, cast(^linux.Sock_Addr_Un)nil, nil, {.CLOEXEC})
+    case .RECV:
+        // Receive data
+        bytes_read := int(cqe.res)
+        if bytes_read > 0 {
+            running = handle_recv(bytes_read)
+        }
+    case .SIGNAL:
+        running = false
+    }
+    return running
+}
+
 uds_serve :: proc(socket_path: string) {
     socket_fd, sockerr := linux.socket(.UNIX, .SEQPACKET, {.CLOEXEC}, {})
     fmt.assertf(sockerr == nil, "Failed to create server socket fd: err %d", sockerr)
@@ -108,6 +185,7 @@ uds_serve :: proc(socket_path: string) {
 
         for i in 0 ..< n_copied {
             cqe := cqes[i]
+            running = dispatch_cqe(cqe, &ring, socket_fd)
 
             switch cast(Event)cqe.user_data {
             case .ACCEPT:

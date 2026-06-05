@@ -43,6 +43,10 @@ reg_id_is_primary_num :: proc(id: Reg_Id) -> bool {
     return id >= PRIMARY_START && id <= PRIMARY_END
 }
 
+reg_id_is_selection :: proc(id: Reg_Id) -> bool {
+    return id == SELECTION_CLIPBOARD || id == SELECTION_PRIMARY
+}
+
 reg_id_is_read_only :: proc(id: Reg_Id) -> bool {
     return reg_id_is_clipboard_num(id) || reg_id_is_primary_num(id)
 }
@@ -81,8 +85,8 @@ clipbender_socket_path :: proc() -> string {
 
 // Kinds of messages (commands) passed from client to daemon. IPC wire format:
 //
-// SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b source Reg_Id]`
-// SET (INLINE):   `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b mime type len][M mime type][N data]`
+// SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b source Reg_Id]`
+// SET (INLINE):   `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
 // GET:            `[1b Message_Type][8b Cmd_Get_filter]`
 // CLEAR:          `[1b Message_Type][1b Reg_Id]`
 // SHUTDOWN:       `[1b Message_Type]`
@@ -94,6 +98,12 @@ Command_Type :: enum u8 {
     GET,
     CLEAR,
     SHUTDOWN,
+}
+
+// For SET operations, whether the register should be overwritten or appended
+Set_Mode :: enum u8 {
+    OVERWRITE, // lowercase named register
+    APPEND, // uppercase named register
 }
 
 // Source from which the data is coming from in a SET operation.
@@ -148,23 +158,25 @@ free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
 
 // Client-side
 
-// SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b source Reg_Id]`
-encode_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, buf: []byte) -> int {
+// SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b source Reg_Id]`
+encode_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, buf: []byte) -> int {
     buf[0] = byte(Command_Type.SET)
     buf[1] = byte(dest)
-    buf[2] = byte(Source_Kind.REGISTER)
-    buf[3] = byte(source)
-    return size_of(Command_Type) + (2 * size_of(Reg_Id)) + size_of(Source_Kind)
+    buf[2] = byte(set_mode)
+    buf[3] = byte(Source_Kind.REGISTER)
+    buf[4] = byte(source)
+    return size_of(Command_Type) + (2 * size_of(Reg_Id)) + size_of(Set_Mode) + size_of(Source_Kind)
 }
 
-// SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b mime type len][M mime type][N data]`
-encode_cmd_set_inline :: proc(dest: Reg_Id, mime: string, data: []byte, buf: []byte) -> int {
+// SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
+encode_cmd_set_inline :: proc(dest: Reg_Id, set_mode: Set_Mode, mime: string, data: []byte, buf: []byte) -> int {
     buf[0] = byte(Command_Type.SET)
     buf[1] = byte(dest)
-    buf[2] = byte(Source_Kind.INLINE)
+    buf[2] = byte(set_mode)
+    buf[3] = byte(Source_Kind.INLINE)
     mime_len := u8(len(mime))
-    buf[3] = byte(mime_len)
-    written := size_of(Command_Type) + size_of(Reg_Id) + size_of(Source_Kind) + size_of(mime_len)
+    buf[4] = byte(mime_len)
+    written := size_of(Command_Type) + size_of(Reg_Id) + size_of(Set_Mode) + size_of(Source_Kind) + size_of(mime_len)
     copy(buf[written:][:int(mime_len)], mime)
     written += int(mime_len)
     copy(buf[written:][:len(data)], data)
@@ -301,24 +313,13 @@ encode_resp :: proc {
     encode_resp_data,
 }
 
-// SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b source Reg_Id]`
-// buf starts after first Message_Type byte
-decode_cmd_set_reg :: proc(buf: []byte) -> (dest: Reg_Id, source: Reg_Id) {
-    dest = Reg_Id(buf[0])
-    // source_kind is second byte, but we already know the source_kind is REGISTER
-    source = Reg_Id(buf[2])
-    return dest, source
-}
-
-// SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Source_Kind][1b mime type len][M mime type][N data]`
-// buf starts after first Message_Type byte
-decode_cmd_set_inline :: proc(buf: []byte) -> (dest: Reg_Id, mime: string, data: []byte) {
-    dest = Reg_Id(buf[0])
-    // source_kind is second byte, but we already know the source_kind is INLINE
-    mime_len := u8(buf[2])
-    mime = strings.clone(string(buf[3:3 + mime_len]))
-    data = slice.clone(buf[3 + mime_len:])
-    return dest, mime, data
+// SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
+// buf starts after Source_Kind byte
+decode_cmd_set_inline :: proc(buf: []byte) -> (mime: string, data: []byte) {
+    mime_len := u8(buf[0])
+    mime = strings.clone(string(buf[1:1 + mime_len]))
+    data = slice.clone(buf[1 + mime_len:])
+    return mime, data
 }
 
 // GET: `[1b Message_Type][8b Cmd_Get_filter]`

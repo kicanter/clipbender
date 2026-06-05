@@ -30,15 +30,15 @@ uds_connect :: proc(socket_path: string) -> linux.Fd {
 // `args` includes everything after the `clipbender set` subcommand
 cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
     if len(args) == 2 {     // source reg is passed as an arg
-        // dest, source := parse_cmd_set_reg(args[0], args[1])
-        // msg := [4]byte // SET with source reg is 4-byte message
-        // written := lib.encode_cmd_set_reg(dest, source, msg[:])
+        // dest_reg, source_reg, set_mode := parse_cmd_set_reg(args[0], args[1])
+        // msg := [5]byte // SET with source reg is 5-byte message
+        // written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
         // linux.send(socket_fd, msg[:written], {})
     } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is inline
-        // dest, mime, data := parse_cmd_set_inline(args[0], os.stdin)
-        // msg := make([]byte, 4 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
+        // dest, set_mode, mime, data := parse_cmd_set_inline(args[0], os.stdin)
+        // msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
         // defer delete(msg)
-        // written := lib.encode_cmd_set_inline(dest, mime, data, msg[:])
+        // written := lib.encode_cmd_set_inline(dest, set_mode, mime, data, msg[:])
         // linux.send(socket_fd, msg[:written], {})
     } else {
         // error: missing source

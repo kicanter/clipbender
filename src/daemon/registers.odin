@@ -13,6 +13,11 @@ Recency_Ring :: struct {
     count:   u8,
 }
 
+// TODO: make these persistent in the future by writing state to binary
+clipboard_registers: Recency_Ring
+named_registers: [26]lib.Reg_Entry
+primary_registers: Recency_Ring
+
 // Push to head, overwriting any existing value
 push_recency_reg :: proc(ring: ^Recency_Ring, entry: lib.Reg_Entry) {
     ring.head = (ring.head + 1) % lib.RECENCY_SIZE
@@ -32,41 +37,65 @@ get_recency_reg :: proc(ring: ^Recency_Ring, recency: u8) -> (^lib.Reg_Entry, bo
     return &ring.entries[idx], true
 }
 
-// TODO: make these persistent in the future by writing state to binary
-clipboard_registers: Recency_Ring
-named_registers: [26]lib.Reg_Entry
-primary_registers: Recency_Ring
-
-set_clipboard_reg :: proc(data: []byte, mime: string) {
-    reg_entry := lib.Reg_Entry{data, mime, time.time_to_unix(time.now())}
-    push_recency_reg(&clipboard_registers, reg_entry)
-}
-
-set_primary_reg :: proc(data: []byte, mime: string) {
-    reg_entry := lib.Reg_Entry{data, mime, time.time_to_unix(time.now())}
-    push_recency_reg(&primary_registers, reg_entry)
+// Get the `idx` index `Register_Entry` from named registers array
+get_named_reg :: proc(idx: u8) -> (^lib.Reg_Entry, bool) {
+    if named_registers[idx].data == nil {
+        return nil, false
+    }
+    return &named_registers[idx], true
 }
 
 // Look up by id, index into the right array
-get_reg :: proc(reg_id: lib.Reg_Id) -> (^lib.Reg_Entry, bool) {
+get_reg :: proc(reg_id: lib.Reg_Id) -> (reg_entry: ^lib.Reg_Entry, ok: bool) {
     if lib.reg_id_is_clipboard_num(reg_id) {
         recency := lib.reg_id_to_clipboard_index(reg_id)
         return get_recency_reg(&clipboard_registers, recency)
     } else if lib.reg_id_is_named(reg_id) {
         idx := lib.reg_id_to_named_index(reg_id)
-        if named_registers[idx].data == nil {
-            return nil, false
-        }
-        return &named_registers[idx], true
+        return get_named_reg(idx)
     } else if lib.reg_id_is_primary_num(reg_id) {
         recency := lib.reg_id_to_primary_index(reg_id)
         return get_recency_reg(&primary_registers, recency)
+    } else if reg_id == lib.SELECTION_CLIPBOARD {
+        // TODO: get the selection through cached data_offer in wayland layer. For now, just return the most recent
+        // register (should be identical for now, but maybe offer filtering/only writing certain stuff to recency
+        // registers in the future)
+        return get_recency_reg(&clipboard_registers, 0)
+    } else if reg_id == lib.SELECTION_PRIMARY {
+        return get_recency_reg(&primary_registers, 0)
     }
     return nil, false
 }
 
+set_named_reg :: proc(set_mode: lib.Set_Mode, reg_id: lib.Reg_Id, data: []byte, mime: string) {
+    switch set_mode {
+    case .OVERWRITE:
+        overwrite_named_reg(reg_id, data, mime)
+    case .APPEND:
+        append_named_reg(reg_id, data, mime)
+    }
+}
+
+// TODO: impl through wayland layer based on https://wayland.app/protocols/ext-data-control-v1#ext_data_control_device_v1
+set_clipboard_reg :: proc(data: []byte, mime: string) {
+    // set the primary selection through ext_data_control_device_v1::set_primary_selection
+}
+
+// TODO: impl through wayland layer based on https://wayland.app/protocols/ext-data-control-v1#ext_data_control_device_v1
+set_primary_reg :: proc(data: []byte, mime: string) {
+    // set the clipboard selection through ext_data_control_device_v1::set_selection
+}
+
+set_selection_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) {
+    if reg_id == lib.SELECTION_CLIPBOARD {
+        set_clipboard_reg(data, mime)
+    } else if reg_id == lib.SELECTION_PRIMARY {
+        set_primary_reg(data, mime)
+    }
+}
+
 // Overwrite a named reg
-set_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) {
+overwrite_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) {
     idx := lib.reg_id_to_named_index(reg_id)
     lib.free_reg_entry(&named_registers[idx])
     named_registers[idx] = lib.Reg_Entry {

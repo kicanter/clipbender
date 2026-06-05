@@ -82,35 +82,40 @@ test_reg_id_primary_roundtrip :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_encode_decode_cmd_set_reg :: proc(t: ^testing.T) {
+test_encode_cmd_set_reg :: proc(t: ^testing.T) {
     buf: [64]byte
     dest := reg_id_from_named_index(5)
     source := SELECTION_CLIPBOARD
+    mode := Set_Mode.OVERWRITE
 
-    n := encode_cmd_set_reg(dest, source, buf[:])
-    testing.expect(t, n == 4)
+    n := encode_cmd_set_reg(dest, source, mode, buf[:])
+    testing.expect_value(t, n, 5)
     testing.expect_value(t, Command_Type(buf[0]), Command_Type.SET)
-
-    d, s := decode_cmd_set_reg(buf[1:])
-    testing.expect_value(t, d, dest)
-    testing.expect_value(t, s, source)
+    testing.expect_value(t, Reg_Id(buf[1]), dest)
+    testing.expect_value(t, Set_Mode(buf[2]), mode)
+    testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.REGISTER)
+    testing.expect_value(t, Reg_Id(buf[4]), source)
 }
 
 @(test)
 test_encode_decode_cmd_set_inline :: proc(t: ^testing.T) {
     buf: [256]byte
     dest := reg_id_from_named_index(0)
+    mode := Set_Mode.APPEND
     mime := "text/plain"
     data := transmute([]byte)string("hello world")
 
-    n := encode_cmd_set_inline(dest, mime, data, buf[:])
-    testing.expect(t, n == size_of(Command_Type) + size_of(Reg_Id) + size_of(Source_Kind) + size_of(u8) + len(mime) + len(data))
+    n := encode_cmd_set_inline(dest, mode, mime, data, buf[:])
+    expected_size := size_of(Command_Type) + size_of(Reg_Id) + size_of(Set_Mode) + size_of(Source_Kind) + size_of(u8) + len(mime) + len(data)
+    testing.expect_value(t, n, expected_size)
+    testing.expect_value(t, Set_Mode(buf[2]), mode)
+    testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.INLINE)
 
-    d, dec_mime, dec_data := decode_cmd_set_inline(buf[1:n])
+    // decode_cmd_set_inline expects buf starting after Source_Kind byte
+    dec_mime, dec_data := decode_cmd_set_inline(buf[4:n])
     defer delete(dec_mime)
     defer delete(dec_data)
 
-    testing.expect_value(t, d, dest)
     testing.expect_value(t, dec_mime, mime)
     testing.expect(t, slice.equal(dec_data, data))
 }

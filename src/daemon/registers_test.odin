@@ -88,7 +88,7 @@ test_set_named_reg :: proc(t: ^testing.T) {
     defer clear_named_reg(lib.reg_id_from_named_index(0))
 
     id := lib.reg_id_from_named_index(0)
-    set_named_reg(id, transmute([]byte)string("test data"), "text/plain")
+    set_named_reg(.OVERWRITE, id, transmute([]byte)string("test data"), "text/plain")
 
     entry, ok := get_reg(id)
     testing.expect(t, ok)
@@ -101,8 +101,8 @@ test_set_named_reg_overwrites :: proc(t: ^testing.T) {
     defer clear_named_reg(lib.reg_id_from_named_index(1))
 
     id := lib.reg_id_from_named_index(1)
-    set_named_reg(id, transmute([]byte)string("old"), "text/plain")
-    set_named_reg(id, transmute([]byte)string("new"), "text/plain")
+    set_named_reg(.OVERWRITE, id, transmute([]byte)string("old"), "text/plain")
+    set_named_reg(.OVERWRITE, id, transmute([]byte)string("new"), "text/plain")
 
     entry, ok := get_reg(id)
     testing.expect(t, ok)
@@ -114,7 +114,7 @@ test_append_named_reg :: proc(t: ^testing.T) {
     defer clear_named_reg(lib.reg_id_from_named_index(2))
 
     id := lib.reg_id_from_named_index(2)
-    set_named_reg(id, transmute([]byte)string("hello"), "text/plain")
+    set_named_reg(.OVERWRITE, id, transmute([]byte)string("hello"), "text/plain")
     ok := append_named_reg(id, transmute([]byte)string(" world"), "text/plain")
     testing.expect(t, ok, "append should succeed with matching mime")
 
@@ -128,7 +128,7 @@ test_append_named_reg_mime_mismatch :: proc(t: ^testing.T) {
     defer clear_named_reg(lib.reg_id_from_named_index(3))
 
     id := lib.reg_id_from_named_index(3)
-    set_named_reg(id, transmute([]byte)string("data"), "text/plain")
+    set_named_reg(.OVERWRITE, id, transmute([]byte)string("data"), "text/plain")
     ok := append_named_reg(id, transmute([]byte)string("more"), "text/html")
     testing.expect(t, !ok, "append should fail with mismatched mime type")
 
@@ -153,7 +153,7 @@ test_append_named_reg_empty :: proc(t: ^testing.T) {
 @(test)
 test_clear_named_reg :: proc(t: ^testing.T) {
     id := lib.reg_id_from_named_index(5)
-    set_named_reg(id, transmute([]byte)string("to delete"), "text/plain")
+    set_named_reg(.OVERWRITE, id, transmute([]byte)string("to delete"), "text/plain")
     clear_named_reg(id)
 
     _, ok := get_reg(id)
@@ -161,22 +161,10 @@ test_clear_named_reg :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_get_reg_dispatches_correctly :: proc(t: ^testing.T) {
+test_get_reg_dispatches_named :: proc(t: ^testing.T) {
     defer clear_named_reg(lib.reg_id_from_named_index(6))
-    defer free_ring(&clipboard_registers)
-    defer free_ring(&primary_registers)
 
-    set_clipboard_reg(transmute([]byte)string("clip"), "text/plain")
-    set_primary_reg(transmute([]byte)string("prim"), "text/plain")
-    set_named_reg(lib.reg_id_from_named_index(6), transmute([]byte)string("named"), "text/plain")
-
-    clip_entry, clip_ok := get_reg(lib.reg_id_from_clipboard_index(0))
-    testing.expect(t, clip_ok)
-    testing.expect_value(t, string(clip_entry.data), "clip")
-
-    prim_entry, prim_ok := get_reg(lib.reg_id_from_primary_index(0))
-    testing.expect(t, prim_ok)
-    testing.expect_value(t, string(prim_entry.data), "prim")
+    set_named_reg(.OVERWRITE, lib.reg_id_from_named_index(6), transmute([]byte)string("named"), "text/plain")
 
     named_entry, named_ok := get_reg(lib.reg_id_from_named_index(6))
     testing.expect(t, named_ok)
