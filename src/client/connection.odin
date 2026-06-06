@@ -26,20 +26,97 @@ uds_connect :: proc(socket_path: string) -> linux.Fd {
     return socket_fd
 }
 
-display_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
+print_usage_and_exit :: proc() {
+    fmt.eprintln(
+        "Usage: clipbender [command] \n\n" +
+        "Commands:\n" +
+        "\t(none)                             Launch the clipbender GUI\n" +
+        "\tset <dest-reg> [source-reg]        Set the `dest-reg` with the content from `source-reg` or stdin.\n" +
+        "\tget <filter...> [=json|=raw]       Retrieve the content, mime type, and timestamp of the registers matching `filter`.\n" +
+        "\tclear <reg-id>                     Clear the data stored in register `reg-id`.\n" +
+        "\tshutdown                           Shutdown the `clipbenderd` daemon.\n\n" +
+        "Examples:\n" +
+        "\tclipbender                         Open GUI popup.\n" +
+        "\tclipbender shutdown                Stop daemon.\n" +
+        "\tclipbender set a clipboard         Set register `a` from system clipboard selection.\n" +
+        "\tclipbender set clipboard 1         Set system clipboard selection from clipboard register `1`.\n" +
+        "\tclipbender set a primary           Set register `a` from system primary selection.\n" +
+        "\tclipbender set A clipboard         Append system clipboard selection to register `a`.\n" +
+        "\tclipbender set primary @5          Set system primary selection from primary register `5`.\n" +
+        "\t<cmd> | clipbender set a           Set register `a` from stdin pipe.\n" +
+        "\tclipbender set a < <file>          Set register `a` from stdin redirection.\n" +
+        "\tclipbender clear a                 Clear register `a`.\n" +
+        "\tclipbender get ++all               Print all registers.\n" +
+        "\tclipbender get ++named -adz        Print named registers except `a`, `d`, `z`.\n" +
+        "\tclipbender get +@012 +012          Print the first three numbered registers from primary and clipboard.\n" +
+        "\tclipbender get +0:5 +@0:3          Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
+        "\tclipbender get ++clipboard =json   Print clipboard registers as structured JSON.\n" +
+        "\tclipbender get +a =raw | wl-copy   Pipe only the contents of register `a` and pipe into wl-copy.\n" +
+        "\tclipbender get +a =raw > <file>    Redirect the contents of register `a` to `file`.\n",
+    )
+    os.exit(1)
+}
+
+print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
     switch cmd_type {
     case .SET:
         fmt.eprintln(
-            "Usage:\n" +
-            "\t`clipbender set <dest-reg> <source-reg>`\n" +
-            "\t`clipbender set <dest-reg>` using stdin as source data",
+            "Usage: clipbender set <dest-reg> [source-reg]\n\n" +
+            "Set the contents of `dest-reg` to the contents of `source-reg`. If no `source-reg` is passed, stdin is\n" +
+            "used. This allows the user to pipe or stdin redirect data inline to a register.\n\n" +
+            "Registers:\n" +
+            "\t0-9                                Numbered clipboard registers: clipboard selection recency (source-only).\n" +
+            "\t@0-@9                              Numbered primary registers: primary selection recency (source-only).\n" +
+            "\ta-z                                Named registers: store data (dest/source).\n" +
+            "\tA-Z                                Named registers: append data to corresponding lowercase register (dest-only).\n" +
+            "\tclipboard                          System clipboard selection (dest/source).\n" +
+            "\tprimary                            System primary selection (dest/source).\n\n" +
+            "Examples:\n" +
+            "\tclipbender set a clipboard         Set register `a` from system clipboard selection\n" +
+            "\tclipbender set clipboard 1         Set system clipboard selection from clipboard register `1`\n" +
+            "\tclipbender set a primary           Set register `a` from system primary selection\n" +
+            "\tclipbender set A clipboard         Append system clipboard selection to register `a`\n" +
+            "\tclipbender set primary @5          Set system primary selection from primary register `5`\n" +
+            "\t<cmd> | clipbender set a           Set register `a` from stdin pipe\n" +
+            "\tclipbender set a < <file>          Set register `a` from stdin redirection\n",
         )
     case .GET:
-        fmt.eprintln("Usage:\n" + "\t`clipbender get <filter...>`")
+        fmt.eprintln(
+            "Usage: clipbender get <filter...> [=json|=raw]\n\n" +
+            "Retrieve the content, mime type, and timestamp of the registers matching `filter`. Use the `=json` flag\n" +
+            "to output the data as structured JSON and the `=raw` flag to output just the contents of the registers\n" +
+            "in newline-delimited byte arrays.\n\n" +
+            "Filter tokens:\n" +
+            "\t++all, ++clipboard, ++named, ++primary, ++numbered   Include category\n" +
+            "\t--all, --clipboard, --named, --primary, --numbered   Exclude category\n" +
+            "\t+adz, +038, +@038                                    Include specific registers\n" +
+            "\t-adz, -038, -@038                                    Exclude specific registers\n" +
+            "\t+0:5, +a:f, +@0:5                                    Include range\n" +
+            "\t-0:5, -a:f, -@0:5                                    Exclude range\n\n" +
+            "Examples:\n" +
+            "\tclipbender get ++all               Print all registers.\n" +
+            "\tclipbender get ++named -adz        Print named registers except `a`, `d`, `z`.\n" +
+            "\tclipbender get +@012 +012          Print the first three numbered registers from primary and clipboard.\n" +
+            "\tclipbender get +0:5 +@0:3          Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
+            "\tclipbender get ++clipboard =json   Print clipboard registers as structured JSON.\n" +
+            "\tclipbender get +a =raw | wl-copy   Pipe only the contents of register `a` and pipe into wl-copy.\n" +
+            "\tclipbender get +a =raw > <file>    Redirect the contents of register `a` to `file`.\n",
+        )
     case .CLEAR:
-        fmt.eprintln("Usage:\n" + "\t`clipbender clear <register-id>`")
+        fmt.eprintln(
+            "Usage: clipbender clear <reg-id>\n\n" +
+            "Clear the contents of a single register.\n\n" +
+            "Examples:\n" +
+            "\tclipbender clear a                 Clear register `a`.\n" +
+            "\tclipbender clear z                 Clear register `z`.\n",
+        )
     case .SHUTDOWN:
-        fmt.eprintln("Usage:\n" + "\t`clipbender shutdown`")
+        fmt.eprintln(
+            "Usage: clipbender shutdown\n\n" +
+            "Stop running the clipbenderd daemon.\n\n" +
+            "Example:\n" +
+            "\tclipbender shutdown                Shutdown the daemon.\n",
+        )
     }
     os.exit(1)
 }
@@ -169,7 +246,7 @@ cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
     if len(args) == 2 {     // source reg was passed as an arg by client
         dest_reg, set_mode, source_reg, ok := parse_cmd_set_reg(args[0], args[1])
         if !ok {
-            display_usage_and_exit(.SET)
+            print_cmd_usage_and_exit(.SET)
         }
         msg: [5]byte // SET with source reg is 5-byte message
         written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
@@ -177,14 +254,14 @@ cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
     } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is passed inline by client
         dest, set_mode, mime, data, ok := parse_cmd_set_inline(args[0], os.stdin)
         if !ok {
-            display_usage_and_exit(.SET)
+            print_cmd_usage_and_exit(.SET)
         }
         msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
         defer delete(msg)
         written := lib.encode_cmd_set_inline(dest, set_mode, mime, data, msg[:])
         linux.send(socket_fd, msg[:written], {})
     } else {
-        display_usage_and_exit(.SET)
+        print_cmd_usage_and_exit(.SET)
     }
     fmt.println("Set signal sent")
 }
@@ -196,12 +273,12 @@ parse_cmd_get :: proc(filter_args: []string) -> (filter: lib.Cmd_Get_Filter, ok:
 // `args` includes everything after the `clipbender get` subcommand
 cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
     if len(args) < 1 {
-        display_usage_and_exit(.GET)
+        print_cmd_usage_and_exit(.GET)
     }
 
     filter, ok := parse_cmd_get(args)
     if !ok {
-        display_usage_and_exit(.GET)
+        print_cmd_usage_and_exit(.GET)
     }
 
     msg: [9]byte
@@ -226,12 +303,12 @@ parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, ok: bool) {
 // `args` includes everything after the `clipbender clear` subcommand
 cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
     if len(args) != 1 {
-        display_usage_and_exit(.CLEAR)
+        print_cmd_usage_and_exit(.CLEAR)
     }
 
     reg_id, ok := parse_cmd_clear(args[0])
     if !ok {
-        display_usage_and_exit(.CLEAR)
+        print_cmd_usage_and_exit(.CLEAR)
     }
 
     msg: [2]byte
@@ -243,7 +320,7 @@ cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
 // `args` includes everything after the `clipbender shutdown` subcommand
 cmd_shutdown :: proc(args: []string, socket_fd: linux.Fd) {
     if len(args) != 0 {
-        display_usage_and_exit(.SHUTDOWN)
+        print_cmd_usage_and_exit(.SHUTDOWN)
     }
 
     msg: [1]byte
@@ -264,8 +341,7 @@ run_cli :: proc(socket_fd: linux.Fd, args: []string) {
     case "shutdown":
         cmd_shutdown(args[1:], socket_fd)
     case:
-        fmt.eprintfln("Unknown command `%v`", subcommand)
-        os.exit(1)
+        print_usage_and_exit()
     }
 }
 
