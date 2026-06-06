@@ -26,13 +26,6 @@ uds_connect :: proc(socket_path: string) -> linux.Fd {
     return socket_fd
 }
 
-run_gui :: proc(socket_fd: linux.Fd) {
-    for {
-        fmt.println("You ran the GUI")
-        time.sleep(3 * time.Second)
-    }
-}
-
 main :: proc() {
     socket_path := lib.clipbender_socket_path()
 
