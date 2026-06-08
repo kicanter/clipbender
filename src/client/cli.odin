@@ -1,8 +1,8 @@
 package main
 
 import "core:fmt"
+import "core:log"
 import "core:os"
-import "core:strings"
 import "core:sys/linux"
 
 import "../lib"
@@ -231,7 +231,9 @@ cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
         }
         msg: [5]byte // SET with source reg is 5-byte message
         written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
+        log.debug("Sending set message: %v", msg[:])
         linux.send(socket_fd, msg[:written], {})
+        // 0, 10, 0, 0, 11
     } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is passed inline by client
         dest, set_mode, mime, data, ok := parse_cmd_set_inline(args[0], os.stdin)
         if !ok {
@@ -244,7 +246,6 @@ cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
     } else {
         print_cmd_usage_and_exit(.SET)
     }
-    fmt.println("Set signal sent")
 }
 
 parse_cmd_get :: proc(filter_args: []string) -> (filter: lib.Cmd_Get_Filter, ok: bool) {
@@ -265,7 +266,6 @@ cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
     msg: [9]byte
     written := lib.encode_cmd_get(filter, msg[:])
     linux.send(socket_fd, msg[:written], {})
-    fmt.println("Get signal sent")
 }
 
 parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, ok: bool) {
@@ -295,7 +295,6 @@ cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
     msg: [2]byte
     written := lib.encode_cmd_clear(reg_id, msg[:])
     linux.send(socket_fd, msg[:written], {})
-    fmt.println("Clear signal sent")
 }
 
 // `args` includes everything after the `clipbender shutdown` subcommand
@@ -307,7 +306,6 @@ cmd_shutdown :: proc(args: []string, socket_fd: linux.Fd) {
     msg: [1]byte
     written := lib.encode_cmd_shutdown(msg[:])
     linux.send(socket_fd, msg[:written], {})
-    fmt.println("Shutdown signal sent")
 }
 
 run_cli :: proc(socket_fd: linux.Fd, args: []string) {

@@ -1,9 +1,9 @@
 package main
 
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:sys/linux"
-import "core:time"
 
 import "../lib"
 
@@ -27,7 +27,11 @@ uds_connect :: proc(socket_path: string) -> linux.Fd {
 }
 
 main :: proc() {
+    context.logger = log.create_console_logger()
+    defer log.destroy_console_logger(context.logger)
+
     socket_path := lib.clipbender_socket_path()
+    defer delete(socket_path)
 
     socket_fd := uds_connect(socket_path)
     defer linux.close(socket_fd)

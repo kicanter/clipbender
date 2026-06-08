@@ -78,9 +78,11 @@ clipbender_socket_path :: proc() -> string {
     // Get XDG_RUNTIME_DIR, fallback to /tmp
     socket_dir := os.get_env("XDG_RUNTIME_DIR", context.allocator)
     if len(socket_dir) == 0 || !os.is_directory(socket_dir) {
-        socket_dir = "/tmp"
+        if len(socket_dir) > 0 {delete(socket_dir)}     // free socket_dir because we just wrote an env var to it
+        return fmt.aprintf("/tmp/%s", SOCKET_PATH_SUFFIX)
     }
-    return fmt.tprintf("%s/%s", socket_dir, SOCKET_PATH_SUFFIX)
+    defer delete(socket_dir)
+    return fmt.aprintf("%s/%s", socket_dir, SOCKET_PATH_SUFFIX)
 }
 
 // Kinds of messages (commands) passed from client to daemon. IPC wire format:

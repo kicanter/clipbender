@@ -44,9 +44,9 @@ check_stale_socket :: proc(socket_path: string) {
     copy(socket_addr.sun_path[:], transmute([]u8)socket_path)
 
     connecterr := linux.connect(socket_fd, &socket_addr)
-    if connecterr != nil {
+    if connecterr == nil {
         // Connection succeeded, daemon is already running
-        fmt.eprintln("Error: daemon already running")
+        fmt.eprintln("Daemon already running, connection succeeded")
         os.exit(1)
     }
 
@@ -64,21 +64,24 @@ handle_recv :: proc(bytes_read: int) -> (running: bool) {
     msg_type := cast(lib.Command_Type)data_buf[0]
     switch msg_type {
     case lib.Command_Type.SET:
-        // For client SET commands, destination reg has to be named or SELECTION_CLIPBOARD/PRIMARY
         // Client is not allowed to overwrite numbered registers
-        fmt.printfln("Got set message: %s", string(data_buf[:bytes_read]))
+        log.debugf("Got set message: %v", data_buf[:bytes_read])
         dest_reg := lib.Reg_Id(u8(data_buf[1]))
         set_mode := lib.Set_Mode(u8(data_buf[2]))
         source_kind := lib.Source_Kind(u8(data_buf[3]))
         switch (source_kind) {
         case .REGISTER:
             source_reg := lib.Reg_Id(u8(data_buf[4]))
-
             source, ok := get_reg(source_reg)
             if !ok {
-                fmt.eprintln("Error: invalid register")
+                log.error("Invalid register: %v", source_reg)
+                break
+            }
+            if source == nil {
+                break
             }
 
+            // Destination register must be either named register or SELECTION_CLIPBOARD/PRIMARY
             if lib.reg_id_is_named(dest_reg) {
                 set_named_reg(set_mode, dest_reg, source.data, source.mime_type)
             } else if lib.reg_id_is_selection(dest_reg) {
@@ -97,11 +100,11 @@ handle_recv :: proc(bytes_read: int) -> (running: bool) {
             }
         }
     case lib.Command_Type.GET:
-        fmt.printfln("Got get message: %s", string(data_buf[:bytes_read]))
+        log.debugf("Got get message: %v", data_buf[:bytes_read])
     case lib.Command_Type.CLEAR:
-        fmt.printfln("Got clear: %s", string(data_buf[:bytes_read]))
+        log.debugf("Got clear message: %v", data_buf[:bytes_read])
     case lib.Command_Type.SHUTDOWN:
-        fmt.println("Shutting down")
+        fmt.println("Shutting clipbenderd down")
         running = false
     }
 

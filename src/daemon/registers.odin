@@ -1,5 +1,6 @@
 package main
 
+import "core:log"
 import "core:slice"
 import "core:strings"
 import "core:time"
@@ -31,18 +32,24 @@ push_recency_reg :: proc(ring: ^Recency_Ring, entry: lib.Reg_Entry) {
 }
 
 // Get the `recency` most recent `Register_Entry`
-get_recency_reg :: proc(ring: ^Recency_Ring, recency: u8) -> (^lib.Reg_Entry, bool) {
+get_recency_reg :: proc(ring: ^Recency_Ring, recency: u8) -> (reg: ^lib.Reg_Entry, ok: bool) {
     if recency >= ring.count {return nil, false}
     idx := (ring.head - recency + lib.RECENCY_SIZE) % lib.RECENCY_SIZE
     return &ring.entries[idx], true
 }
 
 // Get the `idx` index `Register_Entry` from named registers array
-get_named_reg :: proc(idx: u8) -> (^lib.Reg_Entry, bool) {
-    if named_registers[idx].data == nil {
+get_named_reg :: proc(idx: u8) -> (reg: ^lib.Reg_Entry, ok: bool) {
+    if idx < 0 || idx > len(named_registers) {
+        log.errorf("Index %v is out of named register bounds", idx)
         return nil, false
     }
-    return &named_registers[idx], true
+    reg = &named_registers[idx]
+    if reg.data == nil {
+        log.debugf("Named register %v is empty", idx)
+        return nil, true
+    }
+    return reg, true
 }
 
 // Look up by id, index into the right array
