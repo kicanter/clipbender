@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:log"
 import "core:os"
+import "core:strings"
 import "core:sys/linux"
 
 import "../lib"
@@ -248,8 +249,187 @@ cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
     }
 }
 
-parse_cmd_get :: proc(filter_args: []string) -> (filter: lib.Cmd_Get_Filter, ok: bool) {
-    return {}, {}
+Get_Cmd_Format :: enum u8 {
+    TABLE,
+    JSON,
+    RAW,
+}
+
+parse_cmd_get_reg_group :: proc(
+    mask: ^lib.Cmd_Get_Filter,
+    arg: string,
+    offset: int,
+    lo: u8,
+    hi: u8,
+) -> (
+    err: Maybe(string),
+) {
+    for ch in transmute([]byte)arg {
+        if ch < lo || ch > hi {
+            return fmt.tprintf("invalid character `%v` in register group", rune(ch))
+        }
+        mask^ += {int(ch - lo) + offset}
+    }
+    return {}
+}
+
+// Parse a register range where `arg` is everything after the prefix token `+`/`-` or primary token `@` if it exists.
+parse_cmd_get_reg_range :: proc(
+    mask: ^lib.Cmd_Get_Filter,
+    arg: string,
+    offset: int,
+    lo: u8,
+    hi: u8,
+) -> (
+    err: Maybe(string),
+) {
+    if len(arg) != 3 || arg[1] != ':' {
+        return "register range must be in format `x:y`"
+    }
+
+    start, end := arg[0], arg[2]
+    if start > end {start, end = end, start}
+    if start < lo || end > hi {
+        return "register range out of bounds"
+    }
+
+    for i in start ..= end {
+        mask^ += {int(i - lo) + offset}
+    }
+
+    return {}
+}
+
+// Parse a register group token for a GET command, `arg` is everything after the prefix `-` or `+`. Handles both
+// register ranges and register groups.
+parse_cmd_get_registers :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err: Maybe(string)) {
+    if len(arg) == 0 {
+        return "a prefix token must precede a register group or register range"
+    }
+
+    is_primary := arg[0] == '@'
+    body := arg[1:] if is_primary else arg
+
+    if len(body) == 0 {
+        return "expected register group or register range after `@`"
+    }
+
+    switch body[0] {
+    // parse clipboard/primary numbered
+    case '0' ..= '9':
+        offset := int(lib.CLIPBOARD_START) if !is_primary else int(lib.PRIMARY_START)
+        if strings.index_byte(body, ':') >= 0 {
+            return parse_cmd_get_reg_range(mask, body, offset, '0', '9')
+        }
+        return parse_cmd_get_reg_group(mask, body, offset, '0', '9')
+    // parse named
+    case 'a' ..= 'z':
+        if is_primary {
+            return "primary registers are numbered not named"
+        }
+        offset := int(lib.NAMED_START)
+        if strings.index_byte(body, ':') >= 0 {
+            return parse_cmd_get_reg_range(mask, body, offset, 'a', 'z')
+        }
+        return parse_cmd_get_reg_group(mask, body, offset, 'a', 'z')
+    case:
+        return fmt.tprintf("invalid register arg `%v`", body)
+    }
+}
+
+// Parse a keyword token for a GET command, `arg` is everything after the double prefix `--` or `++`.
+parse_cmd_get_keyword :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err: Maybe(string)) {
+    if len(arg) == 0 {
+        return(
+            "a double prefix token must precede a keyword (one of `all`, `numbered`, `named`, `clipboard`, " +
+            "`primary`)" \
+        )
+    }
+
+    // immediately following double prefix token must be a keyword
+    switch arg {
+    case "all":
+        mask^ += lib.CMD_GET_FILTER_ALL
+    case "numbered":
+        mask^ += lib.CMD_GET_FILTER_NUMBERED
+    case "named":
+        mask^ += lib.CMD_GET_FILTER_NAMED
+    case "clipboard":
+        mask^ += lib.CMD_GET_FILTER_CLIPBOARD
+    case "primary":
+        mask^ += lib.CMD_GET_FILTER_PRIMARY
+    case:
+        return "invalid keyword, use one of `all`, `numbered`, `named`, `clipboard`, `primary`"
+    }
+    return {}
+}
+
+// Uses a double bitmask solution using two u64 masks (inclusion and exclusion) to guarantee order-independence. Each
+// `+` and `++` token sets the proper bit in the inclusion mask. Similarly, each `-` and `--` token sets the proper bit
+// in the exclusion mask.
+//
+// * Clipboard Numbered registers are denoted by their respective number (0-9).
+// * Named registers are denoted by their respective lowercase letter (a-z).
+// * Primary Numbered registers are denoted by a `@` followed by their respective number (@0-@9).
+// * Keywords are indicated with a double prefix (`++` or `--`) and individual registers/groups are indicated with
+// single prefixes (`+` or `-`).
+// * Registers may be grouped after a single prefix based on their "kind" (Clipboard Numbered, Primary Numbered, or
+// Named). A Primary Numbered group is denoted by a single `@` following the prefix token e.g. `+@015`.
+// * Ranges of registers may be denoted with a `:` delimiting two ends of an inclusive range following a prefix token
+// within the same "kind" (Clipboard Numbered, Primary Numbered, or Named) e.g. `+d:g`.
+// * Two flags are available and are prefixed by `=`: `=json` and `=raw` (changes output format).
+parse_cmd_get :: proc(
+    filter_args: []string,
+) -> (
+    filter: lib.Cmd_Get_Filter,
+    format: Get_Cmd_Format,
+    err: Maybe(string),
+) {
+    incl: lib.Cmd_Get_Filter
+    excl: lib.Cmd_Get_Filter
+    format = .TABLE
+
+    for &arg in filter_args {
+        if len(arg) == 0 {     // empty string arg should just be skipped, no-op
+            continue
+        }
+
+        if len(arg) == 1 {
+            return {}, {}, "invalid `get` command arg"
+        }
+
+        switch arg[0] {     // every arg must start with one of the prefix tokens
+        case '+':
+            if arg[1] == '+' {     // double prefix include token
+                err = parse_cmd_get_keyword(&incl, arg[2:])
+            } else {     // otherwise treat it as a register group
+                err = parse_cmd_get_registers(&incl, arg[1:])
+            }
+        case '-':
+            if arg[1] == '-' {     // double prefix include token
+                err = parse_cmd_get_keyword(&excl, arg[2:])
+            } else {     // otherwise treat it as a register group
+                err = parse_cmd_get_registers(&excl, arg[1:])
+            }
+        case '=':
+            // output format flag is one of `=json` or `=raw`, do not allow more than one format flag
+            if format != .TABLE {return {}, {}, "you may only specify one format flag"}
+            if arg[1:] == "json" {
+                format = .JSON
+            } else if arg[1:] == "raw" {
+                format = .RAW
+            } else {
+                return {}, {}, "invalid format flag, you probably meant `=json` or `=raw`"
+            }
+        case:
+            return {}, {}, "invalid prefix, each arg should start with one of `+`, `-`, `=`"
+        }
+
+        if err != nil {return {}, {}, err}
+    }
+
+    filter = incl & ~excl
+    return filter, format, {}
 }
 
 // `args` includes everything after the `clipbender get` subcommand
@@ -258,8 +438,9 @@ cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
         print_cmd_usage_and_exit(.GET)
     }
 
-    filter, ok := parse_cmd_get(args)
-    if !ok {
+    filter, format, err := parse_cmd_get(args)
+    if err != nil {
+        fmt.printfln("Error: %v\n", err.?)
         print_cmd_usage_and_exit(.GET)
     }
 
