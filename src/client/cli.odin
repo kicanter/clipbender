@@ -5,8 +5,11 @@ import "core:log"
 import "core:os"
 import "core:strings"
 import "core:sys/linux"
+import "core:time"
 
 import "../lib"
+
+MAX_RECV_SIZE :: 65536 // 64 KiB
 
 print_usage_and_exit :: proc() {
     fmt.eprintln(
@@ -414,7 +417,113 @@ parse_cmd_get :: proc(
     return filter, format, {}
 }
 
-// `args` includes everything after the `clipbender get` subcommand
+// Format unix epoch timestamp as date time
+format_unix_timestamp :: proc(timestamp: i64, buf: ^[19]u8) -> string {
+    t := time.unix(timestamp, 0)
+    y, m, d := time.date(t)
+    h, min, s := time.clock(t)
+    return fmt.bprintf(buf[:], "%04d-%02d-%02d %02d:%02d:%02d", y, int(m), d, h, min, s)
+}
+
+CONTENT_COL_WIDTH :: 40
+
+// Truncate string to fit column width, appending "..." if truncated
+truncate_content :: proc(content: string) -> string {
+    if len(content) <= CONTENT_COL_WIDTH {
+        return content
+    }
+    return fmt.tprintf("%s...", content[:CONTENT_COL_WIDTH - 3])
+}
+
+// Return `regs` register entries formatted as an ascii table.
+cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
+    table_top := "┌──────────┬─────────────────────┬──────────────────┬──────────────────────────────────────────┐"
+    table_sep := "├──────────┼─────────────────────┼──────────────────┼──────────────────────────────────────────┤"
+    table_bot := "└──────────┴─────────────────────┴──────────────────┴──────────────────────────────────────────┘"
+    fmt.println(table_top)
+    fmt.println("│ Register │ Timestamp           │ Mime Type        │ Content                                  │")
+    if len(regs) == 0 {
+        fmt.println(
+            "├──────────┴─────────────────────┴──────────────────┴─────────────────────────────────────────┤",
+        )
+        fmt.println("│                                   No registers requested                                    │")
+        fmt.println(table_bot)
+        return
+    }
+
+    fmt.println(table_sep)
+
+    ts_buf: [19]u8
+    print_sep := false
+    i := 0
+
+    // Clipboard registers (contiguous from start)
+    for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
+        id := lib.reg_id_to_clipboard_index(regs[i].id)
+        entry := regs[i].entry
+        fmt.printfln(
+            "│ % 8d │ % -10s │ % -16s │ % -40s │",
+            id,
+            format_unix_timestamp(entry.timestamp, &ts_buf),
+            entry.mime_type,
+            truncate_content(string(entry.data)),
+        )
+        print_sep = true
+    }
+
+    // Skip named to find primary
+    named_start := i
+    for ; i < len(regs) && lib.reg_id_is_named(regs[i].id); i += 1 {}
+    primary_start := i
+
+    // Primary registers (contiguous after named)
+    for ; i < len(regs) && lib.reg_id_is_primary_num(regs[i].id); i += 1 {
+        if print_sep && i == primary_start {
+            fmt.println(table_sep)
+        }
+        id := lib.reg_id_to_primary_index(regs[i].id)
+        entry := regs[i].entry
+        fmt.printfln(
+            "│ % 8s │ % -10s │ % -16s │ % -40s │",
+            fmt.tprintf("@%d", id), // format before the printfln to include `@` directly next to reg num
+            format_unix_timestamp(entry.timestamp, &ts_buf),
+            entry.mime_type,
+            truncate_content(string(entry.data)),
+        )
+        print_sep = true
+    }
+
+    // Named registers (go back and print)
+    for j := named_start; j < primary_start; j += 1 {
+        if print_sep && j == named_start {
+            fmt.println(table_sep)
+        }
+        id := lib.reg_id_to_named_index(regs[j].id) + 'a'
+        entry := regs[j].entry
+        fmt.printfln(
+            "│ % 8s │ % -10s │ % -16s │ % -40s │",
+            fmt.tprintf("%c", id), // format before the printfln to space-pad named reg character
+            format_unix_timestamp(entry.timestamp, &ts_buf),
+            entry.mime_type,
+            truncate_content(string(entry.data)),
+        )
+        print_sep = true
+    }
+
+    fmt.println(table_bot)
+}
+
+// Return `regs` register entries formatted as json.
+cmd_get_format_json :: proc(regs: []lib.Resp_Reg) -> string {
+    return {}
+}
+
+// Return just the raw content from `regs` register entries (newline-delimited).
+cmd_get_format_raw :: proc(regs: []lib.Resp_Reg) -> string {
+    return {}
+}
+
+// `args` includes everything after the `clipbender get` subcommand.
 cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
     if len(args) < 1 {
         print_cmd_usage_and_exit(.GET)
@@ -426,9 +535,44 @@ cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
         print_cmd_usage_and_exit(.GET)
     }
 
+    // Send GET message
     msg: [9]byte
     written := lib.encode_cmd_get(filter, msg[:])
     linux.send(socket_fd, msg[:written], {})
+
+    // Receive DATA response from daemon
+    resp_buf: [MAX_RECV_SIZE]u8
+    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    if recv_err != nil || bytes_read <= 0 {
+        fmt.eprintln("Error: no response from daemon for `get` command")
+        os.exit(1)
+    }
+
+    regs: [46]lib.Resp_Reg // buffer to store the response data
+    count: u8 // number of registers sent in response
+    status := lib.Resp_Status(resp_buf[0])
+    switch status {
+    case .OK:
+        fmt.eprintln("Error: unexpected OK response for `get` command, expected DATA")
+        os.exit(1)
+    case .ERROR:
+        err_msg := string(resp_buf[1:bytes_read])
+        fmt.eprintfln("Error: %v", err_msg)
+        os.exit(1)
+    case .DATA:
+        count = lib.decode_resp_data(resp_buf[1:bytes_read], &regs)
+    }
+
+    // At this point, we either have the data or have already errored and exited.
+    // Handle printing + formatting the received Resp_Reg entries.
+    switch format {
+    case .TABLE:
+        cmd_get_format_table(regs[:count])
+    case .JSON:
+        cmd_get_format_json(regs[:count])
+    case .RAW:
+        cmd_get_format_raw(regs[:count])
+    }
 }
 
 parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, err: Maybe(string)) {

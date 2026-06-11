@@ -162,4 +162,3 @@ test_encode_decode_resp_data :: proc(t: ^testing.T) {
         free_reg_entry(&dec_regs[i].entry)
     }
 }
-

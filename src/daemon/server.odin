@@ -8,14 +8,15 @@ import "core:sys/linux/uring"
 
 import "../lib"
 
+data_buf: [4096]u8
+sig_buf: [128]u8
+MAX_DATA_SIZE :: 65536 // 64 KiB
+
 Event :: enum u8 {
     ACCEPT,
     RECV,
     SIGNAL,
 }
-
-data_buf: [4096]u8
-sig_buf: [128]u8
 
 sigaddset :: proc(set: ^linux.Sig_Set, sig: linux.Signal) {
     set[0] |= 1 << (uint(sig) - 1)
@@ -59,7 +60,7 @@ cleanup_socket :: proc(socket_path: string, socket_fd: linux.Fd) {
     os.remove(socket_path)
 }
 
-handle_recv :: proc(bytes_read: int) -> (running: bool) {
+handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
     running = true
     msg_type := cast(lib.Command_Type)data_buf[0]
     switch msg_type {
@@ -72,11 +73,7 @@ handle_recv :: proc(bytes_read: int) -> (running: bool) {
         switch (source_kind) {
         case .REGISTER:
             source_reg := lib.Reg_Id(u8(data_buf[4]))
-            source, ok := get_reg(source_reg)
-            if !ok {
-                log.error("Invalid register: %v", source_reg)
-                break
-            }
+            source := get_reg(source_reg)
             if source == nil {
                 break
             }
@@ -101,6 +98,22 @@ handle_recv :: proc(bytes_read: int) -> (running: bool) {
         }
     case lib.Command_Type.GET:
         log.debugf("Got get message: %v", data_buf[:bytes_read])
+        filter := lib.decode_cmd_get(data_buf[1:bytes_read])
+        raw := transmute(u64)filter
+        log.debugf("Filter:")
+        log.debugf("\tClipboard: %010b", raw & 0x3FF)
+        log.debugf("\tNamed:     %026b", (raw >> 10) & 0x3FFFFFF)
+        log.debugf("\tPrimary:   %010b", (raw >> 36) & 0x3FF)
+
+        regs: [46]lib.Resp_Reg
+        reg_count, ok := get_registers(filter, &regs)
+        if !ok {
+            // error response
+        }
+
+        resp_buf: [MAX_DATA_SIZE]u8
+        resp_written := lib.encode_resp_data(regs[:reg_count], resp_buf[:])
+        linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.CLEAR:
         log.debugf("Got clear message: %v", data_buf[:bytes_read])
     case lib.Command_Type.SHUTDOWN:
@@ -114,7 +127,7 @@ handle_recv :: proc(bytes_read: int) -> (running: bool) {
 dispatch_cqe :: proc(cqe: linux.IO_Uring_CQE, ring: ^uring.Ring, socket_fd: linux.Fd) -> (running: bool) {
     running = true
 
-    switch cast(Event)cqe.user_data {
+    switch cast(Event)(cqe.user_data & 0xFF) {
     case .ACCEPT:
         if cqe.res < 0 {
             log.errorf("Client accept failed: %v", cqe.res)
@@ -122,12 +135,14 @@ dispatch_cqe :: proc(cqe: linux.IO_Uring_CQE, ring: ^uring.Ring, socket_fd: linu
         }
 
         client_fd := cast(linux.Fd)cqe.res
-        uring.recv(ring, u64(Event.RECV), client_fd, data_buf[:], {})
+        user_data := (u64(client_fd) << 8) | u64(Event.RECV)
+        uring.recv(ring, user_data, client_fd, data_buf[:], {})
         uring.accept(ring, u64(Event.ACCEPT), socket_fd, cast(^linux.Sock_Addr_Un)nil, nil, {.CLOEXEC})
     case .RECV:
+        client_fd := cast(linux.Fd)(cqe.user_data >> 8)
         bytes_read := int(cqe.res)
         if bytes_read > 0 {
-            running = handle_recv(bytes_read)
+            running = handle_recv(bytes_read, client_fd)
         }
     case .SIGNAL:
         running = false
