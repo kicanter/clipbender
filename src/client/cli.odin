@@ -104,7 +104,7 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
 }
 
 // destination register can be a lowercase/uppercase named register, `clipboard`, or `primary`
-parse_cmd_set_dest_reg :: proc(dest_arg: string) -> (dest: lib.Reg_Id, set_mode: lib.Set_Mode, ok: bool) {
+parse_cmd_set_dest_reg :: proc(dest_arg: string) -> (dest: lib.Reg_Id, set_mode: lib.Set_Mode, err: Maybe(string)) {
     if len(dest_arg) == 1 {     // single character register
         ch := dest_arg[0]
         if ch >= 'a' && ch <= 'z' {     // overwrite named reg
@@ -114,11 +114,7 @@ parse_cmd_set_dest_reg :: proc(dest_arg: string) -> (dest: lib.Reg_Id, set_mode:
             dest = lib.reg_id_from_named_index(ch - 'A')
             set_mode = .APPEND
         } else {
-            fmt.eprintfln(
-                "Error: destination register must be a-z, A-Z, `clipboard`, or `primary` (got `%v`)",
-                dest_arg,
-            )
-            return {}, {}, false
+            return {}, {}, fmt.tprintf("destination register must be a-z, A-Z, `clipboard`, or `primary` (got `%v`)", dest_arg)
         }
     } else if dest_arg == "clipboard" {     // clipboard selection
         dest = lib.SELECTION_CLIPBOARD
@@ -127,15 +123,14 @@ parse_cmd_set_dest_reg :: proc(dest_arg: string) -> (dest: lib.Reg_Id, set_mode:
         dest = lib.SELECTION_PRIMARY
         set_mode = .OVERWRITE
     } else {
-        fmt.eprintfln("Error: destination register must be a-z, A-Z, `clipboard`, or `primary` (got `%v`)", dest_arg)
-        return {}, {}, false
+        return {}, {}, fmt.tprintf("destination register must be a-z, A-Z, `clipboard`, or `primary` (got `%v`)", dest_arg)
     }
 
-    return dest, set_mode, true
+    return dest, set_mode, {}
 }
 
 // source register can be a lowercase named register, numbered register, `clipboard`, or `primary`
-parse_cmd_set_source_reg :: proc(source_arg: string) -> (source: lib.Reg_Id, ok: bool) {
+parse_cmd_set_source_reg :: proc(source_arg: string) -> (source: lib.Reg_Id, err: Maybe(string)) {
     if len(source_arg) == 1 {
         ch := source_arg[0]
         if ch >= 'a' && ch <= 'z' {     // lowercase named reg
@@ -143,36 +138,24 @@ parse_cmd_set_source_reg :: proc(source_arg: string) -> (source: lib.Reg_Id, ok:
         } else if ch >= '0' && ch <= '9' {     // clipboard numbered reg
             source = lib.reg_id_from_clipboard_index(ch - '0')
         } else {
-            fmt.eprintfln(
-                "Error: source register must be 0-9, a-z, @0-@9, `clipboard`, or `primary` (got `%v`)",
-                source_arg,
-            )
-            return {}, false
+            return {}, fmt.tprintf("source register must be 0-9, a-z, @0-@9, `clipboard`, or `primary` (got `%v`)", source_arg)
         }
     } else if len(source_arg) == 2 && source_arg[0] == '@' {     // primary numbered reg
         ch := source_arg[1]
         if ch >= '0' && ch <= '9' {
             source = lib.reg_id_from_primary_index(ch - '0')
         } else {
-            fmt.eprintfln(
-                "Error: source register must be 0-9, a-z, @0-@9, `clipboard`, or `primary` (got `%v`)",
-                source_arg,
-            )
-            return {}, false
+            return {}, fmt.tprintf("source register must be 0-9, a-z, @0-@9, `clipboard`, or `primary` (got `%v`)", source_arg)
         }
     } else if source_arg == "clipboard" {     // clipboard selection
         source = lib.SELECTION_CLIPBOARD
     } else if source_arg == "primary" {     // primary selection
         source = lib.SELECTION_PRIMARY
     } else {
-        fmt.eprintfln(
-            "Error: source register must be 0-9, a-z, @0-@9, `clipboard`, or `primary` (got `%v`)",
-            source_arg,
-        )
-        return {}, false
+        return {}, fmt.tprintf("source register must be 0-9, a-z, @0-@9, `clipboard`, or `primary` (got `%v`)", source_arg)
     }
 
-    return source, true
+    return source, {}
 }
 
 parse_cmd_set_reg :: proc(
@@ -182,19 +165,19 @@ parse_cmd_set_reg :: proc(
     dest: lib.Reg_Id,
     set_mode: lib.Set_Mode,
     source: lib.Reg_Id,
-    ok: bool,
+    err: Maybe(string),
 ) {
-    dest, set_mode, ok = parse_cmd_set_dest_reg(dest_arg)
-    if !ok {
-        return {}, {}, {}, false
+    dest, set_mode, err = parse_cmd_set_dest_reg(dest_arg)
+    if err != nil {
+        return {}, {}, {}, err
     }
 
-    source, ok = parse_cmd_set_source_reg(source_arg)
-    if !ok {
-        return {}, {}, {}, false
+    source, err = parse_cmd_set_source_reg(source_arg)
+    if err != nil {
+        return {}, {}, {}, err
     }
 
-    return dest, set_mode, source, true
+    return dest, set_mode, source, {}
 }
 
 parse_cmd_set_inline :: proc(
@@ -205,39 +188,38 @@ parse_cmd_set_inline :: proc(
     set_mode: lib.Set_Mode,
     mime: string,
     data: []byte,
-    ok: bool,
+    err: Maybe(string),
 ) {
-    dest, set_mode, ok = parse_cmd_set_dest_reg(dest_arg)
-    if !ok {
-        return {}, {}, {}, {}, false
+    dest, set_mode, err = parse_cmd_set_dest_reg(dest_arg)
+    if err != nil {
+        return {}, {}, {}, {}, err
     }
 
     // get data from stdin
     mime = "text/plain" // TODO: add resolve_mime() to introspect mime based on magic bytes
-    err: os.Error
-    data, err = os.read_entire_file(stdin, context.allocator)
-    if err != nil {
-        fmt.eprintfln("Error reading stdin: %v", err)
-        return {}, {}, {}, {}, false
+    os_err: os.Error
+    data, os_err = os.read_entire_file(stdin, context.allocator)
+    if os_err != nil {
+        return {}, {}, {}, {}, fmt.tprintf("could not read stdin: %v", os_err)
     }
-    return dest, set_mode, mime, data, true
+    return dest, set_mode, mime, data, {}
 }
 
 // `args` includes everything after the `clipbender set` subcommand
 cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
     if len(args) == 2 {     // source reg was passed as an arg by client
-        dest_reg, set_mode, source_reg, ok := parse_cmd_set_reg(args[0], args[1])
-        if !ok {
+        dest_reg, set_mode, source_reg, err := parse_cmd_set_reg(args[0], args[1])
+        if err != nil {
+            fmt.eprintfln("Error: %v", err.?)
             print_cmd_usage_and_exit(.SET)
         }
         msg: [5]byte // SET with source reg is 5-byte message
         written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
-        log.debug("Sending set message: %v", msg[:])
         linux.send(socket_fd, msg[:written], {})
-        // 0, 10, 0, 0, 11
     } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is passed inline by client
-        dest, set_mode, mime, data, ok := parse_cmd_set_inline(args[0], os.stdin)
-        if !ok {
+        dest, set_mode, mime, data, err := parse_cmd_set_inline(args[0], os.stdin)
+        if err != nil {
+            fmt.eprintfln("Error: %v", err.?)
             print_cmd_usage_and_exit(.SET)
         }
         msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
@@ -266,7 +248,7 @@ parse_cmd_get_reg_group :: proc(
 ) {
     for ch in transmute([]byte)arg {
         if ch < lo || ch > hi {
-            return fmt.tprintf("invalid character `%v` in register group", rune(ch))
+            return fmt.tprintf("invalid character in register group (got `%c`)", rune(ch))
         }
         mask^ += {int(ch - lo) + offset}
     }
@@ -333,7 +315,7 @@ parse_cmd_get_registers :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err:
         }
         return parse_cmd_get_reg_group(mask, body, offset, 'a', 'z')
     case:
-        return fmt.tprintf("invalid register arg `%v`", body)
+        return fmt.tprintf("invalid register (got `%v`)", body)
     }
 }
 
@@ -395,7 +377,7 @@ parse_cmd_get :: proc(
         }
 
         if len(arg) == 1 {
-            return {}, {}, "invalid `get` command arg"
+            return {}, {}, "incomplete token"
         }
 
         switch arg[0] {     // every arg must start with one of the prefix tokens
@@ -440,7 +422,7 @@ cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
 
     filter, format, err := parse_cmd_get(args)
     if err != nil {
-        fmt.printfln("Error: %v\n", err.?)
+        fmt.eprintfln("Error: %v", err.?)
         print_cmd_usage_and_exit(.GET)
     }
 
@@ -449,17 +431,15 @@ cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
     linux.send(socket_fd, msg[:written], {})
 }
 
-parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, ok: bool) {
+parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, err: Maybe(string)) {
     if len(reg_arg) == 1 {     // single character register (named)
         ch := reg_arg[0]
-        if ch < 'a' || ch > 'z' {     // not a named register
-            fmt.eprintfln("Error: must use a named register (got `%v`)", ch)
-            return {}, false
+        if ch < 'a' || ch > 'z' {
+            return {}, fmt.tprintf("register must be a-z (got `%v`)", reg_arg)
         }
-        return lib.reg_id_from_named_index(ch - 'a'), true
+        return lib.reg_id_from_named_index(ch - 'a'), {}
     }
-    fmt.eprintfln("Error: must use a named register (got `%v`)", reg_arg)
-    return {}, false
+    return {}, fmt.tprintf("register must be a-z (got `%v`)", reg_arg)
 }
 
 // `args` includes everything after the `clipbender clear` subcommand
@@ -468,8 +448,9 @@ cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
         print_cmd_usage_and_exit(.CLEAR)
     }
 
-    reg_id, ok := parse_cmd_clear(args[0])
-    if !ok {
+    reg_id, err := parse_cmd_clear(args[0])
+    if err != nil {
+        fmt.eprintfln("Error: %v", err.?)
         print_cmd_usage_and_exit(.CLEAR)
     }
 
