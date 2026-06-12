@@ -69,23 +69,23 @@ get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
 
 get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (count: u8, ok: bool) {
     // TODO: Temporary for testing
-    free_ring(&clipboard_registers)
-    free_ring(&primary_registers)
-    for &entry in named_registers {
-        lib.free_reg_entry(&entry)
-    }
-    named_registers = {}
-    push_recency_reg(&clipboard_registers, transmute([]u8)string("https://github.com/odin-lang/Odin"), "text/uri-list")
-    push_recency_reg(&clipboard_registers, transmute([]u8)string("fn main() { println!(\"hello\"); }"), "text/plain")
-    push_recency_reg(&clipboard_registers, transmute([]u8)string("<div class=\"container\">content</div>"), "text/html")
-    push_recency_reg(&clipboard_registers, transmute([]u8)string("short"), "text/plain")
-    push_recency_reg(&primary_registers, transmute([]u8)string("selected text from browser"), "text/plain")
-    push_recency_reg(&primary_registers, transmute([]u8)string("{\"key\": \"value\", \"num\": 42}"), "application/json")
-    push_recency_reg(&primary_registers, transmute([]u8)string("another primary selection that is longer than the content column width for testing truncation"), "text/plain")
-    push_recency_reg(&primary_registers, transmute([]u8)string("/home/user/.config/clipbender/config"), "text/plain")
-    set_named_reg(.OVERWRITE, lib.Reg_Id(lib.NAMED_START + 3), transmute([]u8)string("persistent snippet stored in register d"), "text/plain")
-    set_named_reg(.OVERWRITE, lib.Reg_Id(lib.NAMED_START + 5), transmute([]u8)string("git@github.com:user/repo.git"), "text/plain")
-    set_named_reg(.OVERWRITE, lib.Reg_Id(lib.NAMED_END - 2), transmute([]u8)string("<p>some html content</p>"), "text/html")
+    // free_ring(&clipboard_registers)
+    // free_ring(&primary_registers)
+    // for &entry in named_registers {
+    //     lib.free_reg_entry(&entry)
+    // }
+    // named_registers = {}
+    // push_recency_reg(&clipboard_registers, transmute([]u8)string("https://github.com/odin-lang/Odin"), "text/uri-list")
+    // push_recency_reg(&clipboard_registers, transmute([]u8)string("fn main() { println!(\"hello\"); }"), "text/plain")
+    // push_recency_reg(&clipboard_registers, transmute([]u8)string("<div class=\"container\">content</div>"), "text/html")
+    // push_recency_reg(&clipboard_registers, transmute([]u8)string("short"), "text/plain")
+    // push_recency_reg(&primary_registers, transmute([]u8)string("selected text from browser"), "text/plain")
+    // push_recency_reg(&primary_registers, transmute([]u8)string("{\"key\": \"value\", \"num\": 42}"), "application/json")
+    // push_recency_reg(&primary_registers, transmute([]u8)string("another primary selection that is longer than the content column width for testing truncation"), "text/plain")
+    // push_recency_reg(&primary_registers, transmute([]u8)string("/home/user/.config/clipbender/config"), "text/plain")
+    // set_named_reg(.OVERWRITE, lib.Reg_Id(lib.NAMED_START + 3), transmute([]u8)string("persistent snippet stored in register d"), "text/plain")
+    // set_named_reg(.OVERWRITE, lib.Reg_Id(lib.NAMED_START + 5), transmute([]u8)string("git@github.com:user/repo.git"), "text/plain")
+    // set_named_reg(.OVERWRITE, lib.Reg_Id(lib.NAMED_END - 2), transmute([]u8)string("<p>some html content</p>"), "text/html")
 
     count = 0
     for bit in filter & lib.CMD_GET_FILTER_CLIPBOARD {

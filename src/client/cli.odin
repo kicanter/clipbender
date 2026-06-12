@@ -446,7 +446,7 @@ truncate_content :: proc(content: string) -> string {
     return fmt.tprintf("%s...", content[:CONTENT_COL_WIDTH - 3])
 }
 
-// Return `regs` register entries formatted as an ascii table.
+// Print `regs` register entries formatted as an ascii table.
 cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
     table_top := "┌──────────┬─────────────────────┬──────────────────┬──────────────────────────────────────────┐"
     table_sep := "├──────────┼─────────────────────┼──────────────────┼──────────────────────────────────────────┤"
@@ -457,12 +457,14 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
     )
     if len(regs) == 0 {
         fmt.println(
-            "├──────────┴─────────────────────┴──────────────────┴─────────────────────────────────────────┤",
+            "├──────────┴─────────────────────┴──────────────────┴──────────────────────────────────────────┤",
         )
         fmt.println(
-            "│                                   No registers requested                                    │",
+            "│                                   No registers to display                                    │",
         )
-        fmt.println(table_bot)
+        fmt.println(
+            "└──────────────────────────────────────────────────────────────────────────────────────────────┘",
+        )
         return
     }
 
@@ -472,7 +474,7 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
     print_sep := false
     i := 0
 
-    // Clipboard registers (contiguous from start)
+    // Clipboard registers
     for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
         id := lib.reg_id_to_clipboard_index(regs[i].id)
         entry := regs[i].entry
@@ -491,7 +493,7 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
     for ; i < len(regs) && lib.reg_id_is_named(regs[i].id); i += 1 {}
     primary_start := i
 
-    // Primary registers (contiguous after named)
+    // Primary registers
     for ; i < len(regs) && lib.reg_id_is_primary_num(regs[i].id); i += 1 {
         if print_sep && i == primary_start {
             fmt.println(table_sep)
@@ -508,7 +510,7 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
         print_sep = true
     }
 
-    // Named registers (go back and print)
+    // Named registers
     for j := named_start; j < primary_start; j += 1 {
         if print_sep && j == named_start {
             fmt.println(table_sep)
@@ -528,33 +530,98 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
     fmt.println(table_bot)
 }
 
-// Return `regs` register entries formatted as json.
-cmd_get_format_json :: proc(regs: []lib.Resp_Reg) -> string {
-    return {}
+json_escape_string :: proc(str: string) -> string {
+    escaped := strings.builder_make(context.temp_allocator)
+    for ch in str {
+        switch ch {
+        case '"':
+            strings.write_string(&escaped, `\"`)
+        case '\\':
+            strings.write_string(&escaped, `\\`)
+        case '\n':
+            strings.write_string(&escaped, `\n`)
+        case '\t':
+            strings.write_string(&escaped, `\t`)
+        case '\r':
+            strings.write_string(&escaped, `\r`)
+        case:
+            strings.write_rune(&escaped, ch)
+        }
+    }
+    return strings.to_string(escaped)
 }
 
-// Return just the raw content from `regs` register entries (newline-delimited).
+print_json_entry :: proc(reg: lib.Resp_Reg, id_str: string, printed: ^bool) {
+    if printed^ {fmt.print(", ")}
+    fmt.printf(
+        `{{"reg": "%s", "time": "%d", "mime": "%s", "content": "%s"}}`,
+        id_str,
+        reg.entry.timestamp,
+        json_escape_string(reg.entry.mime_type),
+        json_escape_string(string(reg.entry.data)),
+    )
+    printed^ = true
+}
+
+// Print `regs` register entries formatted as json.
+cmd_get_format_json :: proc(regs: []lib.Resp_Reg) {
+    printed := false
+    i := 0
+
+    fmt.print("[")
+    // Clipboard registers
+    for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
+        id := fmt.tprintf("%d", lib.reg_id_to_clipboard_index(regs[i].id))
+        print_json_entry(regs[i], id, &printed)
+    }
+
+    // Skip named to find primary
+    named_start := i
+    for ; i < len(regs) && lib.reg_id_is_named(regs[i].id); i += 1 {}
+    primary_start := i
+
+    // Primary registers
+    for ; i < len(regs) && lib.reg_id_is_primary_num(regs[i].id); i += 1 {
+        id := fmt.tprintf("@%d", lib.reg_id_to_primary_index(regs[i].id))
+        print_json_entry(regs[i], id, &printed)
+    }
+
+    // Named registers
+    for j := named_start; j < primary_start; j += 1 {
+        id := fmt.tprintf("%c", rune(lib.reg_id_to_named_index(regs[j].id) + 'a'))
+        print_json_entry(regs[j], id, &printed)
+    }
+    fmt.print("]\n")
+}
+
+// Print just the raw content from `regs` register entries (newline-delimited).
 cmd_get_format_raw :: proc(regs: []lib.Resp_Reg) {
     printed := false
-    // Clipboard
-    for &reg in regs {
-        if !lib.reg_id_is_clipboard_num(reg.id) {continue}
+    i := 0
+
+    // Clipboard registers
+    for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
         if printed {fmt.print("\n")}
-        fmt.print(string(reg.entry.data))
+        fmt.print(string(regs[i].entry.data))
         printed = true
     }
-    // Primary
-    for &reg in regs {
-        if !lib.reg_id_is_primary_num(reg.id) {continue}
+
+    // Skip named to find primary
+    named_start := i
+    for ; i < len(regs) && lib.reg_id_is_named(regs[i].id); i += 1 {}
+    primary_start := i
+
+    // Primary registers
+    for ; i < len(regs) && lib.reg_id_is_primary_num(regs[i].id); i += 1 {
         if printed {fmt.print("\n")}
-        fmt.print(string(reg.entry.data))
+        fmt.print(string(regs[i].entry.data))
         printed = true
     }
-    // Named
-    for &reg in regs {
-        if !lib.reg_id_is_named(reg.id) {continue}
+
+    // Named registers
+    for j := named_start; j < primary_start; j += 1 {
         if printed {fmt.print("\n")}
-        fmt.print(string(reg.entry.data))
+        fmt.print(string(regs[j].entry.data))
         printed = true
     }
 }
