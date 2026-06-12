@@ -438,12 +438,26 @@ format_unix_timestamp :: proc(timestamp: i64, buf: ^[19]u8) -> string {
 }
 
 CONTENT_COL_WIDTH :: 40 // How much of the content to show total including truncation
-// Truncate string to fit column width, appending "..." if truncated
+// Sanitize control characters and truncate string to fit column width, appending "..." if truncated
 truncate_content :: proc(content: string) -> string {
-    if len(content) <= CONTENT_COL_WIDTH {
-        return content
+    escaped := strings.builder_make(context.temp_allocator)
+    for ch in content {
+        switch ch {
+        case '\n':
+            strings.write_string(&escaped, `\n`)
+        case '\t':
+            strings.write_string(&escaped, `\t`)
+        case '\r':
+            strings.write_string(&escaped, `\r`)
+        case:
+            strings.write_rune(&escaped, ch)
+        }
     }
-    return fmt.tprintf("%s...", content[:CONTENT_COL_WIDTH - 3])
+    cleaned := strings.to_string(escaped)
+    if len(cleaned) <= CONTENT_COL_WIDTH {
+        return cleaned
+    }
+    return fmt.tprintf("%s...", cleaned[:CONTENT_COL_WIDTH - 3])
 }
 
 // Print `regs` register entries formatted as an ascii table.
@@ -476,11 +490,10 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
 
     // Clipboard registers
     for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
-        id := lib.reg_id_to_clipboard_index(regs[i].id)
         entry := regs[i].entry
         fmt.printfln(
-            "│ % 8d │ % -10s │ % -16s │ % -40s │",
-            id,
+            "│ % 8s │ % -10s │ % -16s │ % -40s │",
+            lib.reg_id_to_string(regs[i].id),
             format_unix_timestamp(entry.timestamp, &ts_buf),
             entry.mime_type,
             truncate_content(string(entry.data)),
@@ -498,11 +511,10 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
         if print_sep && i == primary_start {
             fmt.println(table_sep)
         }
-        id := lib.reg_id_to_primary_index(regs[i].id)
         entry := regs[i].entry
         fmt.printfln(
             "│ % 8s │ % -10s │ % -16s │ % -40s │",
-            fmt.tprintf("@%d", id), // format before the printfln to include `@` directly next to reg num
+            lib.reg_id_to_string(regs[i].id),
             format_unix_timestamp(entry.timestamp, &ts_buf),
             entry.mime_type,
             truncate_content(string(entry.data)),
@@ -515,11 +527,10 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
         if print_sep && j == named_start {
             fmt.println(table_sep)
         }
-        id := lib.reg_id_to_named_index(regs[j].id) + 'a'
         entry := regs[j].entry
         fmt.printfln(
             "│ % 8s │ % -10s │ % -16s │ % -40s │",
-            fmt.tprintf("%c", id), // format before the printfln to space-pad named reg character
+            lib.reg_id_to_string(regs[j].id),
             format_unix_timestamp(entry.timestamp, &ts_buf),
             entry.mime_type,
             truncate_content(string(entry.data)),
@@ -571,8 +582,7 @@ cmd_get_format_json :: proc(regs: []lib.Resp_Reg) {
     fmt.print("[")
     // Clipboard registers
     for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
-        id := fmt.tprintf("%d", lib.reg_id_to_clipboard_index(regs[i].id))
-        print_json_entry(regs[i], id, &printed)
+        print_json_entry(regs[i], lib.reg_id_to_string(regs[i].id), &printed)
     }
 
     // Skip named to find primary
@@ -582,14 +592,12 @@ cmd_get_format_json :: proc(regs: []lib.Resp_Reg) {
 
     // Primary registers
     for ; i < len(regs) && lib.reg_id_is_primary_num(regs[i].id); i += 1 {
-        id := fmt.tprintf("@%d", lib.reg_id_to_primary_index(regs[i].id))
-        print_json_entry(regs[i], id, &printed)
+        print_json_entry(regs[i], lib.reg_id_to_string(regs[i].id), &printed)
     }
 
     // Named registers
     for j := named_start; j < primary_start; j += 1 {
-        id := fmt.tprintf("%c", rune(lib.reg_id_to_named_index(regs[j].id) + 'a'))
-        print_json_entry(regs[j], id, &printed)
+        print_json_entry(regs[j], lib.reg_id_to_string(regs[j].id), &printed)
     }
     fmt.print("]\n")
 }

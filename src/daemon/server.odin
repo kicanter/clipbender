@@ -78,6 +78,16 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
                 break
             }
 
+            log.debug("REGISTER:")
+            log.debugf("\tSource Reg: `%s`", lib.reg_id_to_string(source_reg))
+            log.debugf("\tContent: `%s`", string(source.data))
+            log.debugf("\tMime: `%s`", source.mime_type)
+            log.debugf(
+                "\tDestination Reg: %s `%s`",
+                "OVERWRITE" if set_mode == .OVERWRITE else "APPEND",
+                lib.reg_id_to_string(dest_reg),
+            )
+
             // Destination register must be either named register or SELECTION_CLIPBOARD/PRIMARY
             if lib.reg_id_is_named(dest_reg) {
                 set_named_reg(set_mode, dest_reg, source.data, source.mime_type)
@@ -88,6 +98,16 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
             }
         case .INLINE:
             mime, data := lib.decode_cmd_set_inline(data_buf[4:bytes_read])
+
+            log.debug("INLINE:")
+            log.debugf("\tContent: `%s`", string(data))
+            log.debugf("\tMime: `%s`", mime)
+            log.debugf(
+                "\tDestination Reg: %s `%s`",
+                "OVERWRITE" if set_mode == .OVERWRITE else "APPEND",
+                lib.reg_id_to_string(dest_reg),
+            )
+
             if lib.reg_id_is_named(dest_reg) {
                 set_named_reg(set_mode, dest_reg, data, mime)
             } else if lib.reg_id_is_selection(dest_reg) {
@@ -100,7 +120,7 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
         log.debugf("Got get message: %v", data_buf[:bytes_read])
         filter := lib.decode_cmd_get(data_buf[1:bytes_read])
         raw := transmute(u64)filter
-        log.debugf("Filter:")
+        log.debug("Filter:")
         log.debugf("\tClipboard: %010b", raw & 0x3FF)
         log.debugf("\tNamed:     %026b", (raw >> 10) & 0x3FFFFFF)
         log.debugf("\tPrimary:   %010b", (raw >> 36) & 0x3FF)

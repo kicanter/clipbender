@@ -72,6 +72,21 @@ reg_id_to_primary_index :: proc(id: Reg_Id) -> u8 {
     return u8(id - PRIMARY_START)
 }
 
+reg_id_to_string :: proc(id: Reg_Id) -> string {
+    if reg_id_is_clipboard_num(id) {
+        return fmt.tprintf("%d", reg_id_to_clipboard_index(id))
+    } else if reg_id_is_primary_num(id) {
+        return fmt.tprintf("@%d", reg_id_to_primary_index(id))
+    } else if reg_id_is_named(id) {
+        return fmt.tprintf("%c", rune(reg_id_to_named_index(id) + 'a'))
+    } else if id == SELECTION_CLIPBOARD {
+        return "clipboard"
+    } else if id == SELECTION_PRIMARY {
+        return "primary"
+    }
+    return "unknown reg id"
+}
+
 // Protocol/IPC
 SOCKET_PATH_SUFFIX :: "clipbender.sock"
 clipbender_socket_path :: proc() -> string {
