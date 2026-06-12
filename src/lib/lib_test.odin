@@ -162,3 +162,31 @@ test_encode_decode_resp_data :: proc(t: ^testing.T) {
         free_reg_entry(&dec_regs[i].entry)
     }
 }
+
+@(test)
+test_reg_id_to_string :: proc(t: ^testing.T) {
+    testing.expect_value(t, reg_id_to_string(reg_id_from_clipboard_index(0)), "0")
+    testing.expect_value(t, reg_id_to_string(reg_id_from_clipboard_index(9)), "9")
+    testing.expect_value(t, reg_id_to_string(reg_id_from_named_index(0)), "a")
+    testing.expect_value(t, reg_id_to_string(reg_id_from_named_index(25)), "z")
+    testing.expect_value(t, reg_id_to_string(reg_id_from_primary_index(0)), "@0")
+    testing.expect_value(t, reg_id_to_string(reg_id_from_primary_index(9)), "@9")
+    testing.expect_value(t, reg_id_to_string(SELECTION_CLIPBOARD), "clipboard")
+    testing.expect_value(t, reg_id_to_string(SELECTION_PRIMARY), "primary")
+}
+
+@(test)
+test_encode_cmd_set_reg_append :: proc(t: ^testing.T) {
+    buf: [64]byte
+    dest := reg_id_from_named_index(3)
+    source := reg_id_from_clipboard_index(0)
+    mode := Set_Mode.APPEND
+
+    n := encode_cmd_set_reg(dest, source, mode, buf[:])
+    testing.expect_value(t, n, 5)
+    testing.expect_value(t, Command_Type(buf[0]), Command_Type.SET)
+    testing.expect_value(t, Reg_Id(buf[1]), dest)
+    testing.expect_value(t, Set_Mode(buf[2]), mode)
+    testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.REGISTER)
+    testing.expect_value(t, Reg_Id(buf[4]), source)
+}
