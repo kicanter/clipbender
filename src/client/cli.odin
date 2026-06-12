@@ -15,29 +15,29 @@ print_usage_and_exit :: proc() {
     fmt.eprintln(
         "Usage: clipbender [command] \n\n" +
         "Commands:\n" +
-        "\t(none)                             Launch the clipbender GUI\n" +
-        "\tset <dest-reg> [source-reg]        Set the `dest-reg` with the content from `source-reg` or stdin.\n" +
-        "\tget <filter...> [=json|=raw]       Retrieve the content, mime type, and timestamp of the registers matching `filter`.\n" +
-        "\tclear <reg-id>                     Clear the data stored in register `reg-id`.\n" +
-        "\tshutdown                           Shutdown the `clipbenderd` daemon.\n\n" +
+        "\t(none)                               Launch the clipbender GUI\n" +
+        "\tset <dest-reg> [source-reg]          Set the `dest-reg` with the content from `source-reg` or stdin.\n" +
+        "\tget <filter...> [fmt=<json|raw>]     Retrieve the content, mime type, and timestamp of the registers matching `filter`.\n" +
+        "\tclear <reg-id>                       Clear the data stored in register `reg-id`.\n" +
+        "\tshutdown                             Shutdown the `clipbenderd` daemon.\n\n" +
         "Examples:\n" +
-        "\tclipbender                         Open GUI popup.\n" +
-        "\tclipbender shutdown                Stop daemon.\n" +
-        "\tclipbender set a clipboard         Set register `a` from system clipboard selection.\n" +
-        "\tclipbender set clipboard 1         Set system clipboard selection from clipboard register `1`.\n" +
-        "\tclipbender set a primary           Set register `a` from system primary selection.\n" +
-        "\tclipbender set A clipboard         Append system clipboard selection to register `a`.\n" +
-        "\tclipbender set primary @5          Set system primary selection from primary register `5`.\n" +
-        "\t<cmd> | clipbender set a           Set register `a` from stdin pipe.\n" +
-        "\tclipbender set a < <file>          Set register `a` from stdin redirection.\n" +
-        "\tclipbender clear a                 Clear register `a`.\n" +
-        "\tclipbender get ++all               Print all registers.\n" +
-        "\tclipbender get ++named -adz        Print named registers except `a`, `d`, `z`.\n" +
-        "\tclipbender get +@012 +012          Print the first three numbered registers from primary and clipboard.\n" +
-        "\tclipbender get +0:5 +@0:3          Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
-        "\tclipbender get ++clipboard =json   Print clipboard registers as structured JSON.\n" +
-        "\tclipbender get +a =raw | wl-copy   Pipe only the contents of register `a` and pipe into wl-copy.\n" +
-        "\tclipbender get +a =raw > <file>    Redirect the contents of register `a` to `file`.\n",
+        "\tclipbender                           Open GUI popup.\n" +
+        "\tclipbender shutdown                  Stop daemon.\n" +
+        "\tclipbender set a clipboard           Set register `a` from system clipboard selection.\n" +
+        "\tclipbender set clipboard 1           Set system clipboard selection from clipboard register `1`.\n" +
+        "\tclipbender set a primary             Set register `a` from system primary selection.\n" +
+        "\tclipbender set A clipboard           Append system clipboard selection to register `a`.\n" +
+        "\tclipbender set primary @5            Set system primary selection from primary register `5`.\n" +
+        "\t<cmd> | clipbender set a             Set register `a` from stdin pipe.\n" +
+        "\tclipbender set a < <file>            Set register `a` from stdin redirection.\n" +
+        "\tclipbender clear a                   Clear register `a`.\n" +
+        "\tclipbender get ++all                 Print all registers.\n" +
+        "\tclipbender get ++named -adz          Print named registers except `a`, `d`, `z`.\n" +
+        "\tclipbender get +@012 +012            Print the first three numbered registers from primary and clipboard.\n" +
+        "\tclipbender get +0:5 +@0:3            Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
+        "\tclipbender get ++clipboard fmt=json  Print clipboard registers as structured JSON.\n" +
+        "\tclipbender get +a fmt=raw | wl-copy  Pipe only the contents of register `a` and pipe into wl-copy.\n" +
+        "\tclipbender get +a fmt=raw > <file>   Redirect the contents of register `a` to `file`.\n",
     )
     os.exit(1)
 }
@@ -67,9 +67,9 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
         )
     case .GET:
         fmt.eprintln(
-            "Usage: clipbender get <filter...> [=json|=raw]\n\n" +
-            "Retrieve the content, mime type, and timestamp of the registers matching `filter`. Use the `=json` flag\n" +
-            "to output the data as structured JSON and the `=raw` flag to output just the contents of the registers\n" +
+            "Usage: clipbender get <filter...> [fmt=<json|raw>]\n\n" +
+            "Retrieve the content, mime type, and timestamp of the registers matching `filter`. Use the `fmt=json` flag\n" +
+            "to output the data as structured JSON and the `fmt=raw` flag to output just the contents of the registers\n" +
             "in newline-delimited byte arrays.\n\n" +
             "Filter tokens:\n" +
             "\t++all, ++clipboard, ++named, ++primary, ++numbered   Include category\n" +
@@ -79,13 +79,13 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
             "\t+0:5, +a:f, +@0:5                                    Include range\n" +
             "\t-0:5, -a:f, -@0:5                                    Exclude range\n\n" +
             "Examples:\n" +
-            "\tclipbender get ++all               Print all registers.\n" +
-            "\tclipbender get ++named -adz        Print named registers except `a`, `d`, `z`.\n" +
-            "\tclipbender get +@012 +012          Print the first three numbered registers from primary and clipboard.\n" +
-            "\tclipbender get +0:5 +@0:3          Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
-            "\tclipbender get ++clipboard =json   Print clipboard registers as structured JSON.\n" +
-            "\tclipbender get +a =raw | wl-copy   Pipe only the contents of register `a` and pipe into wl-copy.\n" +
-            "\tclipbender get +a =raw > <file>    Redirect the contents of register `a` to `file`.\n",
+            "\tclipbender get ++all                  Print all registers.\n" +
+            "\tclipbender get ++named -adz           Print named registers except `a`, `d`, `z`.\n" +
+            "\tclipbender get +@012 +012             Print the first three numbered registers from primary and clipboard.\n" +
+            "\tclipbender get +0:5 +@0:3             Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
+            "\tclipbender get ++clipboard fmt=json   Print clipboard registers as structured JSON.\n" +
+            "\tclipbender get +a fmt=raw | wl-copy   Pipe only the contents of register `a` and pipe into wl-copy.\n" +
+            "\tclipbender get +a fmt=raw > <file>    Redirect the contents of register `a` to `file`.\n",
         )
     case .CLEAR:
         fmt.eprintln(
@@ -362,7 +362,7 @@ parse_cmd_get_keyword :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err: M
 // Named). A Primary Numbered group is denoted by a single `@` following the prefix token e.g. `+@015`.
 // * Ranges of registers may be denoted with a `:` delimiting two ends of an inclusive range following a prefix token
 // within the same "kind" (Clipboard Numbered, Primary Numbered, or Named) e.g. `+d:g`.
-// * Two flags are available and are prefixed by `=`: `=json` and `=raw` (changes output format).
+// * One format flags is available and is prefixed by `fmt=`: `fmt=json` and `fmt=raw` (changes output format).
 parse_cmd_get :: proc(
     filter_args: []string,
 ) -> (
@@ -396,18 +396,30 @@ parse_cmd_get :: proc(
             } else {     // otherwise treat it as a register group
                 err = parse_cmd_get_registers(&excl, arg[1:])
             }
-        case '=':
-            // output format flag is one of `=json` or `=raw`, do not allow more than one format flag
-            if format != .TABLE {return {}, {}, "you may only specify one format flag"}
-            if arg[1:] == "json" {
-                format = .JSON
-            } else if arg[1:] == "raw" {
-                format = .RAW
-            } else {
-                return {}, {}, "invalid format flag, you probably meant `=json` or `=raw`"
+        case 'a' ..= 'z':
+            // key=value flags (e.g. fmt=json, fmt=raw)
+            eq_idx := strings.index_byte(arg, '=')
+            if eq_idx < 0 {
+                return {}, {}, fmt.tprintf("invalid arg, expected key=value flag (got `%v`)", arg)
+            }
+            key := arg[:eq_idx]
+            value := arg[eq_idx + 1:]
+            switch key {
+            case "fmt":
+                if format != .TABLE {return {}, {}, "you may only specify one format flag"}
+                switch value {
+                case "json":
+                    format = .JSON
+                case "raw":
+                    format = .RAW
+                case:
+                    return {}, {}, fmt.tprintf("invalid format value, expected `json` or `raw` (got `%v`)", value)
+                }
+            case:
+                return {}, {}, fmt.tprintf("unknown flag `%v`", key)
             }
         case:
-            return {}, {}, "invalid prefix, each arg should start with one of `+`, `-`, `=`"
+            return {}, {}, fmt.tprintf("invalid arg, each arg should start with `+`, `-`, or be a key=value flag (got `%v`)", arg)
         }
 
         if err != nil {return {}, {}, err}
@@ -425,8 +437,7 @@ format_unix_timestamp :: proc(timestamp: i64, buf: ^[19]u8) -> string {
     return fmt.bprintf(buf[:], "%04d-%02d-%02d %02d:%02d:%02d", y, int(m), d, h, min, s)
 }
 
-CONTENT_COL_WIDTH :: 40
-
+CONTENT_COL_WIDTH :: 40 // How much of the content to show total including truncation
 // Truncate string to fit column width, appending "..." if truncated
 truncate_content :: proc(content: string) -> string {
     if len(content) <= CONTENT_COL_WIDTH {
@@ -441,12 +452,16 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
     table_sep := "├──────────┼─────────────────────┼──────────────────┼──────────────────────────────────────────┤"
     table_bot := "└──────────┴─────────────────────┴──────────────────┴──────────────────────────────────────────┘"
     fmt.println(table_top)
-    fmt.println("│ Register │ Timestamp           │ Mime Type        │ Content                                  │")
+    fmt.println(
+        "│ Register │ Timestamp           │ Mime Type        │ Content                                  │",
+    )
     if len(regs) == 0 {
         fmt.println(
             "├──────────┴─────────────────────┴──────────────────┴─────────────────────────────────────────┤",
         )
-        fmt.println("│                                   No registers requested                                    │")
+        fmt.println(
+            "│                                   No registers requested                                    │",
+        )
         fmt.println(table_bot)
         return
     }
@@ -519,8 +534,29 @@ cmd_get_format_json :: proc(regs: []lib.Resp_Reg) -> string {
 }
 
 // Return just the raw content from `regs` register entries (newline-delimited).
-cmd_get_format_raw :: proc(regs: []lib.Resp_Reg) -> string {
-    return {}
+cmd_get_format_raw :: proc(regs: []lib.Resp_Reg) {
+    printed := false
+    // Clipboard
+    for &reg in regs {
+        if !lib.reg_id_is_clipboard_num(reg.id) {continue}
+        if printed {fmt.print("\n")}
+        fmt.print(string(reg.entry.data))
+        printed = true
+    }
+    // Primary
+    for &reg in regs {
+        if !lib.reg_id_is_primary_num(reg.id) {continue}
+        if printed {fmt.print("\n")}
+        fmt.print(string(reg.entry.data))
+        printed = true
+    }
+    // Named
+    for &reg in regs {
+        if !lib.reg_id_is_named(reg.id) {continue}
+        if printed {fmt.print("\n")}
+        fmt.print(string(reg.entry.data))
+        printed = true
+    }
 }
 
 // `args` includes everything after the `clipbender get` subcommand.
@@ -565,6 +601,7 @@ cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
 
     // At this point, we either have the data or have already errored and exited.
     // Handle printing + formatting the received Resp_Reg entries.
+    // Output order: clipboard, primary, named.
     switch format {
     case .TABLE:
         cmd_get_format_table(regs[:count])
