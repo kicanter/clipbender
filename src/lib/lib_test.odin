@@ -1,7 +1,6 @@
 package lib
 
 import "core:slice"
-import "core:strings"
 import "core:testing"
 
 @(test)

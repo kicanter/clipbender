@@ -1,6 +1,5 @@
 package main
 
-import "core:log"
 import "core:slice"
 import "core:strings"
 import "core:time"
