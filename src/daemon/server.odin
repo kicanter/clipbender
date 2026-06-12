@@ -62,60 +62,64 @@ cleanup_socket :: proc(socket_path: string, socket_fd: linux.Fd) {
 
 handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
     running = true
+    resp_buf: [MAX_DATA_SIZE]u8
     msg_type := cast(lib.Command_Type)data_buf[0]
+
     switch msg_type {
     case lib.Command_Type.SET:
         // Client is not allowed to overwrite numbered registers
         log.debugf("Got set message: %v", data_buf[:bytes_read])
-        dest_reg := lib.Reg_Id(u8(data_buf[1]))
-        set_mode := lib.Set_Mode(u8(data_buf[2]))
-        source_kind := lib.Source_Kind(u8(data_buf[3]))
+        dest_reg := lib.Reg_Id(data_buf[1])
+        set_mode := lib.Set_Mode(data_buf[2])
+        source_kind := lib.Source_Kind(data_buf[3])
+        data: []u8
+        mime: string
+
         switch (source_kind) {
         case .REGISTER:
-            source_reg := lib.Reg_Id(u8(data_buf[4]))
+            source_reg := lib.Reg_Id(data_buf[4])
             source := get_reg(source_reg)
             if source == nil {
-                break
+                errmsg := fmt.tprintf("source register `%s` is empty", lib.reg_id_to_string(source_reg))
+                resp_written := lib.encode_resp_error(errmsg, resp_buf[:])
+                linux.send(client_fd, resp_buf[:resp_written], {})
+                return running
             }
 
+            data, mime = source.data, source.mime_type
             log.debug("REGISTER:")
             log.debugf("\tSource Reg: `%s`", lib.reg_id_to_string(source_reg))
-            log.debugf("\tContent: `%s`", string(source.data))
-            log.debugf("\tMime: `%s`", source.mime_type)
-            log.debugf(
-                "\tDestination Reg: %s `%s`",
-                "OVERWRITE" if set_mode == .OVERWRITE else "APPEND",
-                lib.reg_id_to_string(dest_reg),
-            )
-
-            // Destination register must be either named register or SELECTION_CLIPBOARD/PRIMARY
-            if lib.reg_id_is_named(dest_reg) {
-                set_named_reg(set_mode, dest_reg, source.data, source.mime_type)
-            } else if lib.reg_id_is_selection(dest_reg) {
-                set_selection_reg(dest_reg, source.data, source.mime_type)
-            } else {
-                // error response
-            }
         case .INLINE:
-            mime, data := lib.decode_cmd_set_inline(data_buf[4:bytes_read])
-
+            mime, data = lib.decode_cmd_set_inline(data_buf[4:bytes_read])
             log.debug("INLINE:")
-            log.debugf("\tContent: `%s`", string(data))
-            log.debugf("\tMime: `%s`", mime)
-            log.debugf(
-                "\tDestination Reg: %s `%s`",
-                "OVERWRITE" if set_mode == .OVERWRITE else "APPEND",
+        }
+
+        log.debugf("\tContent: `%s`", string(data))
+        log.debugf("\tMime: `%s`", mime)
+        log.debugf(
+            "\tDestination Reg: %s `%s`",
+            "OVERWRITE" if set_mode == .OVERWRITE else "APPEND",
+            lib.reg_id_to_string(dest_reg),
+        )
+
+        // Destination register must be either named register or SELECTION_CLIPBOARD/PRIMARY
+        resp_written: int
+        if lib.reg_id_is_named(dest_reg) {
+            set_named_reg(set_mode, dest_reg, data, mime)
+            resp_written = lib.encode_resp_ok(resp_buf[:])
+        } else if lib.reg_id_is_selection(dest_reg) {
+            set_selection_reg(dest_reg, data, mime)
+            resp_written = lib.encode_resp_ok(resp_buf[:])
+        } else {
+            errmsg := fmt.tprintf(
+                "invalid destination register, must be named or selection register (got `%s`)",
                 lib.reg_id_to_string(dest_reg),
             )
-
-            if lib.reg_id_is_named(dest_reg) {
-                set_named_reg(set_mode, dest_reg, data, mime)
-            } else if lib.reg_id_is_selection(dest_reg) {
-                set_selection_reg(dest_reg, data, mime)
-            } else {
-                // error response
-            }
+            resp_written = lib.encode_resp_error(errmsg, resp_buf[:])
         }
+
+        // Send response back to client
+        linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.GET:
         log.debugf("Got get message: %v", data_buf[:bytes_read])
         filter := lib.decode_cmd_get(data_buf[1:bytes_read])
@@ -126,19 +130,38 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
         log.debugf("\tPrimary:   %010b", (raw >> 36) & 0x3FF)
 
         regs: [46]lib.Resp_Reg
-        reg_count, ok := get_registers(filter, &regs)
-        if !ok {
-            // error response
-        }
+        reg_count := get_registers(filter, &regs)
 
-        resp_buf: [MAX_DATA_SIZE]u8
+        // Send DATA response back to client
         resp_written := lib.encode_resp_data(regs[:reg_count], resp_buf[:])
         linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.CLEAR:
         log.debugf("Got clear message: %v", data_buf[:bytes_read])
+        reg := lib.Reg_Id(data_buf[1])
+
+        resp_written: int
+        // Register must be a named register to manually clear it
+        if !lib.reg_id_is_named(reg) {
+            errmsg := fmt.tprintf(
+                "invalid register, can only clear named registers (got `%s`)",
+                lib.reg_id_to_string(reg),
+            )
+            resp_written = lib.encode_resp_error(errmsg, resp_buf[:])
+        } else {
+            // Clear named reg
+            log.debugf("Register: `%s`", lib.reg_id_to_string(reg))
+            clear_named_reg(reg)
+            resp_written = lib.encode_resp_ok(resp_buf[:])
+        }
+
+        // Send response back to client
+        linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.SHUTDOWN:
         fmt.println("Shutting clipbenderd down")
         running = false
+        // Send OK response back to client
+        resp_written := lib.encode_resp_ok(resp_buf[:])
+        linux.send(client_fd, resp_buf[:resp_written], {})
     }
 
     return running

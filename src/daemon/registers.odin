@@ -67,7 +67,7 @@ get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
     return nil
 }
 
-get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (count: u8, ok: bool) {
+get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (count: u8) {
     // TODO: Temporary for testing
     // free_ring(&clipboard_registers)
     // free_ring(&primary_registers)
@@ -118,7 +118,7 @@ get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (c
         count += 1
     }
 
-    return count, true
+    return count
 }
 
 set_named_reg :: proc(set_mode: lib.Set_Mode, reg_id: lib.Reg_Id, data: []byte, mime: string) {

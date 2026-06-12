@@ -9,7 +9,8 @@ import "core:time"
 
 import "../lib"
 
-MAX_RECV_SIZE :: 65536 // 64 KiB
+RESP_BUF_SMALL :: 256     // OK/ERROR responses
+RESP_BUF_LARGE :: 65536   // 64 KiB, DATA responses (GET)
 
 print_usage_and_exit :: proc() {
     fmt.eprintln(
@@ -210,6 +211,7 @@ parse_cmd_set_inline :: proc(
 
 // `args` includes everything after the `clipbender set` subcommand
 cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
+    success_msg: string
     if len(args) == 2 {     // source reg was passed as an arg by client
         dest_reg, set_mode, source_reg, err := parse_cmd_set_reg(args[0], args[1])
         if err != nil {
@@ -219,18 +221,52 @@ cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
         msg: [5]byte // SET with source reg is 5-byte message
         written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
         linux.send(socket_fd, msg[:written], {})
+        success_msg = fmt.tprintf(
+            "%s dest reg `%s` with source reg `%s`",
+            "overwrote" if set_mode == .OVERWRITE else "appended",
+            lib.reg_id_to_string(dest_reg),
+            lib.reg_id_to_string(source_reg),
+        )
     } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is passed inline by client
-        dest, set_mode, mime, data, err := parse_cmd_set_inline(args[0], os.stdin)
+        dest_reg, set_mode, mime, data, err := parse_cmd_set_inline(args[0], os.stdin)
         if err != nil {
             fmt.eprintfln("Error: %v", err.?)
             print_cmd_usage_and_exit(.SET)
         }
         msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
         defer delete(msg)
-        written := lib.encode_cmd_set_inline(dest, set_mode, mime, data, msg[:])
+        written := lib.encode_cmd_set_inline(dest_reg, set_mode, mime, data, msg[:])
         linux.send(socket_fd, msg[:written], {})
+        success_msg = fmt.tprintf(
+            "%s dest reg `%s` with inline `%s` data `%s`",
+            "overwrote" if set_mode == .OVERWRITE else "appended",
+            lib.reg_id_to_string(dest_reg),
+            mime,
+            string(data),
+        )
     } else {
         print_cmd_usage_and_exit(.SET)
+    }
+
+    // Receive response from daemon
+    resp_buf: [RESP_BUF_SMALL]u8
+    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    if recv_err != nil || bytes_read <= 0 {
+        fmt.eprintln("Error: no response from daemon for `set` command")
+        os.exit(1)
+    }
+
+    status := lib.Resp_Status(resp_buf[0])
+    switch status {
+    case .OK:
+        fmt.printfln("Success: %s", success_msg)
+    case .ERROR:
+        err_msg := string(resp_buf[1:bytes_read])
+        fmt.eprintfln("Error: %v", err_msg)
+        os.exit(1)
+    case .DATA:
+        fmt.eprintln("Error: unexpected DATA response for `set` command")
+        os.exit(1)
     }
 }
 
@@ -651,8 +687,8 @@ cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
     written := lib.encode_cmd_get(filter, msg[:])
     linux.send(socket_fd, msg[:written], {})
 
-    // Receive DATA response from daemon
-    resp_buf: [MAX_RECV_SIZE]u8
+    // Receive response from daemon
+    resp_buf: [RESP_BUF_LARGE]u8
     bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
     if recv_err != nil || bytes_read <= 0 {
         fmt.eprintln("Error: no response from daemon for `get` command")
@@ -664,7 +700,7 @@ cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
     status := lib.Resp_Status(resp_buf[0])
     switch status {
     case .OK:
-        fmt.eprintln("Error: unexpected OK response for `get` command, expected DATA")
+        fmt.eprintln("Error: unexpected OK response for `get` command")
         os.exit(1)
     case .ERROR:
         err_msg := string(resp_buf[1:bytes_read])
@@ -710,9 +746,31 @@ cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
         print_cmd_usage_and_exit(.CLEAR)
     }
 
+    // Send CLEAR message
     msg: [2]byte
     written := lib.encode_cmd_clear(reg_id, msg[:])
     linux.send(socket_fd, msg[:written], {})
+
+    // Receive response from daemon
+    resp_buf: [RESP_BUF_SMALL]u8
+    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    if recv_err != nil || bytes_read <= 0 {
+        fmt.eprintln("Error: no response from daemon for `clear` command")
+        os.exit(1)
+    }
+
+    status := lib.Resp_Status(resp_buf[0])
+    switch status {
+    case .OK:
+        fmt.printfln("Success: cleared register `%s`", lib.reg_id_to_string(reg_id))
+    case .ERROR:
+        err_msg := string(resp_buf[1:bytes_read])
+        fmt.eprintfln("Error: %v", err_msg)
+        os.exit(1)
+    case .DATA:
+        fmt.eprintln("Error: unexpected DATA response for `clear` command")
+        os.exit(1)
+    }
 }
 
 // `args` includes everything after the `clipbender shutdown` subcommand
@@ -721,9 +779,31 @@ cmd_shutdown :: proc(args: []string, socket_fd: linux.Fd) {
         print_cmd_usage_and_exit(.SHUTDOWN)
     }
 
+    // Send SHUTDOWN message
     msg: [1]byte
     written := lib.encode_cmd_shutdown(msg[:])
     linux.send(socket_fd, msg[:written], {})
+
+    // Receive response from daemon
+    resp_buf: [RESP_BUF_SMALL]u8
+    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    if recv_err != nil || bytes_read <= 0 {
+        fmt.eprintln("Error: no response from daemon for `shutdown` command")
+        os.exit(1)
+    }
+
+    status := lib.Resp_Status(resp_buf[0])
+    switch status {
+    case .OK:
+        fmt.println("Success: shutdown `clipbenderd`")
+    case .ERROR:
+        err_msg := string(resp_buf[1:bytes_read])
+        fmt.eprintfln("Error: %v", err_msg)
+        os.exit(1)
+    case .DATA:
+        fmt.eprintln("Error: unexpected DATA response for `shutdown` command")
+        os.exit(1)
+    }
 }
 
 run_cli :: proc(socket_fd: linux.Fd, args: []string) {
