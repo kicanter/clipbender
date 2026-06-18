@@ -6,7 +6,7 @@ import "core:os"
 import "core:sys/linux"
 import "core:sys/linux/uring"
 
-import lib "../libclipbender"
+import lib "libclipbender:base"
 
 data_buf: [4096]u8
 sig_buf: [128]u8
@@ -16,6 +16,7 @@ Event :: enum u8 {
     ACCEPT,
     RECV,
     SIGNAL,
+    WAYLAND,
 }
 
 sigaddset :: proc(set: ^linux.Sig_Set, sig: linux.Signal) {
@@ -189,6 +190,7 @@ dispatch_cqe :: proc(cqe: linux.IO_Uring_CQE, ring: ^uring.Ring, socket_fd: linu
         }
     case .SIGNAL:
         running = false
+    case .WAYLAND:
     }
     return running
 }

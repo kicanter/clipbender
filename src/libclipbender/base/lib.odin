@@ -1,4 +1,4 @@
-package libclipbender
+package base
 
 import "core:fmt"
 import "core:os"

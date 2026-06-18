@@ -1,6 +1,7 @@
 PREFIX ?= /usr/local
 BUILD_DIR := build
 FLAGS ?=
+COLLECTIONS := -collection:wayland=wayland -collection:libclipbender=src/libclipbender
 
 $(shell mkdir -p $(BUILD_DIR))
 
@@ -8,42 +9,41 @@ $(shell mkdir -p $(BUILD_DIR))
 all: daemon client
 
 daemon:
-	odin build src/daemon -out:$(BUILD_DIR)/clipbenderd -warnings-as-errors -target=linux_amd64 -vet $(FLAGS)
+	odin build src/daemon -out:$(BUILD_DIR)/clipbenderd -warnings-as-errors -target=linux_amd64 -vet $(COLLECTIONS) $(FLAGS)
 
 client:
-	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors -target=linux_amd64 -vet $(FLAGS)
+	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors -target=linux_amd64 -vet $(COLLECTIONS) $(FLAGS)
 
 test:
 ifdef PKG
-	odin test src/$(PKG) -warnings-as-errors -vet $(FLAGS)
+	odin test src/$(PKG) -warnings-as-errors -vet $(COLLECTIONS) $(FLAGS)
 else
-	odin test src/libclipbender -warnings-as-errors -vet $(FLAGS)
-	odin test src/daemon -warnings-as-errors -vet $(FLAGS)
-	odin test src/client -warnings-as-errors -vet $(FLAGS)
+	odin test src/libclipbender/base -warnings-as-errors -vet $(COLLECTIONS) $(FLAGS)
+	odin test src/daemon -warnings-as-errors -vet $(COLLECTIONS) $(FLAGS)
+	odin test src/client -warnings-as-errors -vet $(COLLECTIONS) $(FLAGS)
 endif
 
 debug:
-	odin build src/daemon -out:$(BUILD_DIR)/clipbenderd -debug -sanitize:address -target=linux_amd64
-	odin build src/client -out:$(BUILD_DIR)/clipbender -debug -sanitize:address -target=linux_amd64
+	odin build src/daemon -out:$(BUILD_DIR)/clipbenderd -debug -sanitize:address -target=linux_amd64 $(COLLECTIONS)
+	odin build src/client -out:$(BUILD_DIR)/clipbender -debug -sanitize:address -target=linux_amd64 $(COLLECTIONS)
 
 release:
-	odin build src/daemon -out:$(BUILD_DIR)/clipbenderd -warnings-as-errors -vet -o:speed -target=linux_amd64
-	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors -vet -o:speed -target=linux_amd64
+	odin build src/daemon -out:$(BUILD_DIR)/clipbenderd -warnings-as-errors -vet -o:speed -target=linux_amd64 $(COLLECTIONS)
+	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors -vet -o:speed -target=linux_amd64 $(COLLECTIONS)
 	strip $(BUILD_DIR)/clipbenderd
 	strip $(BUILD_DIR)/clipbender
 
 SCANNER := wayland/odin-wayland/scanner/wayland-scanner
-PROTO_DIR := wayland/protocols
-BIND_DIR := wayland/protocols/bindings
-WAYLAND_DIR := ../../odin-wayland
+WL_DIR := wayland
+WAYLAND_DIR := ../odin-wayland
 
 $(SCANNER):
 	odin build wayland/odin-wayland/scanner -out:$(SCANNER)
 
 protocols: $(SCANNER)
-	$(SCANNER) $(PROTO_DIR)/ext-data-control-v1.xml $(BIND_DIR)/ext_data_control.odin bindings false false $(WAYLAND_DIR)
-	$(SCANNER) $(PROTO_DIR)/wlr-data-control-unstable-v1.xml $(BIND_DIR)/wlr_data_control.odin bindings false true $(WAYLAND_DIR)
-	$(SCANNER) $(PROTO_DIR)/wlr-layer-shell-unstable-v1.xml $(BIND_DIR)/wlr_layer_shell.odin bindings false true $(WAYLAND_DIR)
+	$(SCANNER) $(WL_DIR)/ext-data-control/ext-data-control-v1.xml $(WL_DIR)/ext-data-control/ext_data_control.odin ext_data_control false false $(WAYLAND_DIR)
+	$(SCANNER) $(WL_DIR)/wlr-data-control/wlr-data-control-unstable-v1.xml $(WL_DIR)/wlr-data-control/wlr_data_control.odin wlr_data_control false false $(WAYLAND_DIR)
+	$(SCANNER) $(WL_DIR)/wlr-layer-shell/wlr-layer-shell-unstable-v1.xml $(WL_DIR)/wlr-layer-shell/wlr_layer_shell.odin wlr_layer_shell false false $(WAYLAND_DIR)
 
 clean:
 	rm -rf $(BUILD_DIR)

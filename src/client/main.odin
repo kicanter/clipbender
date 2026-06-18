@@ -5,7 +5,7 @@ import "core:log"
 import "core:os"
 import "core:sys/linux"
 
-import lib "../libclipbender"
+import lib "libclipbender:base"
 
 uds_connect :: proc(socket_path: string) -> linux.Fd {
     if !os.exists(socket_path) {

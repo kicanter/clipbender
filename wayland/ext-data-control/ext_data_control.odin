@@ -1,7 +1,7 @@
 #+build linux
-package bindings
+package ext_data_control
 @(private)
-wlr_data_control_unstable_v1_types := []^interface {
+ext_data_control_v1_types := []^interface {
 	nil,
 	nil,
 	&data_control_source_v1_interface,
@@ -47,9 +47,9 @@ data_control_manager_v1_destroy :: proc "contextless" (data_control_manager_v1_:
 
 @(private)
 data_control_manager_v1_requests := []message {
-	{"create_data_source", "n", raw_data(wlr_data_control_unstable_v1_types)[2:]},
-	{"get_data_device", "no", raw_data(wlr_data_control_unstable_v1_types)[3:]},
-	{"destroy", "", raw_data(wlr_data_control_unstable_v1_types)[0:]},
+	{"create_data_source", "n", raw_data(ext_data_control_v1_types)[2:]},
+	{"get_data_device", "no", raw_data(ext_data_control_v1_types)[3:]},
+	{"destroy", "", raw_data(ext_data_control_v1_types)[0:]},
 }
 
 data_control_manager_v1_interface : interface
@@ -71,7 +71,7 @@ data_control_device_v1_get_user_data :: proc "contextless" (data_control_device_
 
         The given source may not be used in any further set_selection or
         set_primary_selection requests. Attempting to use a previously used
-        source is a protocol error.
+        source triggers the used_source protocol error.
 
         To unset the selection, set the source to NULL. */
 DATA_CONTROL_DEVICE_V1_SET_SELECTION :: 0
@@ -90,7 +90,7 @@ data_control_device_v1_destroy :: proc "contextless" (data_control_device_v1_: ^
 
         The given source may not be used in any further set_selection or
         set_primary_selection requests. Attempting to use a previously used
-        source is a protocol error.
+        source triggers the used_source protocol error.
 
         To unset the primary selection, set the source to NULL.
 
@@ -102,28 +102,29 @@ data_control_device_v1_set_primary_selection :: proc "contextless" (data_control
 }
 
 data_control_device_v1_listener :: struct {
-/* The data_offer event introduces a new wlr_data_control_offer object,
+/* The data_offer event introduces a new ext_data_control_offer object,
         which will subsequently be used in either the
-        wlr_data_control_device.selection event (for the regular clipboard
-        selections) or the wlr_data_control_device.primary_selection event (for
+        ext_data_control_device.selection event (for the regular clipboard
+        selections) or the ext_data_control_device.primary_selection event (for
         the primary clipboard selections). Immediately following the
-        wlr_data_control_device.data_offer event, the new data_offer object
-        will send out wlr_data_control_offer.offer events to describe the MIME
+        ext_data_control_device.data_offer event, the new data_offer object
+        will send out ext_data_control_offer.offer events to describe the MIME
         types it offers. */
 	data_offer : proc "c" (data: rawptr, data_control_device_v1: ^data_control_device_v1) -> ^data_control_offer_v1,
 
 /* The selection event is sent out to notify the client of a new
-        wlr_data_control_offer for the selection for this device. The
-        wlr_data_control_device.data_offer and the wlr_data_control_offer.offer
+        ext_data_control_offer for the selection for this device. The
+        ext_data_control_device.data_offer and the ext_data_control_offer.offer
         events are sent out immediately before this event to introduce the data
         offer object. The selection event is sent to a client when a new
-        selection is set. The wlr_data_control_offer is valid until a new
-        wlr_data_control_offer or NULL is received. The client must destroy the
-        previous selection wlr_data_control_offer, if any, upon receiving this
-        event.
+        selection is set. The ext_data_control_offer is valid until a new
+        ext_data_control_offer or NULL is received. The client must destroy the
+        previous selection ext_data_control_offer, if any, upon receiving this
+        event. Regardless, the previous selection will be ignored once a new
+        selection ext_data_control_offer is received.
 
         The first selection event is sent upon binding the
-        wlr_data_control_device object. */
+        ext_data_control_device object. */
 	selection : proc "c" (data: rawptr, data_control_device_v1: ^data_control_device_v1, id_: ^data_control_offer_v1),
 
 /* This data control object is no longer valid and should be destroyed by
@@ -131,18 +132,20 @@ data_control_device_v1_listener :: struct {
 	finished : proc "c" (data: rawptr, data_control_device_v1: ^data_control_device_v1),
 
 /* The primary_selection event is sent out to notify the client of a new
-        wlr_data_control_offer for the primary selection for this device. The
-        wlr_data_control_device.data_offer and the wlr_data_control_offer.offer
+        ext_data_control_offer for the primary selection for this device. The
+        ext_data_control_device.data_offer and the ext_data_control_offer.offer
         events are sent out immediately before this event to introduce the data
         offer object. The primary_selection event is sent to a client when a
-        new primary selection is set. The wlr_data_control_offer is valid until
-        a new wlr_data_control_offer or NULL is received. The client must
-        destroy the previous primary selection wlr_data_control_offer, if any,
-        upon receiving this event.
+        new primary selection is set. The ext_data_control_offer is valid until
+        a new ext_data_control_offer or NULL is received. The client must
+        destroy the previous primary selection ext_data_control_offer, if any,
+        upon receiving this event. Regardless, the previous primary selection
+        will be ignored once a new primary selection ext_data_control_offer is
+        received.
 
         If the compositor supports primary selection, the first
         primary_selection event is sent upon binding the
-        wlr_data_control_device object. */
+        ext_data_control_device object. */
 	primary_selection : proc "c" (data: rawptr, data_control_device_v1: ^data_control_device_v1, id_: ^data_control_offer_v1),
 
 }
@@ -155,23 +158,23 @@ data_control_device_v1_error :: enum {
 }
 @(private)
 data_control_device_v1_requests := []message {
-	{"set_selection", "?o", raw_data(wlr_data_control_unstable_v1_types)[5:]},
-	{"destroy", "", raw_data(wlr_data_control_unstable_v1_types)[0:]},
-	{"set_primary_selection", "2?o", raw_data(wlr_data_control_unstable_v1_types)[6:]},
+	{"set_selection", "?o", raw_data(ext_data_control_v1_types)[5:]},
+	{"destroy", "", raw_data(ext_data_control_v1_types)[0:]},
+	{"set_primary_selection", "?o", raw_data(ext_data_control_v1_types)[6:]},
 }
 
 @(private)
 data_control_device_v1_events := []message {
-	{"data_offer", "n", raw_data(wlr_data_control_unstable_v1_types)[7:]},
-	{"selection", "?o", raw_data(wlr_data_control_unstable_v1_types)[8:]},
-	{"finished", "", raw_data(wlr_data_control_unstable_v1_types)[0:]},
-	{"primary_selection", "2?o", raw_data(wlr_data_control_unstable_v1_types)[9:]},
+	{"data_offer", "n", raw_data(ext_data_control_v1_types)[7:]},
+	{"selection", "?o", raw_data(ext_data_control_v1_types)[8:]},
+	{"finished", "", raw_data(ext_data_control_v1_types)[0:]},
+	{"primary_selection", "?o", raw_data(ext_data_control_v1_types)[9:]},
 }
 
 data_control_device_v1_interface : interface
 
-/* The wlr_data_control_source object is the source side of a
-      wlr_data_control_offer. It is created by the source client in a data
+/* The ext_data_control_source object is the source side of a
+      ext_data_control_offer. It is created by the source client in a data
       transfer and provides a way to describe the offered data and a way to
       respond to requests to transfer the data. */
 data_control_source_v1 :: struct {}
@@ -186,7 +189,7 @@ data_control_source_v1_get_user_data :: proc "contextless" (data_control_source_
 /* This request adds a MIME type to the set of MIME types advertised to
         targets. Can be called several times to offer multiple types.
 
-        Calling this after wlr_data_control_device.set_selection is a protocol
+        Calling this after ext_data_control_device.set_selection is a protocol
         error. */
 DATA_CONTROL_SOURCE_V1_OFFER :: 0
 data_control_source_v1_offer :: proc "contextless" (data_control_source_v1_: ^data_control_source_v1, mime_type_: cstring) {
@@ -220,19 +223,19 @@ data_control_source_v1_error :: enum {
 }
 @(private)
 data_control_source_v1_requests := []message {
-	{"offer", "s", raw_data(wlr_data_control_unstable_v1_types)[0:]},
-	{"destroy", "", raw_data(wlr_data_control_unstable_v1_types)[0:]},
+	{"offer", "s", raw_data(ext_data_control_v1_types)[0:]},
+	{"destroy", "", raw_data(ext_data_control_v1_types)[0:]},
 }
 
 @(private)
 data_control_source_v1_events := []message {
-	{"send", "sh", raw_data(wlr_data_control_unstable_v1_types)[0:]},
-	{"cancelled", "", raw_data(wlr_data_control_unstable_v1_types)[0:]},
+	{"send", "sh", raw_data(ext_data_control_v1_types)[0:]},
+	{"cancelled", "", raw_data(ext_data_control_v1_types)[0:]},
 }
 
 data_control_source_v1_interface : interface
 
-/* A wlr_data_control_offer represents a piece of data offered for transfer
+/* A ext_data_control_offer represents a piece of data offered for transfer
       by another client (the source client). The offer describes the different
       MIME types that the data can be converted to and provides the mechanism
       for transferring the data directly from the source client. */
@@ -267,7 +270,7 @@ data_control_offer_v1_destroy :: proc "contextless" (data_control_offer_v1_: ^da
 }
 
 data_control_offer_v1_listener :: struct {
-/* Sent immediately after creating the wlr_data_control_offer object.
+/* Sent immediately after creating the ext_data_control_offer object.
         One event per offered MIME type. */
 	offer : proc "c" (data: rawptr, data_control_offer_v1: ^data_control_offer_v1, mime_type_: cstring),
 
@@ -277,38 +280,38 @@ data_control_offer_v1_add_listener :: proc "contextless" (data_control_offer_v1_
 }
 @(private)
 data_control_offer_v1_requests := []message {
-	{"receive", "sh", raw_data(wlr_data_control_unstable_v1_types)[0:]},
-	{"destroy", "", raw_data(wlr_data_control_unstable_v1_types)[0:]},
+	{"receive", "sh", raw_data(ext_data_control_v1_types)[0:]},
+	{"destroy", "", raw_data(ext_data_control_v1_types)[0:]},
 }
 
 @(private)
 data_control_offer_v1_events := []message {
-	{"offer", "s", raw_data(wlr_data_control_unstable_v1_types)[0:]},
+	{"offer", "s", raw_data(ext_data_control_v1_types)[0:]},
 }
 
 data_control_offer_v1_interface : interface
 
 @(private)
 @(init)
-init_interfaces_wlr_data_control_unstable_v1 :: proc "contextless" () {
-	data_control_manager_v1_interface.name = "zwlr_data_control_manager_v1"
-	data_control_manager_v1_interface.version = 2
+init_interfaces_ext_data_control_v1 :: proc "contextless" () {
+	data_control_manager_v1_interface.name = "ext_data_control_manager_v1"
+	data_control_manager_v1_interface.version = 1
 	data_control_manager_v1_interface.method_count = 3
 	data_control_manager_v1_interface.event_count = 0
 	data_control_manager_v1_interface.methods = raw_data(data_control_manager_v1_requests)
-	data_control_device_v1_interface.name = "zwlr_data_control_device_v1"
-	data_control_device_v1_interface.version = 2
+	data_control_device_v1_interface.name = "ext_data_control_device_v1"
+	data_control_device_v1_interface.version = 1
 	data_control_device_v1_interface.method_count = 3
 	data_control_device_v1_interface.event_count = 4
 	data_control_device_v1_interface.methods = raw_data(data_control_device_v1_requests)
 	data_control_device_v1_interface.events = raw_data(data_control_device_v1_events)
-	data_control_source_v1_interface.name = "zwlr_data_control_source_v1"
+	data_control_source_v1_interface.name = "ext_data_control_source_v1"
 	data_control_source_v1_interface.version = 1
 	data_control_source_v1_interface.method_count = 2
 	data_control_source_v1_interface.event_count = 2
 	data_control_source_v1_interface.methods = raw_data(data_control_source_v1_requests)
 	data_control_source_v1_interface.events = raw_data(data_control_source_v1_events)
-	data_control_offer_v1_interface.name = "zwlr_data_control_offer_v1"
+	data_control_offer_v1_interface.name = "ext_data_control_offer_v1"
 	data_control_offer_v1_interface.version = 1
 	data_control_offer_v1_interface.method_count = 2
 	data_control_offer_v1_interface.event_count = 1
@@ -317,4 +320,19 @@ init_interfaces_wlr_data_control_unstable_v1 :: proc "contextless" () {
 }
 
 // Functions from libwayland-client
-import wl "../../../../../odin-wayland"
+import wl "../../../odin-wayland"
+fixed_t :: wl.fixed_t
+proxy :: wl.proxy
+message :: wl.message
+interface :: wl.interface
+array :: wl.array
+generic_c_call :: wl.generic_c_call
+proxy_add_listener :: wl.proxy_add_listener
+proxy_get_listener :: wl.proxy_get_listener
+proxy_get_user_data :: wl.proxy_get_user_data
+proxy_set_user_data :: wl.proxy_set_user_data
+proxy_get_version :: wl.proxy_get_version
+proxy_marshal :: wl.proxy_marshal
+proxy_marshal_flags :: wl.proxy_marshal_flags
+proxy_marshal_constructor :: wl.proxy_marshal_constructor
+proxy_destroy :: wl.proxy_destroy

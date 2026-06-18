@@ -2,7 +2,7 @@ package main
 
 import "core:log"
 
-import lib "../libclipbender"
+import lib "libclipbender:base"
 
 main :: proc() {
     context.logger = log.create_console_logger()
