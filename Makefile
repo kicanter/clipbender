@@ -32,11 +32,27 @@ release:
 	strip $(BUILD_DIR)/clipbenderd
 	strip $(BUILD_DIR)/clipbender
 
+SCANNER := wayland/odin-wayland/scanner/wayland-scanner
+PROTO_DIR := wayland/protocols
+BIND_DIR := wayland/protocols/bindings
+WAYLAND_DIR := ../../odin-wayland
+
+$(SCANNER):
+	odin build wayland/odin-wayland/scanner -out:$(SCANNER)
+
+protocols: $(SCANNER)
+	$(SCANNER) $(PROTO_DIR)/ext-data-control-v1.xml $(BIND_DIR)/ext_data_control.odin bindings false false $(WAYLAND_DIR)
+	$(SCANNER) $(PROTO_DIR)/wlr-data-control-unstable-v1.xml $(BIND_DIR)/wlr_data_control.odin bindings false true $(WAYLAND_DIR)
+	$(SCANNER) $(PROTO_DIR)/wlr-layer-shell-unstable-v1.xml $(BIND_DIR)/wlr_layer_shell.odin bindings false true $(WAYLAND_DIR)
+
 clean:
 	rm -rf $(BUILD_DIR)
+
+distclean: clean
+	rm -f $(SCANNER)
 
 install: all
 	install -Dm755 $(BUILD_DIR)/clipbenderd $(PREFIX)/bin/clipbenderd
 	install -Dm755 $(BUILD_DIR)/clipbender $(PREFIX)/bin/clipbender
 
-.PHONY: all daemon client test debug release clean install
+.PHONY: all daemon client test debug release protocols clean distclean install
