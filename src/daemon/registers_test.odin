@@ -2,7 +2,7 @@ package main
 
 import "core:testing"
 
-import "../lib"
+import lib "../libclipbender"
 
 free_ring :: proc(ring: ^Recency_Ring) {
     for &entry in ring.entries {

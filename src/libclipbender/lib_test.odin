@@ -1,4 +1,4 @@
-package lib
+package libclipbender
 
 import "core:slice"
 import "core:testing"

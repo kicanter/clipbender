@@ -4,7 +4,7 @@ import "core:slice"
 import "core:strings"
 import "core:time"
 
-import "../lib"
+import lib "../libclipbender"
 
 // Ringbuffer for recency registers
 Recency_Ring :: struct {

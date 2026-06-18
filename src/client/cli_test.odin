@@ -2,7 +2,7 @@ package main
 
 import "core:testing"
 
-import "../lib"
+import lib "../libclipbender"
 
 // parse_cmd_get tests
 

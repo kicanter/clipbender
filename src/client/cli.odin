@@ -6,7 +6,7 @@ import "core:strings"
 import "core:sys/linux"
 import "core:time"
 
-import "../lib"
+import lib "../libclipbender"
 
 RESP_BUF_SMALL :: 256     // OK/ERROR responses
 RESP_BUF_LARGE :: 65536   // 64 KiB, DATA responses (GET)
