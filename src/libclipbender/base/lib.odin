@@ -1,9 +1,11 @@
 package base
 
 import "core:fmt"
+import "core:log"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:sys/linux"
 
 // Info related to a single register entry
 Reg_Entry :: struct {
@@ -87,13 +89,45 @@ reg_id_to_string :: proc(id: Reg_Id) -> string {
     return "unknown reg id"
 }
 
+// Runtime polymoprhic struct to dynamically dispatch to Wayland or X11
+Clipboard_Backend :: struct {
+    fd:       linux.Fd,
+    dispatch: proc(state: rawptr),
+    cleanup:  proc(state: rawptr),
+    state:     rawptr,
+}
+
+Session_Type :: enum u8 {
+    WAYLAND,
+    X11,
+    OTHER,
+}
+
+get_session_type :: proc() -> Session_Type {
+    // Get Wayland or X11 session type
+    session_type := os.get_env("XDG_SESSION_TYPE", context.allocator)
+    defer delete(session_type)
+
+    switch session_type {
+    case "wayland":
+        return .WAYLAND
+    case "x11":
+        return .X11
+    case:
+        return .OTHER
+    }
+}
+
 // Protocol/IPC
 SOCKET_PATH_SUFFIX :: "clipbender.sock"
 clipbender_socket_path :: proc() -> string {
     // Get XDG_RUNTIME_DIR, fallback to /tmp
     socket_dir := os.get_env("XDG_RUNTIME_DIR", context.allocator)
     if len(socket_dir) == 0 || !os.is_directory(socket_dir) {
-        if len(socket_dir) > 0 {delete(socket_dir)}     // free socket_dir because we just wrote an env var to it
+        if len(socket_dir) > 0 {
+            log.warnf("XDG_RUNTIME_DIR env var is not a directory, you should probably fix this (got %s)", socket_dir)
+            delete(socket_dir) // free socket_dir if env var exists but not a directory
+        }
         return fmt.aprintf("/tmp/%s", SOCKET_PATH_SUFFIX)
     }
     defer delete(socket_dir)

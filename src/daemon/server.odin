@@ -16,7 +16,7 @@ Event :: enum u8 {
     ACCEPT,
     RECV,
     SIGNAL,
-    WAYLAND,
+    CLIPBOARD_MONITOR,
 }
 
 sigaddset :: proc(set: ^linux.Sig_Set, sig: linux.Signal) {
@@ -168,7 +168,14 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
     return running
 }
 
-dispatch_cqe :: proc(cqe: linux.IO_Uring_CQE, ring: ^uring.Ring, socket_fd: linux.Fd) -> (running: bool) {
+dispatch_cqe :: proc(
+    cqe: linux.IO_Uring_CQE,
+    ring: ^uring.Ring,
+    socket_fd: linux.Fd,
+    backend: ^lib.Clipboard_Backend,
+) -> (
+    running: bool,
+) {
     running = true
 
     switch cast(Event)(cqe.user_data & 0xFF) {
@@ -177,6 +184,7 @@ dispatch_cqe :: proc(cqe: linux.IO_Uring_CQE, ring: ^uring.Ring, socket_fd: linu
             log.errorf("Client accept failed: %v", cqe.res)
             return running
         }
+        log.debugf("Client connected (fd=%d)", cqe.res)
 
         client_fd := cast(linux.Fd)cqe.res
         user_data := (u64(client_fd) << 8) | u64(Event.RECV)
@@ -189,13 +197,21 @@ dispatch_cqe :: proc(cqe: linux.IO_Uring_CQE, ring: ^uring.Ring, socket_fd: linu
             running = handle_recv(bytes_read, client_fd)
         }
     case .SIGNAL:
+        // Cast magic to get signal enum from signal number
+        signal := cast(linux.Signal)(cast(^i32)&sig_buf[0])^
+        log.debugf("Received signal %v, shutting down", signal)
         running = false
-    case .WAYLAND:
+    case .CLIPBOARD_MONITOR:
+        log.debug("Clipboard monitor event received")
+        if backend.state != nil {
+            backend.dispatch(backend.state)
+            uring.poll_add(ring, u64(Event.CLIPBOARD_MONITOR), backend.fd, {.IN}, {})
+        }
     }
     return running
 }
 
-uds_serve :: proc(socket_path: string) {
+uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
     socket_fd, sockerr := linux.socket(.UNIX, .SEQPACKET, {.CLOEXEC}, {})
     fmt.assertf(sockerr == nil, "Failed to create server socket fd: err %d", sockerr)
 
@@ -233,6 +249,12 @@ uds_serve :: proc(socket_path: string) {
     uring.read(&ring, u64(Event.SIGNAL), sig_fd, sig_buf[:], 0)
     uring.submit(&ring)
 
+    // Submit initial backend clipboard event
+    if backend.state != nil {
+        uring.poll_add(&ring, u64(Event.CLIPBOARD_MONITOR), backend.fd, {.IN}, {})
+    }
+
+    log.debug("Daemon ready, entering event loop")
     // Completion queue event loop
     running := true
     cqes: [16]linux.IO_Uring_CQE
@@ -243,7 +265,7 @@ uds_serve :: proc(socket_path: string) {
         }
 
         for i in 0 ..< n_copied {
-            running = dispatch_cqe(cqes[i], &ring, socket_fd)
+            running = dispatch_cqe(cqes[i], &ring, socket_fd, backend)
         }
         uring.submit(&ring)
     }

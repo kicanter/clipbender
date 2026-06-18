@@ -317,7 +317,7 @@ init_interfaces_wlr_data_control_unstable_v1 :: proc "contextless" () {
 }
 
 // Functions from libwayland-client
-import wl "../../../odin-wayland"
+import wl "../odin-wayland"
 fixed_t :: wl.fixed_t
 proxy :: wl.proxy
 message :: wl.message
