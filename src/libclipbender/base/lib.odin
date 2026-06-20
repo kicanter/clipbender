@@ -92,9 +92,9 @@ reg_id_to_string :: proc(id: Reg_Id) -> string {
 // Runtime polymoprhic struct to dynamically dispatch to Wayland or X11
 Clipboard_Backend :: struct {
     fd:       linux.Fd,
-    dispatch: proc(state: rawptr),
+    dispatch: proc(state: rawptr) -> bool,
     cleanup:  proc(state: rawptr),
-    state:     rawptr,
+    state:    rawptr,
 }
 
 Session_Type :: enum u8 {

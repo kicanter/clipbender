@@ -203,9 +203,17 @@ dispatch_cqe :: proc(
         running = false
     case .CLIPBOARD_MONITOR:
         log.debug("Clipboard monitor event received")
-        if backend.state != nil {
-            backend.dispatch(backend.state)
+        // `dispatch` returns false if error occurs
+        if backend.dispatch(backend.state) {
+            // Successful dispatch, re-arm the poll
             uring.poll_add(ring, u64(Event.CLIPBOARD_MONITOR), backend.fd, {.IN}, {})
+        } else {
+            log.warn(
+                "Clipboard backend disabled, dropping clipboard monitoring (named registers still functional). " +
+                "You'll probably want to restart `clipbenderd`.",
+            )
+            backend.cleanup(backend.state)
+            backend.state = nil
         }
     }
     return running

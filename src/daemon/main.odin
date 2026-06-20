@@ -23,9 +23,8 @@ main :: proc() {
     case .WAYLAND:
         log.debug("Wayland session type found, initializing clipboard monitoring via `ext-data-control-v1` protocol")
 
-        ok: bool
-        wl_state, ok = wayland_init()
-        if !ok {
+        wl_state = wayland_init()
+        if wl_state.display == nil {
             fmt.eprintln("Error: failed to connect to Wayland compositor")
             os.exit(1)
         }
@@ -33,14 +32,14 @@ main :: proc() {
 
         backend = {
             fd = wl_fd,
-            dispatch = proc(state: rawptr) {wayland_dispatch(cast(^Wayland_State)state)},
+            dispatch = proc(state: rawptr) -> bool {return wayland_dispatch(cast(^Wayland_State)state)},
             cleanup = proc(state: rawptr) {wayland_cleanup(cast(^Wayland_State)state)},
             state = rawptr(&wl_state),
         }
     case .X11:
         log.warn("X11 is currently unsupported for clipboard monitoring, named registers are still functional")
     case .OTHER:
-        log.warn("Only Wayland and X11 are supported for cliboard monitoring, named registers are still functional")
+        log.warn("Only Wayland and X11 are supported for clipboard monitoring, named registers are still functional")
     }
 
     if backend.state != nil {
