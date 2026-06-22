@@ -276,6 +276,7 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
             running = dispatch_cqe(cqes[i], &ring, socket_fd, backend)
         }
         uring.submit(&ring)
+        free_all(context.temp_allocator)
     }
 }
 
