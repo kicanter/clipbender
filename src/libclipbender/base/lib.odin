@@ -89,6 +89,11 @@ reg_id_to_string :: proc(id: Reg_Id) -> string {
     return "unknown reg id"
 }
 
+Selection_Type :: enum u8 {
+    CLIPBOARD,
+    PRIMARY,
+}
+
 // Runtime polymoprhic struct to dynamically dispatch to Wayland or X11
 Clipboard_Backend :: struct {
     fd:       linux.Fd,

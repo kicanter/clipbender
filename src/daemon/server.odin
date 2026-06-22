@@ -106,7 +106,7 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
         // Destination register must be either named register or SELECTION_CLIPBOARD/PRIMARY
         resp_written: int
         if lib.reg_id_is_named(dest_reg) {
-            set_named_reg(set_mode, dest_reg, data, mime)
+            set_named_reg(dest_reg, data, mime, set_mode)
             resp_written = lib.encode_resp_ok(resp_buf[:])
         } else if lib.reg_id_is_selection(dest_reg) {
             set_selection_reg(dest_reg, data, mime)

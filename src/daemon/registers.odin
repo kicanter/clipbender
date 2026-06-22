@@ -19,7 +19,7 @@ named_registers: [26]lib.Reg_Entry
 primary_registers: Recency_Ring
 
 // Push to head, overwriting any existing value
-push_recency_reg :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
+push_to_ring :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
     ring.head = (ring.head + 1) % lib.RECENCY_SIZE
     lib.free_reg_entry(&ring.entries[ring.head])
     ring.entries[ring.head] = lib.Reg_Entry {
@@ -28,6 +28,11 @@ push_recency_reg :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
         timestamp = time.time_to_unix(time.now()),
     }
     ring.count = min(ring.count + 1, lib.RECENCY_SIZE)
+}
+
+push_recency_reg :: proc(data: []u8, mime: string, type: lib.Selection_Type) {
+    ring := &clipboard_registers if type == .CLIPBOARD else &primary_registers
+    push_to_ring(ring, data, mime)
 }
 
 // Get the `recency` most recent `Register_Entry`
@@ -74,17 +79,17 @@ get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (c
     //     lib.free_reg_entry(&entry)
     // }
     // named_registers = {}
-    // push_recency_reg(&clipboard_registers, transmute([]u8)string("https://github.com/odin-lang/Odin"), "text/uri-list")
-    // push_recency_reg(&clipboard_registers, transmute([]u8)string("fn main() { println!(\"hello\"); }"), "text/plain")
-    // push_recency_reg(&clipboard_registers, transmute([]u8)string("<div class=\"container\">content</div>"), "text/html")
-    // push_recency_reg(&clipboard_registers, transmute([]u8)string("short"), "text/plain")
-    // push_recency_reg(&primary_registers, transmute([]u8)string("selected text from browser"), "text/plain")
-    // push_recency_reg(&primary_registers, transmute([]u8)string("{\"key\": \"value\", \"num\": 42}"), "application/json")
-    // push_recency_reg(&primary_registers, transmute([]u8)string("another primary selection that is longer than the content column width for testing truncation"), "text/plain")
-    // push_recency_reg(&primary_registers, transmute([]u8)string("/home/user/.config/clipbender/config"), "text/plain")
-    // set_named_reg(.OVERWRITE, lib.Reg_Id(lib.NAMED_START + 3), transmute([]u8)string("persistent snippet stored in register d"), "text/plain")
-    // set_named_reg(.OVERWRITE, lib.Reg_Id(lib.NAMED_START + 5), transmute([]u8)string("git@github.com:user/repo.git"), "text/plain")
-    // set_named_reg(.OVERWRITE, lib.Reg_Id(lib.NAMED_END - 2), transmute([]u8)string("<p>some html content</p>"), "text/html")
+    // push_recency_reg(transmute([]u8)string("https://github.com/odin-lang/Odin"), "text/uri-list", .CLIPBOARD)
+    // push_recency_reg(transmute([]u8)string("fn main() { println!(\"hello\"); }"), "text/plain", .CLIPBOARD)
+    // push_recency_reg(transmute([]u8)string("<div class=\"container\">content</div>"), "text/html", .CLIPBOARD)
+    // push_recency_reg(transmute([]u8)string("short"), "text/plain", .CLIPBOARD)
+    // push_recency_reg(transmute([]u8)string("selected text from browser"), "text/plain", .PRIMARY)
+    // push_recency_reg(transmute([]u8)string("{\"key\": \"value\", \"num\": 42}"), "application/json", .PRIMARY)
+    // push_recency_reg(transmute([]u8)string("another primary selection that is longer than the content column width for testing truncation"), "text/plain", .PRIMARY)
+    // push_recency_reg(transmute([]u8)string("/home/user/.config/clipbender/config"), "text/plain", .PRIMARY)
+    // set_named_reg(lib.Reg_Id(lib.NAMED_START + 3), transmute([]u8)string("persistent snippet stored in register d"), "text/plain", .OVERWRITE)
+    // set_named_reg(lib.Reg_Id(lib.NAMED_START + 5), transmute([]u8)string("git@github.com:user/repo.git"), "text/plain", .OVERWRITE)
+    // set_named_reg(lib.Reg_Id(lib.NAMED_END - 2), transmute([]u8)string("<p>some html content</p>"), "text/html", .OVERWRITE)
 
     count = 0
     for bit in filter & lib.CMD_GET_FILTER_CLIPBOARD {
@@ -120,7 +125,7 @@ get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (c
     return count
 }
 
-set_named_reg :: proc(set_mode: lib.Set_Mode, reg_id: lib.Reg_Id, data: []byte, mime: string) {
+set_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) {
     switch set_mode {
     case .OVERWRITE:
         overwrite_named_reg(reg_id, data, mime)
