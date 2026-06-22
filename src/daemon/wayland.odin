@@ -129,10 +129,14 @@ device_listener := ext_dc.data_control_device_v1_listener {
     data_offer = proc "c" (
         data: rawptr,
         data_control_device_v1: ^ext_dc.data_control_device_v1,
-    ) -> ^ext_dc.data_control_offer_v1 {
+        id_: ^ext_dc.data_control_offer_v1,
+    ) {
         context = runtime.default_context()
+        wl_state := cast(^Wayland_State)data
         log.debug("Received new data offer")
-        return nil
+        // Attach offer listener to collect MIME types
+        ext_dc.data_control_offer_v1_add_listener(id_, &offer_listener, wl_state)
+        clear(&wl_state.pending_mime_types)
     },
     selection = proc "c" (
         data: rawptr,

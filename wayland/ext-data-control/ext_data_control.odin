@@ -110,7 +110,7 @@ data_control_device_v1_listener :: struct {
         ext_data_control_device.data_offer event, the new data_offer object
         will send out ext_data_control_offer.offer events to describe the MIME
         types it offers. */
-	data_offer : proc "c" (data: rawptr, data_control_device_v1: ^data_control_device_v1) -> ^data_control_offer_v1,
+	data_offer : proc "c" (data: rawptr, data_control_device_v1: ^data_control_device_v1, id_: ^data_control_offer_v1),
 
 /* The selection event is sent out to notify the client of a new
         ext_data_control_offer for the selection for this device. The
