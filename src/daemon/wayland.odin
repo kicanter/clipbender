@@ -2,6 +2,7 @@ package main
 
 import "base:runtime"
 import "core:log"
+import "core:slice"
 import "core:strings"
 import "core:sys/linux"
 
@@ -27,7 +28,17 @@ PREFERRED_MIMES :: [?]string {
     "text/plain",
 }
 
+Selection_State :: struct {
+    // Copy: selection monitoring (push to recency registers)
+    offer:       ^ext_dc.data_control_offer_v1,
+    // Paste: selection writing (setting clipboard/primary for paste)
+    source:      ^ext_dc.data_control_source_v1,
+    source_data: []byte,
+    source_mime: string,
+}
+
 Wayland_State :: struct {
+    // General connection state
     display:                   ^wayland.display,
     registry:                  ^wayland.registry,
     seat:                      ^wayland.seat,
@@ -35,10 +46,12 @@ Wayland_State :: struct {
     data_control_manager:      ^ext_dc.data_control_manager_v1,
     data_control_manager_name: uint,
     data_control_device:       ^ext_dc.data_control_device_v1,
-    clipboard_offer:           ^ext_dc.data_control_offer_v1,
-    primary_offer:             ^ext_dc.data_control_offer_v1,
-    advertised_mimes:          map[string]struct{}, // map with zero-size value = hashset
     disabled:                  bool,
+    // Selection state
+    clipboard_state:           Selection_State,
+    primary_state:             Selection_State,
+    // Temporary set used to accumulate mimes from an offer and pass to selection/primary_selection event
+    advertised_mimes:          map[string]struct{}, // map with zero-size value = hashset
 }
 
 wayland_init :: proc() -> Wayland_State {
@@ -85,8 +98,13 @@ wayland_init :: proc() -> Wayland_State {
 
 // Destroy in reverse order of creation, children before parents
 wayland_cleanup :: proc(wl_state: ^Wayland_State) {
-    if wl_state.clipboard_offer != nil {ext_dc.data_control_offer_v1_destroy(wl_state.clipboard_offer)}
-    if wl_state.primary_offer != nil {ext_dc.data_control_offer_v1_destroy(wl_state.primary_offer)}
+    // Cleanup clipboard/primary states
+    if wl_state.clipboard_state.offer != nil {ext_dc.data_control_offer_v1_destroy(wl_state.clipboard_state.offer)}
+    wayland_cleanup_source(&wl_state.clipboard_state)
+    if wl_state.primary_state.offer != nil {ext_dc.data_control_offer_v1_destroy(wl_state.primary_state.offer)}
+    wayland_cleanup_source(&wl_state.primary_state)
+
+    // Cleanup connection state
     if wl_state.data_control_device != nil {ext_dc.data_control_device_v1_destroy(wl_state.data_control_device)}
     if wl_state.data_control_manager != nil {ext_dc.data_control_manager_v1_destroy(wl_state.data_control_manager)}
     if wl_state.seat != nil {wayland.seat_release(wl_state.seat)}
@@ -167,7 +185,7 @@ device_listener := ext_dc.data_control_device_v1_listener {
         context = runtime.default_context()
         wl_state := cast(^Wayland_State)data
         log.debug("Received new clipboard selection")
-        handle_selection(wl_state, id_, .CLIPBOARD)
+        wayland_handle_selection(wl_state, id_, .CLIPBOARD)
     },
     finished = proc "c" (data: rawptr, data_control_device_v1: ^ext_dc.data_control_device_v1) {
         context = runtime.default_context()
@@ -183,10 +201,11 @@ device_listener := ext_dc.data_control_device_v1_listener {
         context = runtime.default_context()
         wl_state := cast(^Wayland_State)data
         log.debug("Received new primary selection")
-        handle_selection(wl_state, id_, .PRIMARY)
+        wayland_handle_selection(wl_state, id_, .PRIMARY)
     },
 }
 
+// Copy events
 offer_listener := ext_dc.data_control_offer_v1_listener {
     offer = proc "c" (data: rawptr, data_control_offer_v1: ^ext_dc.data_control_offer_v1, mime_type_: cstring) {
         context = runtime.default_context()
@@ -197,7 +216,46 @@ offer_listener := ext_dc.data_control_offer_v1_listener {
     },
 }
 
-handle_selection :: proc(wl_state: ^Wayland_State, id_: ^ext_dc.data_control_offer_v1, type: lib.Selection_Type) {
+// Paste events
+source_listener := ext_dc.data_control_source_v1_listener {
+    send = proc "c" (
+        data: rawptr,
+        data_control_source_v1: ^ext_dc.data_control_source_v1,
+        mime_type_: cstring,
+        fd_: int,
+    ) {
+        context = runtime.default_context()
+        wl_state := cast(^Wayland_State)data
+
+        switch data_control_source_v1 {
+        case wl_state.clipboard_state.source:
+            log.debugf("Received new send event for clipboard source")
+            wayland_send_source(&wl_state.clipboard_state, string(mime_type_), cast(linux.Fd)fd_)
+        case wl_state.primary_state.source:
+            log.debugf("Received new send event for primary source")
+            wayland_send_source(&wl_state.primary_state, string(mime_type_), cast(linux.Fd)fd_)
+        }
+    },
+    cancelled = proc "c" (data: rawptr, data_control_source_v1: ^ext_dc.data_control_source_v1) {
+        context = runtime.default_context()
+        wl_state := cast(^Wayland_State)data
+
+        switch data_control_source_v1 {
+        case wl_state.clipboard_state.source:
+            log.debugf("Received new cancelled event for clipboard source")
+            wayland_cleanup_source(&wl_state.clipboard_state)
+        case wl_state.primary_state.source:
+            log.debugf("Received new cancelled event for primary source")
+            wayland_cleanup_source(&wl_state.primary_state)
+        }
+    },
+}
+
+wayland_handle_selection :: proc(
+    wl_state: ^Wayland_State,
+    id_: ^ext_dc.data_control_offer_v1,
+    type: lib.Selection_Type,
+) {
     if id_ == nil {
         log.debug("Received offer is nil (selection was cleared)")
         return
@@ -207,9 +265,9 @@ handle_selection :: proc(wl_state: ^Wayland_State, id_: ^ext_dc.data_control_off
     cached_offer: ^^ext_dc.data_control_offer_v1
     switch type {
     case .CLIPBOARD:
-        cached_offer = &wl_state.clipboard_offer
+        cached_offer = &wl_state.clipboard_state.offer
     case .PRIMARY:
-        cached_offer = &wl_state.primary_offer
+        cached_offer = &wl_state.primary_state.offer
     }
     if cached_offer^ != nil {ext_dc.data_control_offer_v1_destroy(cached_offer^)}
     cached_offer^ = id_
@@ -220,7 +278,7 @@ handle_selection :: proc(wl_state: ^Wayland_State, id_: ^ext_dc.data_control_off
         return
     }
 
-    data := read_offer_data(id_, wl_state.display, mime)
+    data := wayland_read_offer_data(id_, wl_state.display, mime)
     if data == nil {
         log.error("Couldn't read the data from offer with mime type `%s`", mime)
         return
@@ -251,7 +309,11 @@ pick_best_mime :: proc(avail_mimes: map[string]struct{}) -> string {
 }
 
 // Caller is responsible for freeing `data`
-read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^wayland.display, mime: string) -> []u8 {
+wayland_read_offer_data :: proc(
+    offer: ^ext_dc.data_control_offer_v1,
+    display: ^wayland.display,
+    mime: string,
+) -> []u8 {
     // Create pipe
     pipe_fds: [2]linux.Fd
     if linux.pipe2(&pipe_fds, {.CLOEXEC}) != nil {
@@ -283,5 +345,69 @@ read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^wayland.
     }
 
     return result[:]
+}
+
+wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: string, type: lib.Selection_Type) {
+    selection: ^Selection_State
+    switch type {
+    case .CLIPBOARD:
+        selection = &wl_state.clipboard_state
+    case .PRIMARY:
+        selection = &wl_state.primary_state
+    }
+
+    // Cleanup any previous source set
+    wayland_cleanup_source(selection)
+
+    // Clone data + mime to selection state
+    selection.source_data = slice.clone(data)
+    selection.source_mime = strings.clone(mime)
+
+    // Create new data source to advertise
+    selection.source = ext_dc.data_control_manager_v1_create_data_source(wl_state.data_control_manager)
+    if selection.source == nil {
+        log.error("Failed to create data control source")
+        return
+    }
+
+    // Offer mime type
+    ext_dc.data_control_source_v1_offer(selection.source, strings.clone_to_cstring(mime, context.temp_allocator))
+
+    // Attach listener for send/cancelled events
+    ext_dc.data_control_source_v1_add_listener(selection.source, &source_listener, rawptr(wl_state))
+
+    // Set selection on device
+    switch type {
+    case .CLIPBOARD:
+        ext_dc.data_control_device_v1_set_selection(wl_state.data_control_device, selection.source)
+    case .PRIMARY:
+        ext_dc.data_control_device_v1_set_primary_selection(wl_state.data_control_device, selection.source)
+    }
+
+    // Flush display
+    wayland.display_flush(wl_state.display)
+    log.debugf("Set %v selection with mime `%s` (%d bytes)", type, mime, len(data))
+}
+
+wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, fd: linux.Fd) {
+    if mime_type != selection.source_mime {
+        log.errorf(
+            "Requested mime `%s` does not match offered mime `%s`, this is unexpected",
+            mime_type,
+            selection.source_mime,
+        )
+        return
+    }
+    linux.write(fd, selection.source_data)
+    linux.close(fd)
+}
+
+wayland_cleanup_source :: proc(selection: ^Selection_State) {
+    if selection.source != nil {ext_dc.data_control_source_v1_destroy(selection.source)}
+    selection.source = nil
+    delete(selection.source_data)
+    selection.source_data = nil
+    delete(selection.source_mime)
+    selection.source_mime = ""
 }
 

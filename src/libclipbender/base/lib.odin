@@ -96,10 +96,11 @@ Selection_Type :: enum u8 {
 
 // Runtime polymoprhic struct to dynamically dispatch to Wayland or X11
 Clipboard_Backend :: struct {
-    fd:       linux.Fd,
-    dispatch: proc(state: rawptr) -> bool,
-    cleanup:  proc(state: rawptr),
-    state:    rawptr,
+    fd:            linux.Fd,
+    dispatch:      proc(state: rawptr) -> bool,
+    cleanup:       proc(state: rawptr),
+    set_selection: proc(state: rawptr, data: []u8, mime: string, type: Selection_Type),
+    state:         rawptr,
 }
 
 Session_Type :: enum u8 {

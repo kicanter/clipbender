@@ -61,7 +61,7 @@ cleanup_socket :: proc(socket_path: string, socket_fd: linux.Fd) {
     os.remove(socket_path)
 }
 
-handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
+handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboard_Backend) -> (running: bool) {
     running = true
     resp_buf: [MAX_DATA_SIZE]u8
     msg_type := cast(lib.Command_Type)data_buf[0]
@@ -109,7 +109,7 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd) -> (running: bool) {
             set_named_reg(dest_reg, data, mime, set_mode)
             resp_written = lib.encode_resp_ok(resp_buf[:])
         } else if lib.reg_id_is_selection(dest_reg) {
-            set_selection_reg(dest_reg, data, mime)
+            set_selection_reg(backend, dest_reg, data, mime)
             resp_written = lib.encode_resp_ok(resp_buf[:])
         } else {
             errmsg := fmt.tprintf(
@@ -194,7 +194,7 @@ dispatch_cqe :: proc(
         client_fd := cast(linux.Fd)(cqe.user_data >> 8)
         bytes_read := int(cqe.res)
         if bytes_read > 0 {
-            running = handle_recv(bytes_read, client_fd)
+            running = handle_recv(bytes_read, client_fd, backend)
         }
     case .SIGNAL:
         // Cast magic to get signal enum from signal number

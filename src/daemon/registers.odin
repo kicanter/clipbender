@@ -1,5 +1,6 @@
 package main
 
+import "core:log"
 import "core:slice"
 import "core:strings"
 import "core:time"
@@ -134,21 +135,15 @@ set_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: 
     }
 }
 
-// TODO: impl through wayland layer based on https://wayland.app/protocols/ext-data-control-v1#ext_data_control_device_v1
-set_selection_clipboard_reg :: proc(data: []byte, mime: string) {
-    // set the primary selection through ext_data_control_device_v1::set_primary_selection
-}
-
-// TODO: impl through wayland layer based on https://wayland.app/protocols/ext-data-control-v1#ext_data_control_device_v1
-set_selection_primary_reg :: proc(data: []byte, mime: string) {
-    // set the clipboard selection through ext_data_control_device_v1::set_selection
-}
-
-set_selection_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) {
+set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, data: []byte, mime: string) {
+    if backend.state == nil {
+        log.error("No backend state, can't set selection register")
+        return
+    }
     if reg_id == lib.SELECTION_CLIPBOARD {
-        set_selection_clipboard_reg(data, mime)
+        backend.set_selection(backend.state, data, mime, .CLIPBOARD)
     } else if reg_id == lib.SELECTION_PRIMARY {
-        set_selection_primary_reg(data, mime)
+        backend.set_selection(backend.state, data, mime, .PRIMARY)
     }
 }
 
