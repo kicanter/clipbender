@@ -8,7 +8,7 @@ import "core:sys/linux"
 
 import lib "libclipbender:base"
 import ext_dc "wayland:ext-data-control"
-import wayland "wayland:odin-wayland"
+import wl "wayland:odin-wayland"
 
 // Preferred mime types in order of priority
 PREFERRED_MIMES :: [?]string {
@@ -39,9 +39,9 @@ Selection_State :: struct {
 
 Wayland_State :: struct {
     // General connection state
-    display:                   ^wayland.display,
-    registry:                  ^wayland.registry,
-    seat:                      ^wayland.seat,
+    display:                   ^wl.display,
+    registry:                  ^wl.registry,
+    seat:                      ^wl.seat,
     seat_name:                 uint,
     data_control_manager:      ^ext_dc.data_control_manager_v1,
     data_control_manager_name: uint,
@@ -65,11 +65,11 @@ wayland_init :: proc() -> Wayland_State {
     }
 
     // Get registry
-    wl_state.registry = wayland.display_get_registry(wl_state.display)
-    wayland.registry_add_listener(wl_state.registry, &registry_listener, &wl_state)
+    wl_state.registry = wl.display_get_registry(wl_state.display)
+    wl.registry_add_listener(wl_state.registry, &registry_listener, &wl_state)
 
     // Roundtrip to receive registry events (binds seat and data_control_manager)
-    wayland.display_roundtrip(wl_state.display)
+    wl.display_roundtrip(wl_state.display)
     if wl_state.seat == nil {
         log.error("Failed to bind Wayland seat")
         return {}
@@ -91,7 +91,7 @@ wayland_init :: proc() -> Wayland_State {
     ext_dc.data_control_device_v1_add_listener(wl_state.data_control_device, &device_listener, &wl_state)
 
     // Roundtrip to receive initial selection state
-    wayland.display_roundtrip(wl_state.display)
+    wl.display_roundtrip(wl_state.display)
 
     return wl_state
 }
@@ -107,34 +107,34 @@ wayland_cleanup :: proc(wl_state: ^Wayland_State) {
     // Cleanup connection state
     if wl_state.data_control_device != nil {ext_dc.data_control_device_v1_destroy(wl_state.data_control_device)}
     if wl_state.data_control_manager != nil {ext_dc.data_control_manager_v1_destroy(wl_state.data_control_manager)}
-    if wl_state.seat != nil {wayland.seat_release(wl_state.seat)}
-    wayland.registry_destroy(wl_state.registry)
-    wayland.display_disconnect(wl_state.display)
+    if wl_state.seat != nil {wl.seat_release(wl_state.seat)}
+    wl.registry_destroy(wl_state.registry)
+    wl.display_disconnect(wl_state.display)
 }
 
 wayland_get_fd :: proc(wl_state: ^Wayland_State) -> linux.Fd {
-    return cast(linux.Fd)wayland.display_get_fd(wl_state.display)
+    return cast(linux.Fd)wl.display_get_fd(wl_state.display)
 }
 
 wayland_dispatch :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
     if wl_state.disabled {return false}
-    wayland.display_flush(wl_state.display)
-    wayland.display_dispatch(wl_state.display)
+    wl.display_flush(wl_state.display)
+    wl.display_dispatch(wl_state.display)
     return !wl_state.disabled
 }
 
-registry_listener := wayland.registry_listener {
-    global = proc "c" (data: rawptr, registry: ^wayland.registry, name_: uint, interface_: cstring, version_: uint) {
+registry_listener := wl.registry_listener {
+    global = proc "c" (data: rawptr, registry: ^wl.registry, name_: uint, interface_: cstring, version_: uint) {
         context = runtime.default_context()
         wl_state := cast(^Wayland_State)data
 
         // Use 1 as version in registry_bind calls to guarantee compatibility with as many compositors as possible
         switch interface_ {
         case "wl_seat":
-            wl_state.seat = cast(^wayland.seat)wayland.registry_bind(registry, name_, &wayland.seat_interface, 1)
+            wl_state.seat = cast(^wl.seat)wl.registry_bind(registry, name_, &wl.seat_interface, 1)
             wl_state.seat_name = name_
         case "ext_data_control_manager_v1":
-            wl_state.data_control_manager = cast(^ext_dc.data_control_manager_v1)wayland.registry_bind(
+            wl_state.data_control_manager = cast(^ext_dc.data_control_manager_v1)wl.registry_bind(
                 registry,
                 name_,
                 &ext_dc.data_control_manager_v1_interface,
@@ -147,7 +147,7 @@ registry_listener := wayland.registry_listener {
         }
         log.debugf("Successfully bound Wayland interface `%s`", interface_)
     },
-    global_remove = proc "c" (data: rawptr, registry: ^wayland.registry, name_: uint) {
+    global_remove = proc "c" (data: rawptr, registry: ^wl.registry, name_: uint) {
         context = runtime.default_context()
         wl_state := cast(^Wayland_State)data
 
@@ -311,7 +311,7 @@ pick_best_mime :: proc(avail_mimes: map[string]struct{}) -> string {
 // Caller is responsible for freeing `data`
 wayland_read_offer_data :: proc(
     offer: ^ext_dc.data_control_offer_v1,
-    display: ^wayland.display,
+    display: ^wl.display,
     mime: string,
 ) -> []u8 {
     // Create pipe
@@ -327,7 +327,7 @@ wayland_read_offer_data :: proc(
     // Ask source to write data to our pipe
     ext_dc.data_control_offer_v1_receive(offer, strings.clone_to_cstring(mime, context.temp_allocator), int(write_fd))
     linux.close(write_fd)
-    wayland.display_flush(display)
+    wl.display_flush(display)
 
     // Read all data from pipe until EOF
     buf: [4096]byte
@@ -385,7 +385,7 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: stri
     }
 
     // Flush display
-    wayland.display_flush(wl_state.display)
+    wl.display_flush(wl_state.display)
     log.debugf("Set %v selection with mime `%s` (%d bytes)", type, mime, len(data))
 }
 
