@@ -4,10 +4,20 @@ import "base:runtime"
 import "core:fmt"
 import "core:log"
 import "core:os"
+import "core:simd"
 import "core:sys/linux"
 
 import wl "wayland:odin-wayland"
 import wlr_ls "wayland:wlr-layer-shell"
+
+Frame_Buffer :: struct {
+    buffer:   ^wl.buffer,
+    shm_pool: ^wl.shm_pool,
+    shm_fd:   linux.Fd,
+    pixels:   [^]u32, // mmap'd pixel data
+    width:    uint,
+    height:   uint,
+}
 
 Gui_State :: struct {
     // General connection state
@@ -25,6 +35,8 @@ Gui_State :: struct {
     // Surface-specific state
     surface:          ^wl.surface,
     layer_surface:    ^wlr_ls.layer_surface_v1,
+    // Buffer of pixels
+    frame_buf:        Frame_Buffer,
 }
 
 gui_init_surface :: proc(gui_state: ^Gui_State) {
@@ -49,6 +61,74 @@ gui_init_surface :: proc(gui_state: ^Gui_State) {
     wl.surface_commit(gui_state.surface)
 }
 
+// Fill pixel buffer with single color using 8 SIMD lanes
+fill_pixels_simdx8 :: proc(pixels: [^]u32, count: uint, color: u32) {
+    // 8 pixels at a time using 256-bit SIMD (8 lanes x u32 bits in each lane)
+    color_vec := simd.u32x8{color, color, color, color, color, color, color, color}
+
+    chunks := count / 8
+    rem := count % 8
+
+    pixel_vecs := cast([^]simd.u32x8)pixels
+    for i in 0 ..< chunks {
+        pixel_vecs[i] = color_vec
+    }
+
+    rem_offset := chunks * 8
+    for i in 0 ..< rem {
+        pixels[rem_offset + i] = color
+    }
+}
+
+gui_init_buffer :: proc(gui_state: ^Gui_State) -> (err: Maybe(string)) {
+    // Create shared memory fd
+    errno: linux.Errno
+    gui_state.frame_buf.shm_fd, errno = linux.memfd_create("clipbender", {.CLOEXEC})
+    if errno != .NONE {
+        return fmt.tprintf("Failed to create mem-backed shm FD, errno: %v", errno)
+    }
+
+    // Truncate size to 4 bytes per pixel (#argb8888)
+    width := gui_state.frame_buf.width
+    height := gui_state.frame_buf.height
+    area_bytes := 4 * width * height
+    errno = linux.ftruncate(gui_state.frame_buf.shm_fd, i64(area_bytes))
+    if errno != .NONE {
+        return fmt.tprintf("Failed to truncate shm FD, errno: %v", errno)
+    }
+
+    // Map FD into address space to write pixels to
+    pixels_ptr: rawptr
+    pixels_ptr, errno = linux.mmap(0, area_bytes, {.READ, .WRITE}, {.SHARED}, gui_state.frame_buf.shm_fd, 0)
+    if errno != .NONE {
+        return fmt.tprintf("Failed to mmap shm FD for pixel array, errno: %v", errno)
+    }
+    gui_state.frame_buf.pixels = cast([^]u32)pixels_ptr
+
+    // Set color of buffer
+    color: u32 = 0xFF2E3440 // ARGB: full alpha, dark gray
+    fill_pixels_simdx8(gui_state.frame_buf.pixels, width * height, color)
+
+    // Create shm_pool
+    gui_state.frame_buf.shm_pool = wl.shm_create_pool(gui_state.shm, int(gui_state.frame_buf.shm_fd), int(area_bytes))
+
+    // Create buffer from the pool and attach to surface
+    gui_state.frame_buf.buffer = wl.shm_pool_create_buffer(
+        gui_state.frame_buf.shm_pool,
+        0,
+        int(width),
+        int(height),
+        int(width * 4), // stride is bytes per row, we have 4 bytes for every pixel in width
+        .argb8888,
+    )
+    wl.surface_attach(gui_state.surface, gui_state.frame_buf.buffer, 0, 0)
+
+    // Commit configuration
+    wl.surface_commit(gui_state.surface)
+
+    return nil
+}
+
 gui_init :: proc() -> Gui_State {
     gui_state: Gui_State
     gui_state.running = true
@@ -67,18 +147,22 @@ gui_init :: proc() -> Gui_State {
     wl.display_roundtrip(gui_state.display)
     if gui_state.seat == nil {
         log.error("Failed to bind Wayland seat")
+        gui_state.running = false
         return {}
     }
     if gui_state.compositor == nil {
         log.error("Failed to bind Wayland compositor")
+        gui_state.running = false
         return {}
     }
     if gui_state.shm == nil {
         log.error("Failed to bind Wayland shm")
+        gui_state.running = false
         return {}
     }
     if gui_state.layer_shell == nil {
         log.error("Failed to bind Wayland wlr_layer_shell")
+        gui_state.running = false
         return {}
     }
 
@@ -86,10 +170,12 @@ gui_init :: proc() -> Gui_State {
     gui_init_surface(&gui_state)
     if gui_state.surface == nil {
         log.error("Failed to init Wayland surface")
+        gui_state.running = false
         return {}
     }
     if gui_state.layer_surface == nil {
         log.error("Failed to init Wayland wlr_layer_surface")
+        gui_state.running = false
         return {}
     }
 
@@ -99,10 +185,26 @@ gui_init :: proc() -> Gui_State {
     return gui_state
 }
 
-gui_cleanup :: proc(gui_state: ^Gui_State) {
-    // Cleanup connection state
+gui_cleanup_buffer :: proc(gui_state: ^Gui_State) {
+    if gui_state.frame_buf.buffer != nil {wl.buffer_destroy(gui_state.frame_buf.buffer)}
+    if gui_state.frame_buf.shm_pool != nil {wl.shm_pool_destroy(gui_state.frame_buf.shm_pool)}
+    if gui_state.frame_buf.pixels != nil {
+        linux.munmap(rawptr(gui_state.frame_buf.pixels), 4 * gui_state.frame_buf.width * gui_state.frame_buf.height)
+    }
+    _ = linux.close(gui_state.frame_buf.shm_fd)
+}
+
+gui_cleanup_surface :: proc(gui_state: ^Gui_State) {
     if gui_state.layer_surface != nil {wlr_ls.layer_surface_v1_destroy(gui_state.layer_surface)}
     if gui_state.surface != nil {wl.surface_destroy(gui_state.surface)}
+}
+
+gui_cleanup :: proc(gui_state: ^Gui_State) {
+    // Cleanup buffer
+    gui_cleanup_buffer(gui_state)
+    // Cleanup surface
+    gui_cleanup_surface(gui_state)
+    // Cleanup connection state
     if gui_state.layer_shell != nil {wlr_ls.layer_shell_v1_destroy(gui_state.layer_shell)}
     if gui_state.shm != nil {wl.shm_destroy(gui_state.shm)}
     if gui_state.compositor != nil {wl.compositor_destroy(gui_state.compositor)}
@@ -179,16 +281,30 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
         gui_state := cast(^Gui_State)data
         log.debug("Received configure event")
 
-        width := width_
-        height := height_
-        if width == 0 || height == 0 {
+        if width_ == 0 || height_ == 0 {
             // Set width & height to default
-            width = 800
-            height = 600
+            gui_state.frame_buf.width = 800
+            gui_state.frame_buf.height = 600
+        } else {
+            gui_state.frame_buf.width = width_
+            gui_state.frame_buf.height = height_
         }
-        wlr_ls.layer_surface_v1_set_size(layer_surface_v1, width, height)
+        wlr_ls.layer_surface_v1_set_size(layer_surface_v1, gui_state.frame_buf.width, gui_state.frame_buf.height)
+
+        // Must ack configure before attach/commit
         wlr_ls.layer_surface_v1_ack_configure(layer_surface_v1, serial_)
-        wl.surface_commit(gui_state.surface)
+
+        // Clear buf if not empty
+        if gui_state.frame_buf.pixels != nil {
+            gui_cleanup_buffer(gui_state)
+        }
+        // Init buf, attach to surface, and commit surface
+        err := gui_init_buffer(gui_state)
+        if err != nil {
+            log.errorf("Failed to init GUI frame buffer: %v", err.?)
+            gui_state.running = false
+            return
+        }
     },
     closed = proc "c" (data: rawptr, layer_surface_v1: ^wlr_ls.layer_surface_v1) {
         context = runtime.default_context()

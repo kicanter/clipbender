@@ -58,7 +58,7 @@ wayland_init :: proc() -> Wayland_State {
     wl_state: Wayland_State
 
     // Get display
-    wl_state.display = wayland.display_connect(nil) // nil means connect to default $WAYLAND_DISPLAY or wayland-0 as fallback
+    wl_state.display = wl.display_connect(nil) // nil means connect to default $WAYLAND_DISPLAY or wayland-0 as fallback
     if wl_state.display == nil {
         log.error("Failed to connect to default Wayland display")
         return {}
@@ -309,11 +309,7 @@ pick_best_mime :: proc(avail_mimes: map[string]struct{}) -> string {
 }
 
 // Caller is responsible for freeing `data`
-wayland_read_offer_data :: proc(
-    offer: ^ext_dc.data_control_offer_v1,
-    display: ^wl.display,
-    mime: string,
-) -> []u8 {
+wayland_read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^wl.display, mime: string) -> []u8 {
     // Create pipe
     pipe_fds: [2]linux.Fd
     if linux.pipe2(&pipe_fds, {.CLOEXEC}) != nil {
