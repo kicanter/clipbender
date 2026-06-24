@@ -37,6 +37,8 @@ Gui_State :: struct {
     layer_surface:    ^wlr_ls.layer_surface_v1,
     // Buffer of pixels
     frame_buf:        Frame_Buffer,
+    // Keyboard input
+    keyboard:         ^wl.keyboard,
 }
 
 gui_init_surface :: proc(gui_state: ^Gui_State) {
@@ -179,6 +181,9 @@ gui_init :: proc() -> Gui_State {
         return {}
     }
 
+    // Add seat listener to get keyboard
+    wl.seat_add_listener(gui_state.seat, &seat_listener, &gui_state)
+
     // Roundtrip to receive configure event for layer_surface_listener
     wl.display_roundtrip(gui_state.display)
 
@@ -200,6 +205,8 @@ gui_cleanup_surface :: proc(gui_state: ^Gui_State) {
 }
 
 gui_cleanup :: proc(gui_state: ^Gui_State) {
+    // Cleanup keyboard
+    if gui_state.keyboard != nil {wl.keyboard_release(gui_state.keyboard)}
     // Cleanup buffer
     gui_cleanup_buffer(gui_state)
     // Cleanup surface
@@ -279,7 +286,7 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
     ) {
         context = runtime.default_context()
         gui_state := cast(^Gui_State)data
-        log.debug("Received configure event")
+        log.debug("Received zwlr_layer_surface_v1::configure event")
 
         if width_ == 0 || height_ == 0 {
             // Set width & height to default
@@ -309,9 +316,67 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
     closed = proc "c" (data: rawptr, layer_surface_v1: ^wlr_ls.layer_surface_v1) {
         context = runtime.default_context()
         gui_state := cast(^Gui_State)data
-        log.debug("Received closed event")
+        log.debug("Received zwlr_layer_surface_v1::closed event")
         gui_state.running = false
     },
+}
+
+// We don't need the name callback here, we're only going to really use one seat
+seat_listener := wl.seat_listener {
+    capabilities = proc "c" (data: rawptr, seat: ^wl.seat, capabilities_: wl.seat_capability) {
+        context = runtime.default_context()
+        gui_state := cast(^Gui_State)data
+        log.debug("Received wl_seat::capabilities event")
+
+        if capabilities_ == .keyboard {
+            gui_state.keyboard = wl.seat_get_keyboard(seat)
+            wl.keyboard_add_listener(gui_state.keyboard, &keyboard_listener, gui_state)
+        }
+    },
+    name = proc "c" (data: rawptr, seat: ^wl.seat, name_: cstring) {},
+}
+
+keyboard_listener := wl.keyboard_listener {
+    keymap = proc "c" (
+        data: rawptr,
+        keyboard: ^wl.keyboard,
+        format_: wl.keyboard_keymap_format,
+        fd_: int,
+        size_: uint,
+    ) {},
+    enter = proc "c" (data: rawptr, keyboard: ^wl.keyboard, serial_: uint, surface_: ^wl.surface, keys_: wl.array) {},
+    leave = proc "c" (data: rawptr, keyboard: ^wl.keyboard, serial_: uint, surface_: ^wl.surface) {},
+    key = proc "c" (
+        data: rawptr,
+        keyboard: ^wl.keyboard,
+        serial_: uint,
+        time_: uint,
+        key_: uint,
+        state_: wl.keyboard_key_state,
+    ) {
+        context = runtime.default_context()
+        gui_state := cast(^Gui_State)data
+        log.debugf("Received wl_keyboard::key event (key: %d, state: %v)", key_, state_)
+        // Escape keycode = 1, pressed = 1
+        if state_ == .pressed {
+            switch key_ {
+            // ESC
+            case 1:
+                gui_state.running = false
+                return
+            }
+        }
+    },
+    modifiers = proc "c" (
+        data: rawptr,
+        keyboard: ^wl.keyboard,
+        serial_: uint,
+        mods_depressed_: uint,
+        mods_latched_: uint,
+        mods_locked_: uint,
+        group_: uint,
+    ) {},
+    repeat_info = proc "c" (data: rawptr, keyboard: ^wl.keyboard, rate_: int, delay_: int) {},
 }
 
 run_gui :: proc(socket_fd: linux.Fd) {

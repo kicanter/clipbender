@@ -173,7 +173,7 @@ device_listener := ext_dc.data_control_device_v1_listener {
     ) {
         context = runtime.default_context()
         wl_state := cast(^Wayland_State)data
-        log.debug("Received new data offer")
+        log.debug("Received ext_data_control_device_v1::data_offer event")
         // Attach offer listener to collect MIME types
         ext_dc.data_control_offer_v1_add_listener(id_, &offer_listener, wl_state)
     },
@@ -184,13 +184,13 @@ device_listener := ext_dc.data_control_device_v1_listener {
     ) {
         context = runtime.default_context()
         wl_state := cast(^Wayland_State)data
-        log.debug("Received new clipboard selection")
+        log.debug("Received ext_data_control_device_v1::selection event")
         wayland_handle_selection(wl_state, id_, .CLIPBOARD)
     },
     finished = proc "c" (data: rawptr, data_control_device_v1: ^ext_dc.data_control_device_v1) {
         context = runtime.default_context()
         wl_state := cast(^Wayland_State)data
-        log.debug("Received `finished()` callback from data control device, disabling clipboard monitoring")
+        log.debug("Received ext_data_control_device_v1::finished event, disabling clipboard monitoring")
         wl_state.disabled = true
     },
     primary_selection = proc "c" (
@@ -200,7 +200,7 @@ device_listener := ext_dc.data_control_device_v1_listener {
     ) {
         context = runtime.default_context()
         wl_state := cast(^Wayland_State)data
-        log.debug("Received new primary selection")
+        log.debug("Received ext_data_control_device_v1::primary_selection event")
         wayland_handle_selection(wl_state, id_, .PRIMARY)
     },
 }
@@ -210,7 +210,7 @@ offer_listener := ext_dc.data_control_offer_v1_listener {
     offer = proc "c" (data: rawptr, data_control_offer_v1: ^ext_dc.data_control_offer_v1, mime_type_: cstring) {
         context = runtime.default_context()
         wl_state := cast(^Wayland_State)data
-        log.debugf("Received new offer for mime type: %s", mime_type_)
+        log.debugf("Received ext_data_control_offer_v1::offer event (mime: %s)", mime_type_)
 
         wl_state.advertised_mimes[strings.clone_from_cstring(mime_type_, context.temp_allocator)] = {}
     },
@@ -229,10 +229,10 @@ source_listener := ext_dc.data_control_source_v1_listener {
 
         switch data_control_source_v1 {
         case wl_state.clipboard_state.source:
-            log.debugf("Received new send event for clipboard source")
+            log.debugf("Received ext_data_control_source_v1::send event (clipboard)")
             wayland_send_source(&wl_state.clipboard_state, string(mime_type_), cast(linux.Fd)fd_)
         case wl_state.primary_state.source:
-            log.debugf("Received new send event for primary source")
+            log.debugf("Received ext_data_control_source_v1::send event (primary)")
             wayland_send_source(&wl_state.primary_state, string(mime_type_), cast(linux.Fd)fd_)
         }
     },
@@ -242,10 +242,10 @@ source_listener := ext_dc.data_control_source_v1_listener {
 
         switch data_control_source_v1 {
         case wl_state.clipboard_state.source:
-            log.debugf("Received new cancelled event for clipboard source")
+            log.debugf("Received ext_data_control_source_v1::cancelled event (clipboard)")
             wayland_cleanup_source(&wl_state.clipboard_state)
         case wl_state.primary_state.source:
-            log.debugf("Received new cancelled event for primary source")
+            log.debugf("Received ext_data_control_source_v1::cancelled event (primary)")
             wayland_cleanup_source(&wl_state.primary_state)
         }
     },
