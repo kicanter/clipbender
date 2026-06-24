@@ -43,6 +43,7 @@ $(SCANNER):
 protocols: $(SCANNER)
 	$(SCANNER) $(WL_DIR)/ext-data-control/ext-data-control-v1.xml $(WL_DIR)/ext-data-control/ext_data_control.odin ext_data_control false false $(WAYLAND_DIR)
 	$(SCANNER) $(WL_DIR)/wlr-data-control/wlr-data-control-unstable-v1.xml $(WL_DIR)/wlr-data-control/wlr_data_control.odin wlr_data_control false false $(WAYLAND_DIR)
+	$(SCANNER) $(WL_DIR)/xdg-shell/xdg-shell.xml $(WL_DIR)/xdg-shell/xdg_shell.odin xdg_shell false false $(WAYLAND_DIR)
 	$(SCANNER) $(WL_DIR)/wlr-layer-shell/wlr-layer-shell-unstable-v1.xml $(WL_DIR)/wlr-layer-shell/wlr_layer_shell.odin wlr_layer_shell false false $(WAYLAND_DIR)
 
 clean:

@@ -133,7 +133,6 @@ registry_listener := wayland.registry_listener {
         case "wl_seat":
             wl_state.seat = cast(^wayland.seat)wayland.registry_bind(registry, name_, &wayland.seat_interface, 1)
             wl_state.seat_name = name_
-            log.debug("Successfully bound the Wayland seat")
         case "ext_data_control_manager_v1":
             wl_state.data_control_manager = cast(^ext_dc.data_control_manager_v1)wayland.registry_bind(
                 registry,
@@ -142,10 +141,11 @@ registry_listener := wayland.registry_listener {
                 1,
             )
             wl_state.data_control_manager_name = name_
-            log.debug("Successfully bound the Wayland ext_data_control_manager")
         case:
             log.debugf("Uninterested in Wayland registry global callback for interface `%s`", interface_)
+            return
         }
+        log.debugf("Successfully bound Wayland interface `%s`", interface_)
     },
     global_remove = proc "c" (data: rawptr, registry: ^wayland.registry, name_: uint) {
         context = runtime.default_context()
