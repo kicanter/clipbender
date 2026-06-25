@@ -6,9 +6,33 @@ import "core:log"
 import "core:os"
 import "core:simd"
 import "core:sys/linux"
+import "vendor:stb/truetype"
 
 import wl "wayland:odin-wayland"
 import wlr_ls "wayland:wlr-layer-shell"
+
+// Dimensions
+POPUP_WIDTH :: 800
+POPUP_HEIGHT :: 600
+
+// Colors
+BG_COLOR: u32 : 0xFF2E3440 // full alpha, dark gray
+FG_COLOR: u32 : 0xFFFFFFFF // full alpha, all white
+
+// Font
+FONT_SIZE :: 16 // pixel height of font
+FONT_PATHS :: [?]string {
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf", // Fedora
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", // Debian/Ubuntu
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf", // Arch
+    "/usr/share/fonts/dejavu/DejaVuSansMono.ttf", // Other
+    "/usr/share/fonts/DejaVuSansMono.ttf", // Other
+}
+
+// Text Layout
+TEXT_PADDING_X :: 100 // left margin
+TEXT_PADDING_Y :: 100 // top margin
+LINE_HEIGHT :: 20 // spacing between rows
 
 Frame_Buffer :: struct {
     buffer:   ^wl.buffer,
@@ -17,6 +41,12 @@ Frame_Buffer :: struct {
     pixels:   [^]u32, // mmap'd pixel data
     width:    uint,
     height:   uint,
+}
+
+Font :: struct {
+    info:  truetype.fontinfo,
+    data:  []byte, // loaded TTF file (must outlive info)
+    scale: f32,
 }
 
 Gui_State :: struct {
@@ -39,6 +69,8 @@ Gui_State :: struct {
     frame_buf:        Frame_Buffer,
     // Keyboard input
     keyboard:         ^wl.keyboard,
+    // Font
+    font:             Font,
 }
 
 gui_init_surface :: proc(gui_state: ^Gui_State) {
@@ -53,14 +85,83 @@ gui_init_surface :: proc(gui_state: ^Gui_State) {
     )
 
     // Configure layer surface
-    width: uint = 800
-    height: uint = 600
+    width: uint = POPUP_WIDTH
+    height: uint = POPUP_HEIGHT
     wlr_ls.layer_surface_v1_set_size(gui_state.layer_surface, width, height)
     wlr_ls.layer_surface_v1_set_keyboard_interactivity(gui_state.layer_surface, .exclusive)
 
     // Add listener
     wlr_ls.layer_surface_v1_add_listener(gui_state.layer_surface, &layer_surface_listener, rawptr(gui_state))
     wl.surface_commit(gui_state.surface)
+}
+
+// combine fg_color * alpha and bg_color * inv(alpha)
+alpha_blend :: proc(fg_color: u32, alpha: u8, bg_color: u32) -> u32 {
+    a := u32(alpha)
+    inv_a := 255 - a
+    r := (((fg_color >> 16) & 0xFF) * a + ((bg_color >> 16) & 0xFF) * inv_a) / 255
+    g := (((fg_color >> 8) & 0xFF) * a + ((bg_color >> 8) & 0xFF) * inv_a) / 255
+    b := ((fg_color & 0xFF) * a + (bg_color & 0xFF) * inv_a) / 255
+    return 0xFF000000 | (r << 16) | (g << 8) | b
+}
+
+// Draw a single character
+draw_char :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, char: rune, color: u32, font: ^Font) {
+    // Get bitmap from truetype font
+    width, height, xoff, yoff: i32
+    bitmap := truetype.GetCodepointBitmap(&font.info, 0, font.scale, char, &width, &height, &xoff, &yoff)
+    defer truetype.FreeBitmap(bitmap, nil)
+
+    // Set each pixel according to bitmap
+    for row in 0 ..< uint(height) {
+        for col in 0 ..< uint(width) {
+            alpha := bitmap[row * uint(width) + col] // How opaque pixel at (row,col) is
+            if alpha == 0 {continue}     // Fully transparent, nothing to draw
+
+            // Bounds check
+            px_i := i32(x) + i32(col) + xoff
+            py_i := i32(y) + i32(row) + yoff
+            if px_i < 0 || py_i < 0 || uint(px_i) >= frame_buf.width || uint(py_i) >= frame_buf.height {continue}
+
+            // Alpha blend text color over background
+            px := uint(px_i)
+            py := uint(py_i)
+            frame_buf.pixels[py * frame_buf.width + px] = alpha_blend(
+                color,
+                alpha,
+                frame_buf.pixels[py * frame_buf.width + px],
+            )
+        }
+    }
+}
+
+// Draw a single string
+draw_string :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, text: string, color: u32, font: ^Font) {
+    cursor_x := x
+    for char in text {
+        draw_char(frame_buf, cursor_x, y, char, color, font)
+        // Advance cursor past char
+        advance, lsb: i32
+        truetype.GetCodepointHMetrics(&font.info, char, &advance, &lsb)
+        cursor_x += uint(f32(advance) * font.scale)
+    }
+}
+
+gui_init_font :: proc(gui_state: ^Gui_State) -> bool {
+    for path in FONT_PATHS {
+        font_data, err := os.read_entire_file(path, context.allocator)
+        if err != nil {continue}
+
+        font_info: truetype.fontinfo
+        truetype.InitFont(&font_info, raw_data(font_data), 0)
+
+        gui_state.font.data = font_data
+        gui_state.font.info = font_info
+        gui_state.font.scale = truetype.ScaleForPixelHeight(&font_info, FONT_SIZE)
+        return true
+    }
+
+    return false
 }
 
 // Fill pixel buffer with single color using 8 SIMD lanes
@@ -108,8 +209,7 @@ gui_init_buffer :: proc(gui_state: ^Gui_State) -> (err: Maybe(string)) {
     gui_state.frame_buf.pixels = cast([^]u32)pixels_ptr
 
     // Set color of buffer
-    color: u32 = 0xFF2E3440 // ARGB: full alpha, dark gray
-    fill_pixels_simdx8(gui_state.frame_buf.pixels, width * height, color)
+    fill_pixels_simdx8(gui_state.frame_buf.pixels, width * height, BG_COLOR)
 
     // Create shm_pool
     gui_state.frame_buf.shm_pool = wl.shm_create_pool(gui_state.shm, int(gui_state.frame_buf.shm_fd), int(area_bytes))
@@ -187,7 +287,21 @@ gui_init :: proc() -> Gui_State {
     // Roundtrip to receive configure event for layer_surface_listener
     wl.display_roundtrip(gui_state.display)
 
+    // Initialize font info
+    if !gui_init_font(&gui_state) {
+        log.error("Failed to initialize font from file at any known path")
+        return {}
+    }
+
     return gui_state
+}
+
+gui_cleanup_font :: proc(gui_state: ^Gui_State) {
+    if gui_state.font.data != nil {delete(gui_state.font.data)}
+}
+
+gui_cleanup_keyboard :: proc(gui_state: ^Gui_State) {
+    if gui_state.keyboard != nil {wl.keyboard_release(gui_state.keyboard)}
 }
 
 gui_cleanup_buffer :: proc(gui_state: ^Gui_State) {
@@ -205,8 +319,10 @@ gui_cleanup_surface :: proc(gui_state: ^Gui_State) {
 }
 
 gui_cleanup :: proc(gui_state: ^Gui_State) {
+    // Cleanup font
+    gui_cleanup_font(gui_state)
     // Cleanup keyboard
-    if gui_state.keyboard != nil {wl.keyboard_release(gui_state.keyboard)}
+    gui_cleanup_keyboard(gui_state)
     // Cleanup buffer
     gui_cleanup_buffer(gui_state)
     // Cleanup surface
@@ -290,8 +406,8 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
 
         if width_ == 0 || height_ == 0 {
             // Set width & height to default
-            gui_state.frame_buf.width = 800
-            gui_state.frame_buf.height = 600
+            gui_state.frame_buf.width = POPUP_WIDTH
+            gui_state.frame_buf.height = POPUP_HEIGHT
         } else {
             gui_state.frame_buf.width = width_
             gui_state.frame_buf.height = height_
@@ -312,6 +428,9 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
             gui_state.running = false
             return
         }
+
+        // Render the GUI pixels
+        gui_render(gui_state)
     },
     closed = proc "c" (data: rawptr, layer_surface_v1: ^wlr_ls.layer_surface_v1) {
         context = runtime.default_context()
@@ -328,7 +447,7 @@ seat_listener := wl.seat_listener {
         gui_state := cast(^Gui_State)data
         log.debug("Received wl_seat::capabilities event")
 
-        if capabilities_ == .keyboard {
+        if uint(capabilities_) & uint(wl.seat_capability.keyboard) != 0 {
             gui_state.keyboard = wl.seat_get_keyboard(seat)
             wl.keyboard_add_listener(gui_state.keyboard, &keyboard_listener, gui_state)
         }
@@ -377,6 +496,10 @@ keyboard_listener := wl.keyboard_listener {
         group_: uint,
     ) {},
     repeat_info = proc "c" (data: rawptr, keyboard: ^wl.keyboard, rate_: int, delay_: int) {},
+}
+
+gui_render :: proc(gui_state: ^Gui_State) {
+    draw_string(&gui_state.frame_buf, 200, 200, "Hello Clipbender", FG_COLOR, &gui_state.font)
 }
 
 run_gui :: proc(socket_fd: linux.Fd) {
