@@ -11,7 +11,7 @@ all: daemon client
 daemon:
 	odin build src/daemon -out:$(BUILD_DIR)/clipbenderd -warnings-as-errors -target=linux_amd64 -vet $(COLLECTIONS) $(FLAGS)
 
-client:
+client: $(STB_LIB)
 	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors -target=linux_amd64 -vet $(COLLECTIONS) $(FLAGS)
 
 test:
@@ -32,6 +32,12 @@ release:
 	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors -vet -o:speed -target=linux_amd64 $(COLLECTIONS)
 	strip $(BUILD_DIR)/clipbenderd
 	strip $(BUILD_DIR)/clipbender
+
+ODIN_ROOT := $(shell odin root)
+STB_LIB := $(ODIN_ROOT)/vendor/stb/lib/stb_truetype.so
+
+$(STB_LIB):
+	make -C $(ODIN_ROOT)/vendor/stb/src
 
 SCANNER := wayland/odin-wayland/scanner/wayland-scanner
 WL_DIR := wayland
