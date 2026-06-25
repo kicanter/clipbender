@@ -8,19 +8,20 @@ import "core:simd"
 import "core:sys/linux"
 import "vendor:stb/truetype"
 
+import lib "libclipbender:base"
 import wl "wayland:odin-wayland"
 import wlr_ls "wayland:wlr-layer-shell"
 
 // Dimensions
 POPUP_WIDTH :: 800
-POPUP_HEIGHT :: 600
+POPUP_HEIGHT :: 900
 
 // Colors
 BG_COLOR: u32 : 0xFF2E3440 // full alpha, dark gray
 FG_COLOR: u32 : 0xFFFFFFFF // full alpha, all white
 
 // Font
-FONT_SIZE :: 16 // pixel height of font
+FONT_SIZE :: 14 // pixel height of font
 FONT_PATHS :: [?]string {
     "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf", // Fedora
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", // Debian/Ubuntu
@@ -30,9 +31,9 @@ FONT_PATHS :: [?]string {
 }
 
 // Text Layout
-TEXT_PADDING_X :: 100 // left margin
-TEXT_PADDING_Y :: 100 // top margin
-LINE_HEIGHT :: 20 // spacing between rows
+TEXT_PADDING_X :: 16 // left margin
+TEXT_PADDING_Y :: 16 // top margin
+LINE_HEIGHT :: 18 // spacing between rows, doesn't include font size so needs to be greater than FONT_SIZE
 
 Frame_Buffer :: struct {
     buffer:   ^wl.buffer,
@@ -71,6 +72,9 @@ Gui_State :: struct {
     keyboard:         ^wl.keyboard,
     // Font
     font:             Font,
+    // Register data
+    reg_count:        u8,
+    regs:             [46]lib.Resp_Reg,
 }
 
 gui_init_surface :: proc(gui_state: ^Gui_State) {
@@ -429,7 +433,7 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
             return
         }
 
-        // Render the GUI pixels
+        // Render the GUI pixels if we've already fetched registers
         gui_render(gui_state)
     },
     closed = proc "c" (data: rawptr, layer_surface_v1: ^wlr_ls.layer_surface_v1) {
@@ -498,8 +502,90 @@ keyboard_listener := wl.keyboard_listener {
     repeat_info = proc "c" (data: rawptr, keyboard: ^wl.keyboard, rate_: int, delay_: int) {},
 }
 
+gui_fetch_registers :: proc(socket_fd: linux.Fd, gui_state: ^Gui_State) -> (count: u8, err: Maybe(string)) {
+    // Send GET message for all registers
+    msg: [9]byte
+    written := lib.encode_cmd_get(lib.CMD_GET_FILTER_ALL, msg[:])
+    linux.send(socket_fd, msg[:written], {})
+
+    // Receive response from daemon
+    resp_buf: [RESP_BUF_LARGE]u8
+    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    if recv_err != nil || bytes_read <= 0 {
+        return {}, fmt.tprint("No response from daemon when fetching registers")
+    }
+
+    status := lib.Resp_Status(resp_buf[0])
+    switch status {
+    case .OK:
+        return {}, fmt.tprint("Unexpected OK response when fetching registers")
+    case .ERROR:
+        err_msg := string(resp_buf[1:bytes_read])
+        return {}, fmt.tprint("%s", err_msg)
+    case .DATA:
+        count = lib.decode_resp_data(resp_buf[1:bytes_read], &gui_state.regs)
+    }
+
+    return count, nil
+}
+
+draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, curr: ^u8, x: uint, y: uint, color: u32) {
+    reg_str: string
+    if curr^ < gui_state.reg_count && reg_id == gui_state.regs[curr^].id {
+        // Draw register data to line and increment where we are in the array
+        reg_entry := gui_state.regs[curr^].entry
+        ts_buf: [19]u8
+        reg_str = fmt.tprintf(
+            "% 8s  % -10s  % -16s  % -40s ",
+            lib.reg_id_to_string(reg_id),
+            format_unix_timestamp(reg_entry.timestamp, &ts_buf),
+            reg_entry.mime_type,
+            truncate_content(string(reg_entry.data)),
+        )
+        curr^ += 1
+    } else {
+        // Draw empty register line
+        reg_str = fmt.tprintf("% 8s  % -10s  % -16s  % -40s ", lib.reg_id_to_string(reg_id), "", "", "")
+    }
+
+    draw_string(&gui_state.frame_buf, x, y, reg_str, color, &gui_state.font)
+}
+
+draw_all_registers :: proc(gui_state: ^Gui_State, x: uint, y: uint, color: u32) {
+    curr: u8 = 0
+    cursor_x := x
+    cursor_y := y
+
+    // Draw all clipboard registers first
+    for i := lib.CLIPBOARD_START; i <= lib.CLIPBOARD_END; i += 1 {
+        draw_register(gui_state, i, &curr, cursor_x, cursor_y, color)
+        cursor_y += LINE_HEIGHT
+    }
+
+    // Save the first named index and skip named to find first primary index in array
+    first_named := curr
+    for ; curr < gui_state.reg_count && lib.reg_id_is_named(gui_state.regs[curr].id); curr += 1 {}
+
+    // TODO: Probably increase cursor_x to place clipboard + primary side-by-side at some point
+    // Draw all primary registers
+    for i := lib.PRIMARY_START; i <= lib.PRIMARY_END; i += 1 {
+        draw_register(gui_state, i, &curr, cursor_x, cursor_y, color)
+        cursor_y += LINE_HEIGHT
+    }
+
+    // Reset curr index to the first named in array
+    curr = first_named
+
+    // TODO: If clipboard + primary are side-by-side, reset cursor_x to x
+    // Draw all named registers
+    for i := lib.NAMED_START; i <= lib.NAMED_END; i += 1 {
+        draw_register(gui_state, i, &curr, cursor_x, cursor_y, color)
+        cursor_y += LINE_HEIGHT
+    }
+}
+
 gui_render :: proc(gui_state: ^Gui_State) {
-    draw_string(&gui_state.frame_buf, 200, 200, "Hello Clipbender", FG_COLOR, &gui_state.font)
+    draw_all_registers(gui_state, TEXT_PADDING_X, TEXT_PADDING_Y, FG_COLOR)
 }
 
 run_gui :: proc(socket_fd: linux.Fd) {
@@ -509,6 +595,15 @@ run_gui :: proc(socket_fd: linux.Fd) {
         os.exit(1)
     }
     defer gui_cleanup(&gui_state)
+
+    // Fetch registers
+    err: Maybe(string)
+    gui_state.reg_count, err = gui_fetch_registers(socket_fd, &gui_state)
+    if err != nil {
+        fmt.eprintfln("Error: %s", err)
+    }
+
+    gui_render(&gui_state)
 
     fmt.println("GUI popup successfully connected to Wayland")
     for gui_state.running {
