@@ -273,6 +273,7 @@ encode_cmd :: proc {
 // ok/error responses handled inline
 // DATA: `[1 byte Response_Status][1 byte u8 count][count * Resp_Reg]`
 // buf starts after first Response_Status byte
+// NOTE: caller is responsible for freeing all entries in `regs`
 decode_resp_data :: proc(buf: []byte, regs: ^[46]Resp_Reg) -> (count: u8) {
     count = u8(buf[0])
 

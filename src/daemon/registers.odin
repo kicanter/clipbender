@@ -19,21 +19,41 @@ clipboard_registers: Recency_Ring
 named_registers: [26]lib.Reg_Entry
 primary_registers: Recency_Ring
 
-// Push to head, overwriting any existing value
+// Push to head, takes ownership of data and mime (caller must provide heap-allocated memory)
 push_to_ring :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
     ring.head = (ring.head + 1) % lib.RECENCY_SIZE
     lib.free_reg_entry(&ring.entries[ring.head])
     ring.entries[ring.head] = lib.Reg_Entry {
-        data      = slice.clone(data),
-        mime_type = strings.clone(mime),
+        data      = data,
+        mime_type = mime,
         timestamp = time.time_to_unix(time.now()),
     }
     ring.count = min(ring.count + 1, lib.RECENCY_SIZE)
 }
 
 push_recency_reg :: proc(data: []u8, mime: string, type: lib.Selection_Type) {
-    ring := &clipboard_registers if type == .CLIPBOARD else &primary_registers
+    ring: ^Recency_Ring
+    switch type {
+    case .CLIPBOARD:
+        ring = &clipboard_registers
+    case .PRIMARY:
+        ring = &primary_registers
+    }
     push_to_ring(ring, data, mime)
+}
+
+// Convenience: clones data and mime before pushing (for callers with borrowed/literal data)
+push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
+    push_to_ring(ring, slice.clone(data), strings.clone(mime))
+}
+
+push_recency_reg_clone :: proc(data: []u8, mime: string, type: lib.Selection_Type) {
+    push_recency_reg(slice.clone(data), strings.clone(mime), type)
+}
+
+// Convenience: clones data and mime before setting (for callers with borrowed/literal data)
+set_named_reg_clone :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) {
+    set_named_reg(reg_id, slice.clone(data), strings.clone(mime), set_mode)
 }
 
 // Get the `recency` most recent `Register_Entry`
@@ -73,46 +93,6 @@ get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
 }
 
 get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (count: u8) {
-    // TODO: Temporary for testing
-    // free_ring(&clipboard_registers)
-    // free_ring(&primary_registers)
-    // for &entry in named_registers {
-    //     lib.free_reg_entry(&entry)
-    // }
-    named_registers = {}
-    push_recency_reg(transmute([]u8)string("https://github.com/odin-lang/Odin"), "text/uri-list", .CLIPBOARD)
-    push_recency_reg(transmute([]u8)string("fn main() { println!(\"hello\"); }"), "text/plain", .CLIPBOARD)
-    push_recency_reg(transmute([]u8)string("<div class=\"container\">content</div>"), "text/html", .CLIPBOARD)
-    push_recency_reg(transmute([]u8)string("short"), "text/plain", .CLIPBOARD)
-    push_recency_reg(transmute([]u8)string("selected text from browser"), "text/plain", .PRIMARY)
-    push_recency_reg(transmute([]u8)string("{\"key\": \"value\", \"num\": 42}"), "application/json", .PRIMARY)
-    push_recency_reg(
-        transmute([]u8)string(
-            "another primary selection that is longer than the content column width for testing truncation",
-        ),
-        "text/plain",
-        .PRIMARY,
-    )
-    push_recency_reg(transmute([]u8)string("/home/user/.config/clipbender/config"), "text/plain", .PRIMARY)
-    set_named_reg(
-        lib.Reg_Id(lib.NAMED_START + 3),
-        transmute([]u8)string("persistent snippet stored in register d"),
-        "text/plain",
-        .OVERWRITE,
-    )
-    set_named_reg(
-        lib.Reg_Id(lib.NAMED_START + 5),
-        transmute([]u8)string("git@github.com:user/repo.git"),
-        "text/plain",
-        .OVERWRITE,
-    )
-    set_named_reg(
-        lib.Reg_Id(lib.NAMED_END - 2),
-        transmute([]u8)string("<p>some html content</p>"),
-        "text/html",
-        .OVERWRITE,
-    )
-
     count = 0
     for bit in filter & lib.CMD_GET_FILTER_CLIPBOARD {
         entry := get_recency_reg(&clipboard_registers, u8(bit))
@@ -173,8 +153,8 @@ overwrite_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) {
     idx := lib.reg_id_to_named_index(reg_id)
     lib.free_reg_entry(&named_registers[idx])
     named_registers[idx] = lib.Reg_Entry {
-        data      = slice.clone(data),
-        mime_type = strings.clone(mime),
+        data      = data,
+        mime_type = mime,
         timestamp = time.time_to_unix(time.now()),
     }
 }
@@ -187,14 +167,16 @@ append_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) -> bool
     if reg_entry.data == nil {
         // Nothing to append to, treat same as set
         named_registers[idx] = lib.Reg_Entry {
-            data      = slice.clone(data),
-            mime_type = strings.clone(mime),
+            data      = data,
+            mime_type = mime,
             timestamp = time.time_to_unix(time.now()),
         }
         return true
     }
 
     if reg_entry.mime_type != mime {
+        delete(data)
+        delete(mime)
         return false
     }
 
@@ -203,6 +185,8 @@ append_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) -> bool
     copy(new_data, reg_entry.data)
     copy(new_data[len(reg_entry.data):], data)
     delete(reg_entry.data)
+    delete(data) // free caller's data, already copied into new_data
+    delete(mime) // free caller's mime, register keeps its existing mime_type
     reg_entry.data = new_data
     reg_entry.timestamp = time.time_to_unix(time.now())
     return true

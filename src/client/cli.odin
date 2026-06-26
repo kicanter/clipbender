@@ -8,8 +8,8 @@ import "core:time"
 
 import lib "libclipbender:base"
 
-RESP_BUF_SMALL :: 256     // OK/ERROR responses
-RESP_BUF_LARGE :: 65536   // 64 KiB, DATA responses (GET)
+RESP_BUF_SMALL :: 256 // OK/ERROR responses
+RESP_BUF_LARGE :: 65536 // 64 KiB, DATA responses (GET)
 
 print_usage_and_exit :: proc() {
     fmt.eprintln(
@@ -719,6 +719,11 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         cmd_get_format_json(regs[:count])
     case .RAW:
         cmd_get_format_raw(regs[:count])
+    }
+
+    // Free register data
+    for i in 0 ..< count {
+        lib.free_reg_entry(&regs[i].entry)
     }
 }
 

@@ -293,7 +293,6 @@ wayland_handle_selection :: proc(
     }
 
     push_recency_reg(data, mime, type)
-    delete(data)
     // Clear the pending mime map, we've consumed it and have already selected + copied our chosen mime type
     clear(&wl_state.advertised_mimes)
 }

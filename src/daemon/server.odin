@@ -3,6 +3,8 @@ package main
 import "core:fmt"
 import "core:log"
 import "core:os"
+import "core:slice"
+import "core:strings"
 import "core:sys/linux"
 import "core:sys/linux/uring"
 
@@ -87,7 +89,7 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
                 return running
             }
 
-            data, mime = source.data, source.mime_type
+            data, mime = slice.clone(source.data), strings.clone(source.mime_type)
             log.debug("REGISTER:")
             log.debugf("\tSource Reg: `%s`", lib.reg_id_to_string(source_reg))
         case .INLINE:
