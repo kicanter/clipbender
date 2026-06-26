@@ -92,7 +92,7 @@ gui_init_surface :: proc(gui_state: ^Gui_State) {
     width: uint = POPUP_WIDTH
     height: uint = POPUP_HEIGHT
     wlr_ls.layer_surface_v1_set_size(gui_state.layer_surface, width, height)
-    wlr_ls.layer_surface_v1_set_keyboard_interactivity(gui_state.layer_surface, .exclusive)
+    wlr_ls.layer_surface_v1_set_keyboard_interactivity(gui_state.layer_surface, .on_demand)
 
     // Add listener
     wlr_ls.layer_surface_v1_add_listener(gui_state.layer_surface, &layer_surface_listener, rawptr(gui_state))
@@ -114,7 +114,7 @@ draw_char :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, char: rune, color:
     // Get bitmap from truetype font
     width, height, xoff, yoff: i32
     bitmap := truetype.GetCodepointBitmap(&font.info, 0, font.scale, char, &width, &height, &xoff, &yoff)
-    if bitmap == nil { return }
+    if bitmap == nil {return}
     defer truetype.FreeBitmap(bitmap, nil)
 
     // Set each pixel according to bitmap
@@ -171,7 +171,12 @@ gui_init_font :: proc(gui_state: ^Gui_State) -> bool {
         gui_state.font.data = font_data
         gui_state.font.info = font_info
         gui_state.font.scale = truetype.ScaleForPixelHeight(&font_info, FONT_SIZE)
-        log.debugf("Loaded font from %s (scale=%.3f, glyphs=%d)", path, gui_state.font.scale, gui_state.font.info.numGlyphs)
+        log.debugf(
+            "Loaded font from %s (scale=%.3f, glyphs=%d)",
+            path,
+            gui_state.font.scale,
+            gui_state.font.info.numGlyphs,
+        )
         return true
     }
 
@@ -320,7 +325,7 @@ gui_cleanup_surface :: proc(gui_state: ^Gui_State) {
 
 gui_cleanup :: proc(gui_state: ^Gui_State) {
     // Cleanup register data
-    for i in 0..<gui_state.reg_count {
+    for i in 0 ..< gui_state.reg_count {
         lib.free_reg_entry(&gui_state.regs[i].entry)
     }
     // Cleanup font
