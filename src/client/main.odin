@@ -37,14 +37,14 @@ main :: proc() {
     socket_path := lib.clipbender_socket_path()
     defer delete(socket_path)
 
-    socket_fd := uds_connect(socket_path)
-    defer linux.close(socket_fd)
+    client_fd := uds_connect(socket_path)
+    defer linux.close(client_fd)
 
     args := os.args[1:]
 
     if len(args) == 0 {
-        run_gui(socket_fd)
+        run_gui(client_fd)
     } else {
-        run_cli(socket_fd, args)
+        run_cli(client_fd, args)
     }
 }

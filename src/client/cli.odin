@@ -209,7 +209,7 @@ parse_cmd_set_inline :: proc(
 }
 
 // `args` includes everything after the `clipbender set` subcommand
-cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
+cmd_set :: proc(args: []string, client_fd: linux.Fd) {
     success_msg: string
     if len(args) == 2 {     // source reg was passed as an arg by client
         dest_reg, set_mode, source_reg, err := parse_cmd_set_reg(args[0], args[1])
@@ -219,7 +219,7 @@ cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
         }
         msg: [5]byte // SET with source reg is 5-byte message
         written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
-        linux.send(socket_fd, msg[:written], {})
+        linux.send(client_fd, msg[:written], {})
         success_msg = fmt.tprintf(
             "%s dest reg `%s` with source reg `%s`",
             "overwrote" if set_mode == .OVERWRITE else "appended",
@@ -235,7 +235,7 @@ cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
         msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
         defer delete(msg)
         written := lib.encode_cmd_set_inline(dest_reg, set_mode, mime, data, msg[:])
-        linux.send(socket_fd, msg[:written], {})
+        linux.send(client_fd, msg[:written], {})
         success_msg = fmt.tprintf(
             "%s dest reg `%s` with inline `%s` data `%s`",
             "overwrote" if set_mode == .OVERWRITE else "appended",
@@ -249,7 +249,7 @@ cmd_set :: proc(args: []string, socket_fd: linux.Fd) {
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_SMALL]u8
-    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
     if recv_err != nil || bytes_read <= 0 {
         fmt.eprintln("Error: no response from daemon for `set` command")
         os.exit(1)
@@ -670,7 +670,7 @@ cmd_get_format_raw :: proc(regs: []lib.Resp_Reg) {
 }
 
 // `args` includes everything after the `clipbender get` subcommand.
-cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
+cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     if len(args) < 1 {
         print_cmd_usage_and_exit(.GET)
     }
@@ -684,11 +684,11 @@ cmd_get :: proc(args: []string, socket_fd: linux.Fd) {
     // Send GET message
     msg: [9]byte
     written := lib.encode_cmd_get(filter, msg[:])
-    linux.send(socket_fd, msg[:written], {})
+    linux.send(client_fd, msg[:written], {})
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_LARGE]u8
-    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
     if recv_err != nil || bytes_read <= 0 {
         fmt.eprintln("Error: no response from daemon for `get` command")
         os.exit(1)
@@ -734,7 +734,7 @@ parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, err: Maybe(string)
 }
 
 // `args` includes everything after the `clipbender clear` subcommand
-cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
+cmd_clear :: proc(args: []string, client_fd: linux.Fd) {
     if len(args) != 1 {
         print_cmd_usage_and_exit(.CLEAR)
     }
@@ -748,11 +748,11 @@ cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
     // Send CLEAR message
     msg: [2]byte
     written := lib.encode_cmd_clear(reg_id, msg[:])
-    linux.send(socket_fd, msg[:written], {})
+    linux.send(client_fd, msg[:written], {})
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_SMALL]u8
-    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
     if recv_err != nil || bytes_read <= 0 {
         fmt.eprintln("Error: no response from daemon for `clear` command")
         os.exit(1)
@@ -773,7 +773,7 @@ cmd_clear :: proc(args: []string, socket_fd: linux.Fd) {
 }
 
 // `args` includes everything after the `clipbender shutdown` subcommand
-cmd_shutdown :: proc(args: []string, socket_fd: linux.Fd) {
+cmd_shutdown :: proc(args: []string, client_fd: linux.Fd) {
     if len(args) != 0 {
         print_cmd_usage_and_exit(.SHUTDOWN)
     }
@@ -781,11 +781,11 @@ cmd_shutdown :: proc(args: []string, socket_fd: linux.Fd) {
     // Send SHUTDOWN message
     msg: [1]byte
     written := lib.encode_cmd_shutdown(msg[:])
-    linux.send(socket_fd, msg[:written], {})
+    linux.send(client_fd, msg[:written], {})
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_SMALL]u8
-    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
     if recv_err != nil || bytes_read <= 0 {
         fmt.eprintln("Error: no response from daemon for `shutdown` command")
         os.exit(1)
@@ -805,17 +805,17 @@ cmd_shutdown :: proc(args: []string, socket_fd: linux.Fd) {
     }
 }
 
-run_cli :: proc(socket_fd: linux.Fd, args: []string) {
+run_cli :: proc(client_fd: linux.Fd, args: []string) {
     subcommand := args[0]
     switch subcommand {
     case "set":
-        cmd_set(args[1:], socket_fd)
+        cmd_set(args[1:], client_fd)
     case "get":
-        cmd_get(args[1:], socket_fd)
+        cmd_get(args[1:], client_fd)
     case "clear":
-        cmd_clear(args[1:], socket_fd)
+        cmd_clear(args[1:], client_fd)
     case "shutdown":
-        cmd_shutdown(args[1:], socket_fd)
+        cmd_shutdown(args[1:], client_fd)
     case:
         print_usage_and_exit()
     }

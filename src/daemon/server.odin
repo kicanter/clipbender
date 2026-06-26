@@ -171,7 +171,7 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
 dispatch_cqe :: proc(
     cqe: linux.IO_Uring_CQE,
     ring: ^uring.Ring,
-    socket_fd: linux.Fd,
+    server_fd: linux.Fd,
     backend: ^lib.Clipboard_Backend,
 ) -> (
     running: bool,
@@ -189,7 +189,7 @@ dispatch_cqe :: proc(
         client_fd := cast(linux.Fd)cqe.res
         user_data := (u64(client_fd) << 8) | u64(Event.RECV)
         uring.recv(ring, user_data, client_fd, data_buf[:], {})
-        uring.accept(ring, u64(Event.ACCEPT), socket_fd, cast(^linux.Sock_Addr_Un)nil, nil, {.CLOEXEC})
+        uring.accept(ring, u64(Event.ACCEPT), server_fd, cast(^linux.Sock_Addr_Un)nil, nil, {.CLOEXEC})
     case .RECV:
         client_fd := cast(linux.Fd)(cqe.user_data >> 8)
         bytes_read := int(cqe.res)
@@ -220,22 +220,22 @@ dispatch_cqe :: proc(
 }
 
 uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
-    socket_fd, sockerr := linux.socket(.UNIX, .SEQPACKET, {.CLOEXEC}, {})
+    server_fd, sockerr := linux.socket(.UNIX, .SEQPACKET, {.CLOEXEC}, {})
     fmt.assertf(sockerr == nil, "Failed to create server socket fd: err %d", sockerr)
 
     socket_addr: linux.Sock_Addr_Un
     socket_addr.sun_family = .UNIX
     copy(socket_addr.sun_path[:], transmute([]u8)socket_path)
 
-    binderr := linux.bind(socket_fd, &socket_addr)
+    binderr := linux.bind(server_fd, &socket_addr)
     fmt.assertf(binderr == nil, "Failed to bind server fd to socket: %v", binderr)
 
-    listenerr := linux.listen(socket_fd, 128)
+    listenerr := linux.listen(server_fd, 128)
     fmt.assertf(listenerr == nil, "Server failed to listen to socket: %v", listenerr)
 
     // Make sure to clean up socket on exit.
     // Note: doesn't cover SIGKILL, SIGSEGV, or power loss, but stale socket check on next startup cleans it up.
-    defer cleanup_socket(socket_path, socket_fd)
+    defer cleanup_socket(socket_path, server_fd)
 
     // Block SIGINT/SIGTERM
     mask: linux.Sig_Set
@@ -251,15 +251,24 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
     fmt.assertf(err == nil, "uring.init: %v", err)
     defer uring.destroy(&ring)
 
-    // Submit initial accept to jump start queue
-    _, ok := uring.accept(&ring, u64(Event.ACCEPT), socket_fd, cast(^linux.Sock_Addr_Un)nil, nil, {.CLOEXEC})
-    fmt.assertf(ok, "Submission queue for io_uring is full")
-    uring.read(&ring, u64(Event.SIGNAL), sig_fd, sig_buf[:], 0)
-    uring.submit(&ring)
-
-    // Submit initial backend clipboard event
+    // Push initial operations in submission queue to jump start queue
+    // - An `accept` call to watch the server's FD for client connections to the socket
+    // - A `read` call to watch the special signalfd for incoming signals
+    // - A `poll_add` call to watch the backend's FD (Wayland/X11) for readability/writability
+    ok: bool
+    _, ok = uring.accept(&ring, u64(Event.ACCEPT), server_fd, cast(^linux.Sock_Addr_Un)nil, nil, {.CLOEXEC})
+    fmt.assertf(ok, "Failed to submit original accept SQE, Submission queue for io_uring is full")
+    _, ok = uring.read(&ring, u64(Event.SIGNAL), sig_fd, sig_buf[:], 0)
+    fmt.assertf(ok, "Failed to submit original SIGNAL read SQE, submission queue for io_uring is full")
     if backend.state != nil {
-        uring.poll_add(&ring, u64(Event.CLIPBOARD_MONITOR), backend.fd, {.IN}, {})
+        _, ok = uring.poll_add(&ring, u64(Event.CLIPBOARD_MONITOR), backend.fd, {.IN}, {})
+        fmt.assertf(ok, "Failed to submit original CLIPBOARD_MONITOR poll SQE, submission queue for io_uring is full")
+    }
+
+    // Submit the submission queue (tells the kernel to start asynchronously wait for these FDs to get written)
+    _, err = uring.submit(&ring)
+    if (err != nil) {
+        log.errorf("Error submitting SQEs in submission queue: %v", err)
     }
 
     log.debug("Daemon ready, entering event loop")
@@ -267,15 +276,22 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
     running := true
     cqes: [16]linux.IO_Uring_CQE
     for running {
-        n_copied, uring_err := uring.copy_cqes(&ring, cqes[:], 1)
-        if (uring_err != nil) {
-            log.errorf("Error copying CQEs from completion queue: %v", uring_err)
+        num_cqes: u32
+        num_cqes, err = uring.copy_cqes(&ring, cqes[:], 1)
+        if (err != nil) {
+            log.errorf("Error copying CQEs from completion queue: %v", err)
         }
 
-        for i in 0 ..< n_copied {
-            running = dispatch_cqe(cqes[i], &ring, socket_fd, backend)
+        for i in 0 ..< num_cqes {
+            running = dispatch_cqe(cqes[i], &ring, server_fd, backend)
         }
-        uring.submit(&ring)
+
+        _, err = uring.submit(&ring)
+        if (err != nil) {
+            log.errorf("Error submitting SQEs in submission queue: %v", err)
+        }
+
+        // Clear arena allocator to not balloon
         free_all(context.temp_allocator)
     }
 }

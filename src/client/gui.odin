@@ -512,15 +512,15 @@ keyboard_listener := wl.keyboard_listener {
     repeat_info = proc "c" (data: rawptr, keyboard: ^wl.keyboard, rate_: int, delay_: int) {},
 }
 
-gui_fetch_registers :: proc(socket_fd: linux.Fd, gui_state: ^Gui_State) -> (count: u8, err: Maybe(string)) {
+gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (count: u8, err: Maybe(string)) {
     // Send GET message for all registers
     msg: [9]byte
     written := lib.encode_cmd_get(lib.CMD_GET_FILTER_ALL, msg[:])
-    linux.send(socket_fd, msg[:written], {})
+    linux.send(client_fd, msg[:written], {})
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_LARGE]u8
-    bytes_read, recv_err := linux.recv(socket_fd, resp_buf[:], {})
+    bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
     if recv_err != nil || bytes_read <= 0 {
         return {}, fmt.tprint("No response from daemon when fetching registers")
     }
@@ -598,7 +598,7 @@ gui_render :: proc(gui_state: ^Gui_State) {
     draw_all_registers(gui_state, TEXT_PADDING_X, TEXT_PADDING_Y, FG_COLOR)
 }
 
-run_gui :: proc(socket_fd: linux.Fd) {
+run_gui :: proc(client_fd: linux.Fd) {
     gui_state: Gui_State
     err := gui_init(&gui_state)
     if err != nil {
@@ -609,7 +609,7 @@ run_gui :: proc(socket_fd: linux.Fd) {
     log.debug("GUI initialized")
 
     // Fetch registers
-    gui_state.reg_count, err = gui_fetch_registers(socket_fd, &gui_state)
+    gui_state.reg_count, err = gui_fetch_registers(client_fd, &gui_state)
     if err != nil {
         fmt.eprintfln("Error fetching registers: %s", err)
     }
