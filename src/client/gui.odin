@@ -323,6 +323,10 @@ gui_cleanup_surface :: proc(gui_state: ^Gui_State) {
 }
 
 gui_cleanup :: proc(gui_state: ^Gui_State) {
+    // Cleanup register data
+    for i in 0..<gui_state.reg_count {
+        lib.free_reg_entry(&gui_state.regs[i].entry)
+    }
     // Cleanup font
     gui_cleanup_font(gui_state)
     // Cleanup keyboard
