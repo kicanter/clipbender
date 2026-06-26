@@ -42,20 +42,6 @@ push_recency_reg :: proc(data: []u8, mime: string, type: lib.Selection_Type) {
     push_to_ring(ring, data, mime)
 }
 
-// Convenience: clones data and mime before pushing (for callers with borrowed/literal data)
-push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
-    push_to_ring(ring, slice.clone(data), strings.clone(mime))
-}
-
-push_recency_reg_clone :: proc(data: []u8, mime: string, type: lib.Selection_Type) {
-    push_recency_reg(slice.clone(data), strings.clone(mime), type)
-}
-
-// Convenience: clones data and mime before setting (for callers with borrowed/literal data)
-set_named_reg_clone :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) {
-    set_named_reg(reg_id, slice.clone(data), strings.clone(mime), set_mode)
-}
-
 // Get the `recency` most recent `Register_Entry`
 get_recency_reg :: proc(ring: ^Recency_Ring, recency: u8) -> ^lib.Reg_Entry {
     if recency >= ring.count {return nil}
@@ -127,13 +113,24 @@ get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (c
     return count
 }
 
-set_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) {
+set_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) -> bool {
+    idx := lib.reg_id_to_named_index(reg_id)
+
     switch set_mode {
     case .OVERWRITE:
-        overwrite_named_reg(reg_id, data, mime)
+        overwrite_named_reg(idx, data, mime)
+        return true
     case .APPEND:
-        append_named_reg(reg_id, data, mime)
+        reg_entry := &named_registers[idx]
+        if reg_entry.data == nil {
+            // Nothing to append to, treat same as set
+            overwrite_named_reg(idx, data, mime)
+            return true
+        }
+        return append_named_reg(reg_entry, data, mime)
     }
+
+    unreachable()
 }
 
 set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, data: []byte, mime: string) {
@@ -149,8 +146,7 @@ set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, d
 }
 
 // Overwrite a named reg
-overwrite_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) {
-    idx := lib.reg_id_to_named_index(reg_id)
+overwrite_named_reg :: proc(idx: u8, data: []byte, mime: string) {
     lib.free_reg_entry(&named_registers[idx])
     named_registers[idx] = lib.Reg_Entry {
         data      = data,
@@ -160,20 +156,7 @@ overwrite_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) {
 }
 
 // Append to a named reg
-append_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) -> bool {
-    idx := lib.reg_id_to_named_index(reg_id)
-    reg_entry := &named_registers[idx]
-
-    if reg_entry.data == nil {
-        // Nothing to append to, treat same as set
-        named_registers[idx] = lib.Reg_Entry {
-            data      = data,
-            mime_type = mime,
-            timestamp = time.time_to_unix(time.now()),
-        }
-        return true
-    }
-
+append_named_reg :: proc(reg_entry: ^lib.Reg_Entry, data: []byte, mime: string) -> bool {
     if reg_entry.mime_type != mime {
         delete(data)
         delete(mime)
@@ -196,5 +179,16 @@ append_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string) -> bool
 clear_named_reg :: proc(reg_id: lib.Reg_Id) {
     idx := lib.reg_id_to_named_index(reg_id)
     lib.free_reg_entry(&named_registers[idx])
+}
+
+// Convenience clone functions
+push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
+    push_to_ring(ring, slice.clone(data), strings.clone(mime))
+}
+push_recency_reg_clone :: proc(data: []u8, mime: string, type: lib.Selection_Type) {
+    push_recency_reg(slice.clone(data), strings.clone(mime), type)
+}
+set_named_reg_clone :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) {
+    set_named_reg(reg_id, slice.clone(data), strings.clone(mime), set_mode)
 }
 
