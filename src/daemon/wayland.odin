@@ -328,7 +328,7 @@ pick_best_mime :: proc(avail_mimes: map[string]struct{}) -> string {
     unreachable()
 }
 
-// Caller is responsible for freeing `data`
+// Caller is responsible for freeing returned data
 wayland_read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^wl.display, mime: string) -> []u8 {
     // Create pipe
     pipe_fds: [2]linux.Fd
@@ -344,6 +344,16 @@ wayland_read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^
     ext_dc.data_control_offer_v1_receive(offer, strings.clone_to_cstring(mime, context.temp_allocator), int(write_fd))
     linux.close(write_fd)
     wl.display_flush(display)
+
+    // Wait for source app to write data, with timeout to avoid blocking forever on hung apps
+    poll_fds := [1]linux.Poll_Fd{{fd = read_fd, events = {.IN}}}
+    timeout: i32 = 2000 // 2s timeout
+    poll_ret, poll_err := linux.poll(poll_fds[:], timeout)
+    if poll_err != nil || poll_ret <= 0 {
+        log.error("Timed out waiting for source app to write clipboard data")
+        linux.close(read_fd)
+        return nil
+    }
 
     // Read all data from pipe until EOF
     buf: [4096]byte
