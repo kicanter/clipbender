@@ -367,7 +367,6 @@ registry_listener := wl.registry_listener {
             )
             gui_state.layer_shell_name = name_
         case:
-            log.debugf("Uninterested in Wayland registry global callback for interface `%s`", interface_)
             return
         }
         log.debugf("Successfully bound Wayland interface `%s`", interface_)

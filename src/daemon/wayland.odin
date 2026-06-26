@@ -143,7 +143,6 @@ registry_listener := wl.registry_listener {
             )
             wl_state.data_control_manager_name = name_
         case:
-            log.debugf("Uninterested in Wayland registry global callback for interface `%s`", interface_)
             return
         }
         log.debugf("Successfully bound Wayland interface `%s`", interface_)
