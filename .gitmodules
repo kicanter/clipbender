@@ -1,3 +1,3 @@
 [submodule "wayland/odin-wayland"]
 	path = wayland/odin-wayland
-	url = git@github.com:yasinkaraaslan/odin-wayland
+	url = git@github.com:yasinkaraaslan/odin-wayland.git
