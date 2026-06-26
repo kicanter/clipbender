@@ -5,6 +5,9 @@ COLLECTIONS := -collection:wayland=wayland -collection:libclipbender=src/libclip
 
 $(shell mkdir -p $(BUILD_DIR))
 
+ODIN_ROOT := $(shell odin root)
+STB_LIB := $(ODIN_ROOT)/vendor/stb/lib/stb_truetype.a
+
 # TODO: when ready to release, make default target point to release and make separate `dev` target
 all: daemon client
 
@@ -13,6 +16,9 @@ daemon:
 
 client: $(STB_LIB)
 	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors -target=linux_amd64 -vet $(COLLECTIONS) $(FLAGS)
+
+$(STB_LIB):
+	make -C $(ODIN_ROOT)/vendor/stb/src
 
 test:
 ifdef PKG
@@ -32,12 +38,6 @@ release:
 	odin build src/client -out:$(BUILD_DIR)/clipbender -warnings-as-errors -vet -o:speed -target=linux_amd64 $(COLLECTIONS)
 	strip $(BUILD_DIR)/clipbenderd
 	strip $(BUILD_DIR)/clipbender
-
-ODIN_ROOT := $(shell odin root)
-STB_LIB := $(ODIN_ROOT)/vendor/stb/lib/stb_truetype.so
-
-$(STB_LIB):
-	make -C $(ODIN_ROOT)/vendor/stb/src
 
 SCANNER := wayland/odin-wayland/scanner/wayland-scanner
 WL_DIR := wayland
