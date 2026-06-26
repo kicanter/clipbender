@@ -235,69 +235,54 @@ gui_init_buffer :: proc(gui_state: ^Gui_State) -> (err: Maybe(string)) {
     return nil
 }
 
-gui_init :: proc() -> Gui_State {
-    gui_state: Gui_State
+gui_init :: proc(gui_state: ^Gui_State) -> Maybe(string) {
     gui_state.running = true
 
     gui_state.display = wl.display_connect(nil) // nil means connect to default $WAYLAND_DISPLAY or wayland-0 as fallback
     if gui_state.display == nil {
-        log.error("Failed to connect to default Wayland display")
-        return {}
+        return fmt.tprint("Failed to connect to default Wayland display")
     }
 
     // Get registry
     gui_state.registry = wl.display_get_registry(gui_state.display)
-    wl.registry_add_listener(gui_state.registry, &registry_listener, &gui_state)
+    wl.registry_add_listener(gui_state.registry, &registry_listener, gui_state)
 
     // Roundtrip to receive registry events (binds seat, compositor, shm, and layer_shell)
     wl.display_roundtrip(gui_state.display)
     if gui_state.seat == nil {
-        log.error("Failed to bind Wayland seat")
-        gui_state.running = false
-        return {}
+        return fmt.tprint("Failed to bind Wayland seat")
     }
     if gui_state.compositor == nil {
-        log.error("Failed to bind Wayland compositor")
-        gui_state.running = false
-        return {}
+        return fmt.tprint("Failed to bind Wayland compositor")
     }
     if gui_state.shm == nil {
-        log.error("Failed to bind Wayland shm")
-        gui_state.running = false
-        return {}
+        return fmt.tprint("Failed to bind Wayland shm")
     }
     if gui_state.layer_shell == nil {
-        log.error("Failed to bind Wayland wlr_layer_shell")
-        gui_state.running = false
-        return {}
+        return fmt.tprint("Failed to bind Wayland wlr_layer_shell")
     }
 
     // Init surface resources and commit
-    gui_init_surface(&gui_state)
+    gui_init_surface(gui_state)
     if gui_state.surface == nil {
-        log.error("Failed to init Wayland surface")
-        gui_state.running = false
-        return {}
+        return fmt.tprint("Failed to init Wayland surface")
     }
     if gui_state.layer_surface == nil {
-        log.error("Failed to init Wayland wlr_layer_surface")
-        gui_state.running = false
-        return {}
+        return fmt.tprint("Failed to init Wayland wlr_layer_surface")
     }
 
     // Add seat listener to get keyboard
-    wl.seat_add_listener(gui_state.seat, &seat_listener, &gui_state)
+    wl.seat_add_listener(gui_state.seat, &seat_listener, gui_state)
 
     // Roundtrip to receive configure event for layer_surface_listener
     wl.display_roundtrip(gui_state.display)
 
     // Initialize font info
-    if !gui_init_font(&gui_state) {
-        log.error("Failed to initialize font from file at any known path")
-        return {}
+    if !gui_init_font(gui_state) {
+        return fmt.tprint("Failed to initialize font from file at any known path")
     }
 
-    return gui_state
+    return nil
 }
 
 gui_cleanup_font :: proc(gui_state: ^Gui_State) {
@@ -589,18 +574,18 @@ gui_render :: proc(gui_state: ^Gui_State) {
 }
 
 run_gui :: proc(socket_fd: linux.Fd) {
-    gui_state := gui_init()
-    if gui_state.display == nil {
-        fmt.eprintln("Error: failed to connect to Wayland compositor")
+    gui_state: Gui_State
+    err := gui_init(&gui_state)
+    if err != nil {
+        fmt.eprintfln("Error initializing GUI state: %s", err)
         os.exit(1)
     }
     defer gui_cleanup(&gui_state)
 
     // Fetch registers
-    err: Maybe(string)
     gui_state.reg_count, err = gui_fetch_registers(socket_fd, &gui_state)
     if err != nil {
-        fmt.eprintfln("Error: %s", err)
+        fmt.eprintfln("Error fetching registers: %s", err)
     }
 
     gui_render(&gui_state)
