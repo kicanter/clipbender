@@ -286,16 +286,16 @@ gui_init :: proc(gui_state: ^Gui_State) -> Maybe(string) {
         return fmt.tprint("Failed to init Wayland wlr_layer_surface")
     }
 
+    // Initialize font info (must be before roundtrip since configure callback may render)
+    if !gui_init_font(gui_state) {
+        return fmt.tprint("Failed to initialize font from file at any known path")
+    }
+
     // Add seat listener to get keyboard
     wl.seat_add_listener(gui_state.seat, &seat_listener, gui_state)
 
     // Roundtrip to receive configure event for layer_surface_listener
     wl.display_roundtrip(gui_state.display)
-
-    // Initialize font info
-    if !gui_init_font(gui_state) {
-        return fmt.tprint("Failed to initialize font from file at any known path")
-    }
 
     return nil
 }
