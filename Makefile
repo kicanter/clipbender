@@ -51,6 +51,10 @@ protocols: $(SCANNER)
 	$(SCANNER) $(WL_DIR)/wlr-data-control/wlr-data-control-unstable-v1.xml $(WL_DIR)/wlr-data-control/wlr_data_control.odin wlr_data_control false false $(WAYLAND_DIR)
 	$(SCANNER) $(WL_DIR)/xdg-shell/xdg-shell.xml $(WL_DIR)/xdg-shell/xdg_shell.odin xdg_shell false false $(WAYLAND_DIR)
 	$(SCANNER) $(WL_DIR)/wlr-layer-shell/wlr-layer-shell-unstable-v1.xml $(WL_DIR)/wlr-layer-shell/wlr_layer_shell.odin wlr_layer_shell false false $(WAYLAND_DIR)
+	@# TODO: Remove once odin-wayland scanner handles cross-protocol imports
+	@sed -i '/^import wl/a import xdg_shell "../xdg-shell"' $(WL_DIR)/wlr-layer-shell/wlr_layer_shell.odin
+	@sed -i 's/&popup_interface/\&xdg_shell.popup_interface/g' $(WL_DIR)/wlr-layer-shell/wlr_layer_shell.odin
+	@sed -i 's/popup_: \^popup/popup_: ^xdg_shell.popup/g' $(WL_DIR)/wlr-layer-shell/wlr_layer_shell.odin
 
 clean:
 	rm -rf $(BUILD_DIR)
