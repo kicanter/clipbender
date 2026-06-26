@@ -155,13 +155,22 @@ gui_init_font :: proc(gui_state: ^Gui_State) -> bool {
     for path in FONT_PATHS {
         font_data, err := os.read_entire_file(path, context.allocator)
         if err != nil {continue}
+        if len(font_data) == 0 {
+            delete(font_data)
+            continue
+        }
 
         font_info: truetype.fontinfo
-        truetype.InitFont(&font_info, raw_data(font_data), 0)
+        if !truetype.InitFont(&font_info, raw_data(font_data), 0) {
+            log.warnf("Failed to parse font file: %s", path)
+            delete(font_data)
+            continue
+        }
 
         gui_state.font.data = font_data
         gui_state.font.info = font_info
         gui_state.font.scale = truetype.ScaleForPixelHeight(&font_info, FONT_SIZE)
+        log.debugf("Successfully loaded font from: %s", path)
         return true
     }
 
