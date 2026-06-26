@@ -210,6 +210,7 @@ parse_cmd_set_inline :: proc(
 
 // `args` includes everything after the `clipbender set` subcommand
 cmd_set :: proc(args: []string, client_fd: linux.Fd) {
+    // TODO: maybe add a `mime=` flag similar to GET's `fmt=`
     success_msg: string
     if len(args) == 2 {     // source reg was passed as an arg by client
         dest_reg, set_mode, source_reg, err := parse_cmd_set_reg(args[0], args[1])
@@ -232,6 +233,7 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
             fmt.eprintfln("Error: %v", err.?)
             print_cmd_usage_and_exit(.SET)
         }
+        defer delete(data)
         msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
         defer delete(msg)
         written := lib.encode_cmd_set_inline(dest_reg, set_mode, mime, data, msg[:])
