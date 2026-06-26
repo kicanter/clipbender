@@ -114,6 +114,7 @@ draw_char :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, char: rune, color:
     // Get bitmap from truetype font
     width, height, xoff, yoff: i32
     bitmap := truetype.GetCodepointBitmap(&font.info, 0, font.scale, char, &width, &height, &xoff, &yoff)
+    if bitmap == nil { return }
     defer truetype.FreeBitmap(bitmap, nil)
 
     // Set each pixel according to bitmap
