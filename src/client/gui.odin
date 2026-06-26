@@ -111,9 +111,11 @@ alpha_blend :: proc(fg_color: u32, alpha: u8, bg_color: u32) -> u32 {
 
 // Draw a single character
 draw_char :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, char: rune, color: u32, font: ^Font) {
+    fmt.eprintfln("[DEBUG] draw_char: char='%c' x=%d y=%d scale=%f data=%v", char, x, y, font.scale, font.info.data != nil)
     // Get bitmap from truetype font
     width, height, xoff, yoff: i32
     bitmap := truetype.GetCodepointBitmap(&font.info, 0, font.scale, char, &width, &height, &xoff, &yoff)
+    fmt.eprintfln("[DEBUG] draw_char: bitmap=%v w=%d h=%d", bitmap != nil, width, height)
     if bitmap == nil { return }
     defer truetype.FreeBitmap(bitmap, nil)
 
@@ -154,16 +156,18 @@ draw_string :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, text: string, co
 
 gui_init_font :: proc(gui_state: ^Gui_State) -> bool {
     for path in FONT_PATHS {
+        fmt.eprintfln("[DEBUG] gui_init_font: trying %s", path)
         font_data, err := os.read_entire_file(path, context.allocator)
         if err != nil {continue}
         if len(font_data) == 0 {
             delete(font_data)
             continue
         }
+        fmt.eprintfln("[DEBUG] gui_init_font: loaded %d bytes", len(font_data))
 
         font_info: truetype.fontinfo
         if !truetype.InitFont(&font_info, raw_data(font_data), 0) {
-            log.warnf("Failed to parse font file: %s", path)
+            fmt.eprintfln("[DEBUG] gui_init_font: InitFont FAILED for %s", path)
             delete(font_data)
             continue
         }
@@ -171,10 +175,11 @@ gui_init_font :: proc(gui_state: ^Gui_State) -> bool {
         gui_state.font.data = font_data
         gui_state.font.info = font_info
         gui_state.font.scale = truetype.ScaleForPixelHeight(&font_info, FONT_SIZE)
-        log.debugf("Successfully loaded font from: %s", path)
+        fmt.eprintfln("[DEBUG] gui_init_font: SUCCESS scale=%f numGlyphs=%d", gui_state.font.scale, gui_state.font.info.numGlyphs)
         return true
     }
 
+    fmt.eprintln("[DEBUG] gui_init_font: ALL PATHS FAILED")
     return false
 }
 
@@ -584,6 +589,7 @@ gui_render :: proc(gui_state: ^Gui_State) {
 }
 
 run_gui :: proc(socket_fd: linux.Fd) {
+    fmt.eprintln("[DEBUG] run_gui: start")
     gui_state: Gui_State
     err := gui_init(&gui_state)
     if err != nil {
@@ -591,14 +597,18 @@ run_gui :: proc(socket_fd: linux.Fd) {
         os.exit(1)
     }
     defer gui_cleanup(&gui_state)
+    fmt.eprintln("[DEBUG] run_gui: gui_init done")
 
     // Fetch registers
     gui_state.reg_count, err = gui_fetch_registers(socket_fd, &gui_state)
     if err != nil {
         fmt.eprintfln("Error fetching registers: %s", err)
     }
+    fmt.eprintfln("[DEBUG] run_gui: fetched %d registers", gui_state.reg_count)
 
+    fmt.eprintln("[DEBUG] run_gui: calling gui_render")
     gui_render(&gui_state)
+    fmt.eprintln("[DEBUG] run_gui: gui_render done")
 
     fmt.println("GUI popup successfully connected to Wayland")
     for gui_state.running {
