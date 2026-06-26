@@ -541,21 +541,16 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (coun
 
 draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, curr: ^u8, x: uint, y: uint, color: u32) {
     reg_str: string
+    reg_fmt := "% 8s  % -40s"
     if curr^ < gui_state.reg_count && reg_id == gui_state.regs[curr^].id {
         // Draw register data to line and increment where we are in the array
         reg_entry := gui_state.regs[curr^].entry
         ts_buf: [19]u8
-        reg_str = fmt.tprintf(
-            "% 8s  % -10s  % -16s  % -40s ",
-            lib.reg_id_to_string(reg_id),
-            format_unix_timestamp(reg_entry.timestamp, &ts_buf),
-            reg_entry.mime_type,
-            truncate_content(string(reg_entry.data)),
-        )
+        reg_str = fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), truncate_content(string(reg_entry.data)))
         curr^ += 1
     } else {
         // Draw empty register line
-        reg_str = fmt.tprintf("% 8s  % -10s  % -16s  % -40s ", lib.reg_id_to_string(reg_id), "", "", "")
+        reg_str = fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), "")
     }
 
     draw_string(&gui_state.frame_buf, x, y, reg_str, color, &gui_state.font)
