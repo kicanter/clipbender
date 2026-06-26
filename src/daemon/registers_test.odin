@@ -116,7 +116,7 @@ test_append_named_reg :: proc(t: ^testing.T) {
 
     id := lib.reg_id_from_named_index(2)
     set_named_reg_clone(id, transmute([]byte)string("hello"), "text/plain", .OVERWRITE)
-    ok := append_named_reg(id, slice.clone(transmute([]byte)string(" world")), strings.clone("text/plain"))
+    ok := set_named_reg(id, slice.clone(transmute([]byte)string(" world")), strings.clone("text/plain"), .APPEND)
     testing.expect(t, ok, "append should succeed with matching mime")
 
     entry := get_reg(id)
@@ -130,7 +130,7 @@ test_append_named_reg_mime_mismatch :: proc(t: ^testing.T) {
 
     id := lib.reg_id_from_named_index(3)
     set_named_reg_clone(id, transmute([]byte)string("data"), "text/plain", .OVERWRITE)
-    ok := append_named_reg(id, slice.clone(transmute([]byte)string("more")), strings.clone("text/html"))
+    ok := set_named_reg(id, slice.clone(transmute([]byte)string("more")), strings.clone("text/html"), .APPEND)
     testing.expect(t, !ok, "append should fail with mismatched mime type")
 
     entry := get_reg(id)
@@ -143,7 +143,7 @@ test_append_named_reg_empty :: proc(t: ^testing.T) {
     defer clear_named_reg(lib.reg_id_from_named_index(4))
 
     id := lib.reg_id_from_named_index(4)
-    ok := append_named_reg(id, slice.clone(transmute([]byte)string("first")), strings.clone("text/plain"))
+    ok := set_named_reg(id, slice.clone(transmute([]byte)string("first")), strings.clone("text/plain"), .APPEND)
     testing.expect(t, ok, "append to empty should behave like set")
 
     entry := get_reg(id)

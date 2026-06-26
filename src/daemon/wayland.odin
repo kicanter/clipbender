@@ -269,27 +269,40 @@ wayland_handle_selection :: proc(
         return
     }
 
-    // Cleanup existing data offer if exists
     cached_offer: ^^ext_dc.data_control_offer_v1
+    selection: ^Selection_State
     switch type {
     case .CLIPBOARD:
         cached_offer = &wl_state.clipboard_state.offer
+        selection = &wl_state.clipboard_state
     case .PRIMARY:
         cached_offer = &wl_state.primary_state.offer
+        selection = &wl_state.primary_state
     }
+
+    // Cleanup existing data offer if exists
     if cached_offer^ != nil {ext_dc.data_control_offer_v1_destroy(cached_offer^)}
     cached_offer^ = id_
 
-    mime := pick_best_mime(wl_state.advertised_mimes)
-    if mime == "" {
-        log.errorf("No mime found for copied %v selection, canceling push to recency register", type)
-        return
-    }
+    data: []u8
+    mime: string
+    // Self-source: we own this selection, push directly from our cached data to avoid deadlocking on the pipe read
+    // (the send callback can't fire while we're blocking here)
+    if selection.source != nil {
+        data = slice.clone(selection.source_data)
+        mime = strings.clone(selection.source_mime)
+    } else {
+        mime = pick_best_mime(wl_state.advertised_mimes)
+        if mime == "" {
+            log.errorf("No mime found for copied %v selection, canceling push to recency register", type)
+            return
+        }
 
-    data := wayland_read_offer_data(id_, wl_state.display, mime)
-    if data == nil {
-        log.error("Couldn't read the data from offer with mime type `%s`", mime)
-        return
+        data = wayland_read_offer_data(id_, wl_state.display, mime)
+        if data == nil {
+            log.error("Couldn't read the data from offer with mime type `%s`", mime)
+            return
+        }
     }
 
     push_recency_reg(data, mime, type)
