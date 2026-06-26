@@ -126,6 +126,7 @@ wayland_dispatch :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
 registry_listener := wl.registry_listener {
     global = proc "c" (data: rawptr, registry: ^wl.registry, name_: uint, interface_: cstring, version_: uint) {
         context = runtime.default_context()
+        context.logger = _logger
         wl_state := cast(^Wayland_State)data
 
         // Use 1 as version in registry_bind calls to guarantee compatibility with as many compositors as possible
@@ -149,6 +150,7 @@ registry_listener := wl.registry_listener {
     },
     global_remove = proc "c" (data: rawptr, registry: ^wl.registry, name_: uint) {
         context = runtime.default_context()
+        context.logger = _logger
         wl_state := cast(^Wayland_State)data
 
         if name_ == wl_state.seat_name || name_ == wl_state.data_control_manager_name {
@@ -172,6 +174,7 @@ device_listener := ext_dc.data_control_device_v1_listener {
         id_: ^ext_dc.data_control_offer_v1,
     ) {
         context = runtime.default_context()
+        context.logger = _logger
         wl_state := cast(^Wayland_State)data
         log.debug("Received ext_data_control_device_v1::data_offer event")
         // Attach offer listener to collect MIME types
@@ -183,12 +186,14 @@ device_listener := ext_dc.data_control_device_v1_listener {
         id_: ^ext_dc.data_control_offer_v1,
     ) {
         context = runtime.default_context()
+        context.logger = _logger
         wl_state := cast(^Wayland_State)data
         log.debug("Received ext_data_control_device_v1::selection event")
         wayland_handle_selection(wl_state, id_, .CLIPBOARD)
     },
     finished = proc "c" (data: rawptr, data_control_device_v1: ^ext_dc.data_control_device_v1) {
         context = runtime.default_context()
+        context.logger = _logger
         wl_state := cast(^Wayland_State)data
         log.debug("Received ext_data_control_device_v1::finished event, disabling clipboard monitoring")
         wl_state.disabled = true
@@ -199,6 +204,7 @@ device_listener := ext_dc.data_control_device_v1_listener {
         id_: ^ext_dc.data_control_offer_v1,
     ) {
         context = runtime.default_context()
+        context.logger = _logger
         wl_state := cast(^Wayland_State)data
         log.debug("Received ext_data_control_device_v1::primary_selection event")
         wayland_handle_selection(wl_state, id_, .PRIMARY)
@@ -209,6 +215,7 @@ device_listener := ext_dc.data_control_device_v1_listener {
 offer_listener := ext_dc.data_control_offer_v1_listener {
     offer = proc "c" (data: rawptr, data_control_offer_v1: ^ext_dc.data_control_offer_v1, mime_type_: cstring) {
         context = runtime.default_context()
+        context.logger = _logger
         wl_state := cast(^Wayland_State)data
         log.debugf("Received ext_data_control_offer_v1::offer event (mime: %s)", mime_type_)
 
@@ -225,6 +232,7 @@ source_listener := ext_dc.data_control_source_v1_listener {
         fd_: int,
     ) {
         context = runtime.default_context()
+        context.logger = _logger
         wl_state := cast(^Wayland_State)data
 
         switch data_control_source_v1 {
@@ -238,6 +246,7 @@ source_listener := ext_dc.data_control_source_v1_listener {
     },
     cancelled = proc "c" (data: rawptr, data_control_source_v1: ^ext_dc.data_control_source_v1) {
         context = runtime.default_context()
+        context.logger = _logger
         wl_state := cast(^Wayland_State)data
 
         switch data_control_source_v1 {

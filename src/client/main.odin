@@ -7,6 +7,9 @@ import "core:sys/linux"
 
 import lib "libclipbender:base"
 
+// Package-level logger for use in proc "c" callbacks that lack the context logger
+_logger: log.Logger
+
 uds_connect :: proc(socket_path: string) -> linux.Fd {
     if !os.exists(socket_path) {
         fmt.eprintln("Error: socket path does not exist")
@@ -27,8 +30,9 @@ uds_connect :: proc(socket_path: string) -> linux.Fd {
 }
 
 main :: proc() {
-    context.logger = log.create_console_logger()
-    defer log.destroy_console_logger(context.logger)
+    _logger = log.create_console_logger()
+    context.logger = _logger
+    defer log.destroy_console_logger(_logger)
 
     socket_path := lib.clipbender_socket_path()
     defer delete(socket_path)

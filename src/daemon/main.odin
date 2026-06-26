@@ -6,9 +6,13 @@ import "core:os"
 
 import lib "libclipbender:base"
 
+// Package-level logger for use in proc "c" callbacks that lack the context logger
+_logger: log.Logger
+
 main :: proc() {
-    context.logger = log.create_console_logger()
-    defer log.destroy_console_logger(context.logger)
+    _logger = log.create_console_logger()
+    context.logger = _logger
+    defer log.destroy_console_logger(_logger)
 
     socket_path := lib.clipbender_socket_path()
     defer delete(socket_path)

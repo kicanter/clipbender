@@ -111,11 +111,9 @@ alpha_blend :: proc(fg_color: u32, alpha: u8, bg_color: u32) -> u32 {
 
 // Draw a single character
 draw_char :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, char: rune, color: u32, font: ^Font) {
-    fmt.eprintfln("[DEBUG] draw_char: char='%c' x=%d y=%d scale=%f data=%v", char, x, y, font.scale, font.info.data != nil)
     // Get bitmap from truetype font
     width, height, xoff, yoff: i32
     bitmap := truetype.GetCodepointBitmap(&font.info, 0, font.scale, char, &width, &height, &xoff, &yoff)
-    fmt.eprintfln("[DEBUG] draw_char: bitmap=%v w=%d h=%d", bitmap != nil, width, height)
     if bitmap == nil { return }
     defer truetype.FreeBitmap(bitmap, nil)
 
@@ -156,18 +154,16 @@ draw_string :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, text: string, co
 
 gui_init_font :: proc(gui_state: ^Gui_State) -> bool {
     for path in FONT_PATHS {
-        fmt.eprintfln("[DEBUG] gui_init_font: trying %s", path)
         font_data, err := os.read_entire_file(path, context.allocator)
         if err != nil {continue}
         if len(font_data) == 0 {
             delete(font_data)
             continue
         }
-        fmt.eprintfln("[DEBUG] gui_init_font: loaded %d bytes", len(font_data))
 
         font_info: truetype.fontinfo
         if !truetype.InitFont(&font_info, raw_data(font_data), 0) {
-            fmt.eprintfln("[DEBUG] gui_init_font: InitFont FAILED for %s", path)
+            log.warnf("Failed to parse font file: %s", path)
             delete(font_data)
             continue
         }
@@ -175,11 +171,11 @@ gui_init_font :: proc(gui_state: ^Gui_State) -> bool {
         gui_state.font.data = font_data
         gui_state.font.info = font_info
         gui_state.font.scale = truetype.ScaleForPixelHeight(&font_info, FONT_SIZE)
-        fmt.eprintfln("[DEBUG] gui_init_font: SUCCESS scale=%f numGlyphs=%d", gui_state.font.scale, gui_state.font.info.numGlyphs)
+        log.debugf("Loaded font from %s (scale=%.3f, glyphs=%d)", path, gui_state.font.scale, gui_state.font.info.numGlyphs)
         return true
     }
 
-    fmt.eprintln("[DEBUG] gui_init_font: ALL PATHS FAILED")
+    log.error("Failed to load font from any known path")
     return false
 }
 
@@ -348,6 +344,7 @@ gui_cleanup :: proc(gui_state: ^Gui_State) {
 registry_listener := wl.registry_listener {
     global = proc "c" (data: rawptr, registry: ^wl.registry, name_: uint, interface_: cstring, version_: uint) {
         context = runtime.default_context()
+        context.logger = _logger
         gui_state := cast(^Gui_State)data
 
         // Use 1 as version in registry_bind calls to guarantee compatibility with as many compositors as possible
@@ -377,6 +374,7 @@ registry_listener := wl.registry_listener {
     },
     global_remove = proc "c" (data: rawptr, registry: ^wl.registry, name_: uint) {
         context = runtime.default_context()
+        context.logger = _logger
         gui_state := cast(^Gui_State)data
 
         if name_ == gui_state.seat_name ||
@@ -409,6 +407,7 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
         height_: uint,
     ) {
         context = runtime.default_context()
+        context.logger = _logger
         gui_state := cast(^Gui_State)data
         log.debug("Received zwlr_layer_surface_v1::configure event")
 
@@ -442,6 +441,7 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
     },
     closed = proc "c" (data: rawptr, layer_surface_v1: ^wlr_ls.layer_surface_v1) {
         context = runtime.default_context()
+        context.logger = _logger
         gui_state := cast(^Gui_State)data
         log.debug("Received zwlr_layer_surface_v1::closed event")
         gui_state.running = false
@@ -452,6 +452,7 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
 seat_listener := wl.seat_listener {
     capabilities = proc "c" (data: rawptr, seat: ^wl.seat, capabilities_: wl.seat_capability) {
         context = runtime.default_context()
+        context.logger = _logger
         gui_state := cast(^Gui_State)data
         log.debug("Received wl_seat::capabilities event")
 
@@ -482,6 +483,7 @@ keyboard_listener := wl.keyboard_listener {
         state_: wl.keyboard_key_state,
     ) {
         context = runtime.default_context()
+        context.logger = _logger
         gui_state := cast(^Gui_State)data
         log.debugf("Received wl_keyboard::key event (key: %d, state: %v)", key_, state_)
         // Escape keycode = 1, pressed = 1
@@ -593,7 +595,6 @@ gui_render :: proc(gui_state: ^Gui_State) {
 }
 
 run_gui :: proc(socket_fd: linux.Fd) {
-    fmt.eprintln("[DEBUG] run_gui: start")
     gui_state: Gui_State
     err := gui_init(&gui_state)
     if err != nil {
@@ -601,20 +602,18 @@ run_gui :: proc(socket_fd: linux.Fd) {
         os.exit(1)
     }
     defer gui_cleanup(&gui_state)
-    fmt.eprintln("[DEBUG] run_gui: gui_init done")
+    log.debug("GUI initialized")
 
     // Fetch registers
     gui_state.reg_count, err = gui_fetch_registers(socket_fd, &gui_state)
     if err != nil {
         fmt.eprintfln("Error fetching registers: %s", err)
     }
-    fmt.eprintfln("[DEBUG] run_gui: fetched %d registers", gui_state.reg_count)
+    log.debugf("Fetched %d registers from daemon", gui_state.reg_count)
 
-    fmt.eprintln("[DEBUG] run_gui: calling gui_render")
     gui_render(&gui_state)
-    fmt.eprintln("[DEBUG] run_gui: gui_render done")
+    log.debug("GUI rendered, entering event loop")
 
-    fmt.println("GUI popup successfully connected to Wayland")
     for gui_state.running {
         wl.display_dispatch(gui_state.display)
     }
