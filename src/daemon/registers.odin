@@ -181,6 +181,12 @@ clear_named_reg :: proc(reg_id: lib.Reg_Id) {
     lib.free_reg_entry(&named_registers[idx])
 }
 
+cleanup_registers :: proc() {
+    for &entry in clipboard_registers.entries { lib.free_reg_entry(&entry) }
+    for &entry in primary_registers.entries { lib.free_reg_entry(&entry) }
+    for &entry in named_registers { lib.free_reg_entry(&entry) }
+}
+
 // Convenience clone functions
 push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
     push_to_ring(ring, slice.clone(data), strings.clone(mime))

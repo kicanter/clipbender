@@ -101,6 +101,7 @@ wayland_cleanup :: proc(wl_state: ^Wayland_State) {
     wayland_cleanup_source(&wl_state.clipboard_state)
     if wl_state.primary_state.offer != nil {ext_dc.data_control_offer_v1_destroy(wl_state.primary_state.offer)}
     wayland_cleanup_source(&wl_state.primary_state)
+    delete(wl_state.advertised_mimes)
 
     // Cleanup connection state
     if wl_state.data_control_device != nil {ext_dc.data_control_device_v1_destroy(wl_state.data_control_device)}

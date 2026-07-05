@@ -59,6 +59,7 @@ main :: proc() {
     }
     // Cleanup backend if using supported backend
     defer if backend.state != nil {backend.cleanup(backend.state)}
+    defer cleanup_registers()
 
     // TODO: Remove test data once clipboard monitoring is working
     push_recency_reg_clone(transmute([]u8)string("https://github.com/odin-lang/Odin"), "text/uri-list", .CLIPBOARD)
