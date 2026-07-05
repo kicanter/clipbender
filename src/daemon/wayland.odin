@@ -54,29 +54,27 @@ Wayland_State :: struct {
     advertised_mimes:          map[string]struct{}, // map with zero-size value = hashset
 }
 
-wayland_init :: proc() -> Wayland_State {
-    wl_state: Wayland_State
-
+wayland_init :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
     // Get display
     wl_state.display = wl.display_connect(nil) // nil means connect to default $WAYLAND_DISPLAY or wayland-0 as fallback
     if wl_state.display == nil {
         log.error("Failed to connect to default Wayland display")
-        return {}
+        return false
     }
 
     // Get registry
     wl_state.registry = wl.display_get_registry(wl_state.display)
-    wl.registry_add_listener(wl_state.registry, &registry_listener, &wl_state)
+    wl.registry_add_listener(wl_state.registry, &registry_listener, wl_state)
 
     // Roundtrip to receive registry events (binds seat and data_control_manager)
     wl.display_roundtrip(wl_state.display)
     if wl_state.seat == nil {
         log.error("Failed to bind Wayland seat")
-        return {}
+        return false
     }
     if wl_state.data_control_manager == nil {
         log.error("Failed to bind Wayland data_control_manager")
-        return {}
+        return false
     }
 
     // Get data_control_device
@@ -86,14 +84,14 @@ wayland_init :: proc() -> Wayland_State {
     )
     if wl_state.data_control_device == nil {
         log.error("Failed to get Wayland data_control_device, ran out of memory?")
-        return {}
+        return false
     }
-    ext_dc.data_control_device_v1_add_listener(wl_state.data_control_device, &device_listener, &wl_state)
+    ext_dc.data_control_device_v1_add_listener(wl_state.data_control_device, &device_listener, wl_state)
 
     // Roundtrip to receive initial selection state
     wl.display_roundtrip(wl_state.display)
 
-    return wl_state
+    return true
 }
 
 // Destroy in reverse order of creation, children before parents

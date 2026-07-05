@@ -27,8 +27,8 @@ main :: proc() {
     case .WAYLAND:
         log.debug("Wayland session type found, initializing clipboard monitoring via `ext-data-control-v1` protocol")
 
-        wl_state = wayland_init()
-        if wl_state.display == nil {
+        ok := wayland_init(&wl_state)
+        if !ok {
             fmt.eprintln("Error: failed to connect to Wayland compositor")
             os.exit(1)
         }
@@ -68,7 +68,9 @@ main :: proc() {
     push_recency_reg_clone(transmute([]u8)string("selected text from browser"), "text/plain", .PRIMARY)
     push_recency_reg_clone(transmute([]u8)string("{\"key\": \"value\", \"num\": 42}"), "application/json", .PRIMARY)
     push_recency_reg_clone(
-        transmute([]u8)string("another primary selection that is longer than the content column width for testing truncation"),
+        transmute([]u8)string(
+            "another primary selection that is longer than the content column width for testing truncation",
+        ),
         "text/plain",
         .PRIMARY,
     )
