@@ -1,0 +1,90 @@
+[DEBUG] --- [2026-07-05 16:49:21] [main.odin:19:main()] Writing socket file to path /run/user/1000/clipbender.sock
+[DEBUG] --- [2026-07-05 16:49:21] [main.odin:28:main()] Wayland session type found, initializing clipboard monitoring via `ext-data-control-v1` protocol
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:148:_proclit$anon-1()] Successfully bound Wayland interface `wl_seat`
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:148:_proclit$anon-1()] Successfully bound Wayland interface `ext_data_control_manager_v1`
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:178:_proclit$anon-3()] Received ext_data_control_device_v1::data_offer event
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain;charset=utf-8)
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain)
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/html)
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:190:_proclit$anon-4()] Received ext_data_control_device_v1::selection event
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:178:_proclit$anon-3()] Received ext_data_control_device_v1::data_offer event
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain;charset=utf-8)
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain)
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/html)
+[DEBUG] --- [2026-07-05 16:49:21] [wayland.odin:208:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
+[DEBUG] --- [2026-07-05 16:49:21] [main.odin:56:main()] Clipboard backend initialized (fd=3)
+[DEBUG] --- [2026-07-05 16:49:21] [server.odin:276:uds_serve()] Daemon ready, entering event loop
+[DEBUG] --- [2026-07-05 16:49:23] [server.odin:207:dispatch_cqe()] Clipboard monitor event received
+[DEBUG] --- [2026-07-05 16:49:23] [wayland.odin:178:_proclit$anon-3()] Received ext_data_control_device_v1::data_offer event
+[DEBUG] --- [2026-07-05 16:49:23] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain;charset=utf-8)
+[DEBUG] --- [2026-07-05 16:49:23] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain)
+[DEBUG] --- [2026-07-05 16:49:23] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/html)
+[DEBUG] --- [2026-07-05 16:49:23] [wayland.odin:208:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
+=================================================================
+==186116==ERROR: AddressSanitizer: stack-use-after-return on address 0x7b3a075faa90 at pc 0x0000006719cb bp 0x7ffde98360d0 sp 0x7ffde98360c8
+READ of size 8 at 0x7b3a075faa90 thread T0
+    #0 0x0000006719ca in main::wayland_handle_selection /home/kieran/Dev/clipbender/src/daemon/wayland.odin:284:5
+    #1 0x00000065dc54 in _proclit$anon-6 /home/kieran/Dev/clipbender/src/daemon/wayland.odin:209:9
+    #2 0x7f3a0965b1d5  (/usr/lib/libffi.so.8+0x81d5) (BuildId: 18b2b58562701d61d68acef78f8ab611e9a41576)
+    #3 0x7f3a096579ac  (/usr/lib/libffi.so.8+0x49ac) (BuildId: 18b2b58562701d61d68acef78f8ab611e9a41576)
+    #4 0x7f3a0965a7cd in ffi_call (/usr/lib/libffi.so.8+0x77cd) (BuildId: 18b2b58562701d61d68acef78f8ab611e9a41576)
+    #5 0x7f3a097d877c  (/usr/lib/libwayland-client.so.0+0x477c) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
+    #6 0x7f3a097d9608  (/usr/lib/libwayland-client.so.0+0x5608) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
+    #7 0x7f3a097d9a12 in wl_display_dispatch_queue_pending (/usr/lib/libwayland-client.so.0+0x5a12) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
+    #8 0x7f3a097dd583 in wl_display_dispatch_queue_timeout (/usr/lib/libwayland-client.so.0+0x9583) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
+    #9 0x7f3a097dd65f in wl_display_dispatch_queue (/usr/lib/libwayland-client.so.0+0x965f) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
+    #10 0x00000066deac in main::wayland_dispatch /home/kieran/Dev/clipbender/src/daemon/wayland.odin:122:5
+    #11 0x0000006749ff in _proclit$anon-11 /home/kieran/Dev/clipbender/src/daemon/main.odin:39:53
+    #12 0x00000066f8af in main::dispatch_cqe /home/kieran/Dev/clipbender/src/daemon/server.odin:209:9
+    #13 0x0000006711de in main::uds_serve /home/kieran/Dev/clipbender/src/daemon/server.odin:288:21
+    #14 0x0000006670bc in main::main /home/kieran/Dev/clipbender/src/daemon/main.odin:98:5
+    #15 0x00000059cb59 in main /home/kieran/.local/bin/odin-2026-04-02/odin-linux-amd64-nightly+2026-04-02/base/runtime/entry_unix.odin:57:4
+    #16 0x7f3a09427740  (/usr/lib/libc.so.6+0x27740) (BuildId: d8ceb52a8c6e1fefece4ca75f7396d1d5bffc565)
+    #17 0x7f3a09427878 in __libc_start_main (/usr/lib/libc.so.6+0x27878) (BuildId: d8ceb52a8c6e1fefece4ca75f7396d1d5bffc565)
+    #18 0x00000042c1d4 in _start (/home/kieran/Dev/clipbender/build/clipbenderd+0x42c1d4) (BuildId: 2a1db5643f8f03317e8a96598c816d3ffb957b66)
+
+Address 0x7b3a075faa90 is located in stack of thread T0 at offset 144 in frame
+    #0 0x00000066b45f in main::wayland_init /home/kieran/Dev/clipbender/src/daemon/wayland.odin:57
+
+  This frame has 6 object(s):
+    [32, 224) 'wl_state' <== Memory access at offset 144 is inside this variable
+    [288, 304) ''
+    [320, 336) ''
+    [352, 368) ''
+    [384, 400) ''
+    [416, 432) ''
+HINT: this may be a false positive if your program uses some custom stack unwind mechanism, swapcontext or vfork
+      (longjmp and C++ exceptions *are* supported)
+SUMMARY: AddressSanitizer: stack-use-after-return /home/kieran/Dev/clipbender/src/daemon/wayland.odin:284:5 in main::wayland_handle_selection
+Shadow bytes around the buggy address:
+  0x7b3a075fa800: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+  0x7b3a075fa880: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+  0x7b3a075fa900: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+  0x7b3a075fa980: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+  0x7b3a075faa00: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+=>0x7b3a075faa80: f5 f5[f5]f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+  0x7b3a075fab00: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+  0x7b3a075fab80: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+  0x7b3a075fac00: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+  0x7b3a075fac80: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+  0x7b3a075fad00: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07 
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==186116==ABORTING
