@@ -62,20 +62,6 @@ main :: proc() {
     defer cleanup_registers()
 
     // TODO: Remove test data once clipboard monitoring is working
-    push_recency_reg_clone(transmute([]u8)string("https://github.com/odin-lang/Odin"), "text/uri-list", .CLIPBOARD)
-    push_recency_reg_clone(transmute([]u8)string("fn main() { println!(\"hello\"); }"), "text/plain", .CLIPBOARD)
-    push_recency_reg_clone(transmute([]u8)string("<div class=\"container\">content</div>"), "text/html", .CLIPBOARD)
-    push_recency_reg_clone(transmute([]u8)string("short"), "text/plain", .CLIPBOARD)
-    push_recency_reg_clone(transmute([]u8)string("selected text from browser"), "text/plain", .PRIMARY)
-    push_recency_reg_clone(transmute([]u8)string("{\"key\": \"value\", \"num\": 42}"), "application/json", .PRIMARY)
-    push_recency_reg_clone(
-        transmute([]u8)string(
-            "another primary selection that is longer than the content column width for testing truncation",
-        ),
-        "text/plain",
-        .PRIMARY,
-    )
-    push_recency_reg_clone(transmute([]u8)string("/home/user/.config/clipbender/config"), "text/plain", .PRIMARY)
     set_named_reg_clone(
         lib.Reg_Id(lib.NAMED_START + 3),
         transmute([]u8)string("persistent snippet stored in register d"),

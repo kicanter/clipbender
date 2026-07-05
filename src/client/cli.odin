@@ -474,9 +474,8 @@ format_unix_timestamp :: proc(timestamp: i64, buf: ^[19]u8) -> string {
     return fmt.bprintf(buf[:], "%04d-%02d-%02d %02d:%02d:%02d", y, int(m), d, h, min, s)
 }
 
-CONTENT_COL_WIDTH :: 40 // How much of the content to show total including truncation
 // Sanitize control characters and truncate string to fit column width, appending "..." if truncated
-truncate_content :: proc(content: string) -> string {
+truncate_content :: proc(content: string, width: int) -> string {
     escaped := strings.builder_make(context.temp_allocator)
     for ch in content {
         switch ch {
@@ -491,10 +490,10 @@ truncate_content :: proc(content: string) -> string {
         }
     }
     cleaned := strings.to_string(escaped)
-    if len(cleaned) <= CONTENT_COL_WIDTH {
+    if len(cleaned) <= width {
         return cleaned
     }
-    return fmt.tprintf("%s...", cleaned[:CONTENT_COL_WIDTH - 3])
+    return fmt.tprintf("%s...", cleaned[:width - 3])
 }
 
 // Print `regs` register entries formatted as an ascii table.
@@ -525,6 +524,7 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
     print_sep := false
     i := 0
 
+    CONTENT_COL_WIDTH :: 40 // How much of the content to show total including truncation
     // Clipboard registers
     for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
         entry := regs[i].entry
@@ -533,7 +533,7 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
             lib.reg_id_to_string(regs[i].id),
             format_unix_timestamp(entry.timestamp, &ts_buf),
             entry.mime_type,
-            truncate_content(string(entry.data)),
+            truncate_content(string(entry.data), CONTENT_COL_WIDTH),
         )
         print_sep = true
     }
@@ -554,7 +554,7 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
             lib.reg_id_to_string(regs[i].id),
             format_unix_timestamp(entry.timestamp, &ts_buf),
             entry.mime_type,
-            truncate_content(string(entry.data)),
+            truncate_content(string(entry.data), CONTENT_COL_WIDTH),
         )
         print_sep = true
     }
@@ -570,7 +570,7 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
             lib.reg_id_to_string(regs[j].id),
             format_unix_timestamp(entry.timestamp, &ts_buf),
             entry.mime_type,
-            truncate_content(string(entry.data)),
+            truncate_content(string(entry.data), CONTENT_COL_WIDTH),
         )
         print_sep = true
     }

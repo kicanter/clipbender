@@ -109,9 +109,11 @@ test_parse_cmd_get_incomplete_token_error :: proc(t: ^testing.T) {
 
 // truncate_content tests
 
+CONTENT_COL_WIDTH :: 40
+
 @(test)
 test_truncate_content_short :: proc(t: ^testing.T) {
-    result := truncate_content("hello")
+    result := truncate_content("hello", CONTENT_COL_WIDTH)
     testing.expect_value(t, result, "hello")
 }
 
@@ -119,14 +121,14 @@ test_truncate_content_short :: proc(t: ^testing.T) {
 test_truncate_content_exact :: proc(t: ^testing.T) {
     // exactly CONTENT_COL_WIDTH chars
     s := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 40 chars
-    result := truncate_content(s)
+    result := truncate_content(s, CONTENT_COL_WIDTH)
     testing.expect_value(t, result, s)
 }
 
 @(test)
 test_truncate_content_long :: proc(t: ^testing.T) {
     s := "this string is definitely longer than forty characters and should be truncated"
-    result := truncate_content(s)
+    result := truncate_content(s, CONTENT_COL_WIDTH)
     testing.expect(t, len(result) == CONTENT_COL_WIDTH)
     // should end with "..."
     testing.expect_value(t, result[CONTENT_COL_WIDTH - 3:], "...")
@@ -134,14 +136,14 @@ test_truncate_content_long :: proc(t: ^testing.T) {
 
 @(test)
 test_truncate_content_newline :: proc(t: ^testing.T) {
-    result := truncate_content("hello\nworld")
+    result := truncate_content("hello\nworld", CONTENT_COL_WIDTH)
     // newline should be replaced with visible \n
     testing.expect_value(t, result, `hello\nworld`)
 }
 
 @(test)
 test_truncate_content_tab :: proc(t: ^testing.T) {
-    result := truncate_content("hello\tworld")
+    result := truncate_content("hello\tworld", CONTENT_COL_WIDTH)
     testing.expect_value(t, result, `hello\tworld`)
 }
 

@@ -477,7 +477,13 @@ keyboard_listener := wl.keyboard_listener {
         size_: uint,
     ) {},
     enter = proc "c" (data: rawptr, keyboard: ^wl.keyboard, serial_: uint, surface_: ^wl.surface, keys_: wl.array) {},
-    leave = proc "c" (data: rawptr, keyboard: ^wl.keyboard, serial_: uint, surface_: ^wl.surface) {},
+    leave = proc "c" (data: rawptr, keyboard: ^wl.keyboard, serial_: uint, surface_: ^wl.surface) {
+        context = runtime.default_context()
+        context.logger = _logger
+        gui_state := cast(^Gui_State)data
+        log.debug("Received wl_keyboard::leave event")
+        gui_state.running = false
+    },
     key = proc "c" (
         data: rawptr,
         keyboard: ^wl.keyboard,
@@ -541,12 +547,16 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (coun
 
 draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, curr: ^u8, x: uint, y: uint, color: u32) {
     reg_str: string
-    reg_fmt := "% 8s  % -40s"
+    CONTENT_WIDTH :: 100
+    reg_fmt := "% 8s  % -" + "100s"
     if curr^ < gui_state.reg_count && reg_id == gui_state.regs[curr^].id {
         // Draw register data to line and increment where we are in the array
         reg_entry := gui_state.regs[curr^].entry
-        ts_buf: [19]u8
-        reg_str = fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), truncate_content(string(reg_entry.data)))
+        reg_str = fmt.tprintf(
+            reg_fmt,
+            lib.reg_id_to_string(reg_id),
+            truncate_content(string(reg_entry.data), CONTENT_WIDTH),
+        )
         curr^ += 1
     } else {
         // Draw empty register line

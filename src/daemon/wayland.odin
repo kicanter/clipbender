@@ -18,14 +18,14 @@ PREFERRED_MIMES :: [?]string {
     "image/png",
     "image/jpeg",
     "text/uri-list",
+    "text/plain;charset=utf-8",
+    "text/plain",
     "text/html",
     "text/css",
     "text/javascript",
     "text/markdown",
     "text/csv",
     "text/calendar",
-    "text/plain;charset=utf-8",
-    "text/plain",
 }
 
 Selection_State :: struct {
