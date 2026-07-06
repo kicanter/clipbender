@@ -1,7 +1,7 @@
 PREFIX ?= /usr/local
 BUILD_DIR := build
 FLAGS ?=
-COLLECTIONS := -collection:wayland=wayland -collection:libclipbender=src/libclipbender
+COLLECTIONS := -collection:src=src -collection:wayland=wayland -collection:bindings=bindings
 
 $(shell mkdir -p $(BUILD_DIR))
 
