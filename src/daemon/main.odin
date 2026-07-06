@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:log"
 import "core:os"
 
-import lib "libclipbender:base"
+import lib "src:libclipbender"
 
 // Package-level logger for use in proc "c" callbacks that lack the context logger
 _logger: log.Logger

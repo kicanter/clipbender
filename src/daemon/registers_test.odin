@@ -4,7 +4,7 @@ import "core:slice"
 import "core:strings"
 import "core:testing"
 
-import lib "libclipbender:base"
+import lib "src:libclipbender"
 
 free_ring :: proc(ring: ^Recency_Ring) {
     for &entry in ring.entries {

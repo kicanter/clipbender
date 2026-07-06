@@ -8,7 +8,7 @@ import "core:strings"
 import "core:sys/linux"
 import "core:sys/linux/uring"
 
-import lib "libclipbender:base"
+import lib "src:libclipbender"
 
 data_buf: [4096]u8
 sig_buf: [128]u8

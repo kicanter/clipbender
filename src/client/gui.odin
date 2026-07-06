@@ -8,7 +8,7 @@ import "core:simd"
 import "core:sys/linux"
 import "vendor:stb/truetype"
 
-import lib "libclipbender:base"
+import lib "src:libclipbender"
 import wl "wayland:odin-wayland"
 import wlr_ls "wayland:wlr-layer-shell"
 

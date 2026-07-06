@@ -6,7 +6,7 @@ import "core:slice"
 import "core:strings"
 import "core:sys/linux"
 
-import lib "libclipbender:base"
+import lib "src:libclipbender"
 import ext_dc "wayland:ext-data-control"
 import wl "wayland:odin-wayland"
 
