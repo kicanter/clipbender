@@ -8,6 +8,7 @@ import "core:simd"
 import "core:sys/linux"
 import "vendor:stb/truetype"
 
+import xkb "bindings:xkbcommon"
 import lib "src:libclipbender"
 import wl "wayland:odin-wayland"
 import wlr_ls "wayland:wlr-layer-shell"
@@ -35,6 +36,8 @@ TEXT_PADDING_X :: 16 // left margin
 TEXT_PADDING_Y :: 16 // top margin
 LINE_HEIGHT :: 18 // spacing between rows, doesn't include font size so needs to be greater than FONT_SIZE
 
+XKB_KEYSYM_ESCAPE :: xkb.Xkb_Keysym(0xFF1B)
+
 Frame_Buffer :: struct {
     buffer:   ^wl.buffer,
     shm_pool: ^wl.shm_pool,
@@ -42,6 +45,14 @@ Frame_Buffer :: struct {
     pixels:   [^]u32, // mmap'd pixel data
     width:    uint,
     height:   uint,
+}
+
+Keyboard :: struct {
+    keyboard: ^wl.keyboard,
+    ctx:      ^xkb.Xkb_Context,
+    keymap:   ^xkb.Xkb_Keymap,
+    state:    ^xkb.Xkb_State,
+    prefix:   Maybe(rune),
 }
 
 Font :: struct {
@@ -69,7 +80,7 @@ Gui_State :: struct {
     // Buffer of pixels
     frame_buf:        Frame_Buffer,
     // Keyboard input
-    keyboard:         ^wl.keyboard,
+    kb:               Keyboard,
     // Font
     font:             Font,
     // Register data
@@ -306,7 +317,10 @@ gui_cleanup_font :: proc(gui_state: ^Gui_State) {
 }
 
 gui_cleanup_keyboard :: proc(gui_state: ^Gui_State) {
-    if gui_state.keyboard != nil {wl.keyboard_release(gui_state.keyboard)}
+    if gui_state.kb.state != nil {xkb.xkb_state_unref(gui_state.kb.state)}
+    if gui_state.kb.keymap != nil {xkb.xkb_keymap_unref(gui_state.kb.keymap)}
+    if gui_state.kb.ctx != nil {xkb.xkb_context_unref(gui_state.kb.ctx)}
+    if gui_state.kb.keyboard != nil {wl.keyboard_release(gui_state.kb.keyboard)}
 }
 
 gui_cleanup_buffer :: proc(gui_state: ^Gui_State) {
@@ -461,8 +475,8 @@ seat_listener := wl.seat_listener {
         log.debug("Received wl_seat::capabilities event")
 
         if uint(capabilities_) & uint(wl.seat_capability.keyboard) != 0 {
-            gui_state.keyboard = wl.seat_get_keyboard(seat)
-            wl.keyboard_add_listener(gui_state.keyboard, &keyboard_listener, gui_state)
+            gui_state.kb.keyboard = wl.seat_get_keyboard(seat)
+            wl.keyboard_add_listener(gui_state.kb.keyboard, &keyboard_listener, gui_state)
         }
     },
     name = proc "c" (data: rawptr, seat: ^wl.seat, name_: cstring) {},
@@ -475,7 +489,59 @@ keyboard_listener := wl.keyboard_listener {
         format_: wl.keyboard_keymap_format,
         fd_: int,
         size_: uint,
-    ) {},
+    ) {
+        context = runtime.default_context()
+        context.logger = _logger
+        gui_state := cast(^Gui_State)data
+
+        if format_ != .xkb_v1 {
+            log.error("Unsupported keymap format")
+            return
+        }
+
+        // mmap the keymap fd
+        map_ptr, mmap_err := linux.mmap(0, size_, {.READ}, {.PRIVATE}, cast(linux.Fd)fd_, 0)
+        linux.close(cast(linux.Fd)fd_)
+        if mmap_err != nil {
+            log.error("Failed to mmap keymap fd")
+            return
+        }
+        defer linux.munmap(map_ptr, size_)
+
+        // Create xkb context if not yet created
+        if gui_state.kb.ctx == nil {
+            gui_state.kb.ctx = xkb.xkb_context_new(.XKB_CONTEXT_NO_FLAGS)
+            if gui_state.kb.ctx == nil {
+                log.error("Failed to create xkb context")
+                return
+            }
+        }
+
+        // Release previous keymap/state if exists
+        if gui_state.kb.state != nil {xkb.xkb_state_unref(gui_state.kb.state)}
+        if gui_state.kb.keymap != nil {xkb.xkb_keymap_unref(gui_state.kb.keymap)}
+
+        // Create keymap from the mmap'd string
+        gui_state.kb.keymap = xkb.xkb_keymap_new_from_string(
+            gui_state.kb.ctx,
+            cast(cstring)map_ptr,
+            .XKB_KEYMAP_FORMAT_TEXT_V1,
+            .XKB_KEYMAP_COMPILE_NO_FLAGS,
+        )
+        if gui_state.kb.keymap == nil {
+            log.error("Failed to create xkb keymap from compositor keymap string")
+            return
+        }
+
+        // Create state from keymap
+        gui_state.kb.state = xkb.xkb_state_new(gui_state.kb.keymap)
+        if gui_state.kb.state == nil {
+            log.error("Failed to create xkb state")
+            return
+        }
+
+        log.debug("xkb keymap and state initialized successfully")
+    },
     enter = proc "c" (data: rawptr, keyboard: ^wl.keyboard, serial_: uint, surface_: ^wl.surface, keys_: wl.array) {},
     leave = proc "c" (data: rawptr, keyboard: ^wl.keyboard, serial_: uint, surface_: ^wl.surface) {
         context = runtime.default_context()
@@ -495,16 +561,114 @@ keyboard_listener := wl.keyboard_listener {
         context = runtime.default_context()
         context.logger = _logger
         gui_state := cast(^Gui_State)data
-        log.debugf("Received wl_keyboard::key event (key: %d, state: %v)", key_, state_)
-        // Escape keycode = 1, pressed = 1
-        if state_ == .pressed {
-            switch key_ {
-            // ESC
-            case 1:
+
+        // Right now we don't care about any repeated/released keystrokes
+        if state_ != .pressed {return}
+
+        if gui_state.kb.state == nil {return}
+
+        // evdev keycodes need +8 offset for xkbcommon
+        keycode := xkb.Xkb_Keycode(key_ + 8)
+
+        // keysym is what xkb knows what the physical key maps to (e.g. caps lock remapped to ESC), so checking the
+        // keysym lets us account for remapped keys in order to treat those as different than their physical key.
+        keysym := xkb.xkb_state_key_get_one_sym(gui_state.kb.state, keycode)
+        // ESC to exit GUI
+        if keysym == XKB_KEYSYM_ESCAPE {
+            gui_state.running = false
+            return
+        }
+
+        codepoint := xkb.xkb_state_key_get_utf32(gui_state.kb.state, keycode)
+        if codepoint == 0 {return}
+
+        // Check modifier state
+        ctrl_active := xkb.xkb_state_mod_name_is_active(gui_state.kb.state, "Control", .XKB_STATE_MODS_EFFECTIVE) == 1
+        shift_active := xkb.xkb_state_mod_name_is_active(gui_state.kb.state, "Shift", .XKB_STATE_MODS_EFFECTIVE) == 1
+
+        log.debugf(
+            "Key pressed: codepoint=%d ('%c'), ctrl=%v, shift=%v",
+            codepoint,
+            cast(rune)codepoint,
+            ctrl_active,
+            shift_active,
+        )
+
+        // <C-[>        | cancel / exit edit
+        // <C-{alpha}>  | clipboard -> overwrite named register, dismiss
+        // @<C-{alpha}> | primary selection -> overwrite named register, dismiss
+        if ctrl_active {
+            switch codepoint {
+            case '[':
+                // Ctrl+[ and dismiss (same as Escape)
                 gui_state.running = false
                 return
+            // TODO: dispatch register actions based on codepoint + modifiers
+            case 'a' ..= 'z':
+                switch gui_state.kb.prefix {
+                case nil:
+                // TODO: overwrite named reg with clipboard
+                case '@':
+                // TODO: overwrite named reg with primary
+                case '*':
+                    log.debugf("`*<C-%c>` is not a valid key sequence, did you mean `*%c`?", codepoint, codepoint)
+                }
+            }
+            gui_state.kb.prefix = nil
+            return
+        }
+
+        // <S-{alpha}>  | clipboard -> append named register, dismiss
+        // @<S-{alpha}> | primary selection -> append named register, dismiss
+        // *<S-{alpha}> | inline edit (pre-populated) -> save register
+        if shift_active {
+            switch codepoint {
+            case 'A' ..= 'Z':
+                switch gui_state.kb.prefix {
+                case nil:
+                // TODO: append named register with clipboard
+                case '@':
+                // TODO: append named register with primary
+                case '*':
+                // TODO: inline edit from pre-populated and overwrite register
+                }
+            }
+            gui_state.kb.prefix = nil
+            return
+        }
+
+        // {digit}  | clipboard recency -> clipboard, dismiss
+        // @{digit} | primary recency -> primary selection, dismiss
+        // {alpha}  | named register -> clipboard, dismiss
+        // @{alpha} | named register -> primary selection, dismiss
+        // *{alpha} | inline edit (empty) -> overwrite register
+        switch codepoint {
+        case '@', '*':
+            gui_state.kb.prefix = cast(rune)codepoint
+            return
+        case '0' ..= '9':
+            switch gui_state.kb.prefix {
+            case nil:
+            // TODO: copy from clipboard recency to clipboard
+            case '@':
+            // TODO: copy from primary recency to primary
+            case '*':
+                log.debugf(
+                    "`*%c` is not a valid key sequence, inline edit only works for named registers, did you mean `*{alpha}`?",
+                    codepoint,
+                )
+            }
+        case 'a' ..= 'z':
+            switch gui_state.kb.prefix {
+            case nil:
+            // TODO: copy from named register to clipboard
+            case '@':
+            // TODO: copy from named register to primary
+            case '*':
+            // TODO: inline edit from empty and overwrite register
             }
         }
+        gui_state.kb.prefix = nil
     },
     modifiers = proc "c" (
         data: rawptr,
@@ -514,7 +678,19 @@ keyboard_listener := wl.keyboard_listener {
         mods_latched_: uint,
         mods_locked_: uint,
         group_: uint,
-    ) {},
+    ) {
+        gui_state := cast(^Gui_State)data
+        if gui_state.kb.state == nil {return}
+        xkb.xkb_state_update_mask(
+            gui_state.kb.state,
+            cast(xkb.Xkb_Mod_Mask)mods_depressed_,
+            cast(xkb.Xkb_Mod_Mask)mods_latched_,
+            cast(xkb.Xkb_Mod_Mask)mods_locked_,
+            cast(xkb.Xkb_Layout_Index)0,
+            cast(xkb.Xkb_Layout_Index)0,
+            cast(xkb.Xkb_Layout_Index)group_,
+        )
+    },
     repeat_info = proc "c" (data: rawptr, keyboard: ^wl.keyboard, rate_: int, delay_: int) {},
 }
 

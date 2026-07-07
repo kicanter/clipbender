@@ -2,5 +2,6 @@
     "collections": [
         { "name": "wayland", "path": "wayland" },
         { "name": "libclipbender", "path": "src/libclipbender" }
+        { "name": "bindings", "path": "bindings" }
     ]
 }

@@ -170,6 +170,45 @@ Xkb_State_Component :: enum u32 {
  */
 Xkb_Keycode :: distinct u32
 
+/**
+ * A number used to represent the symbols generated from a key on a keyboard.
+ *
+ * A key, represented by a keycode, may generate different symbols according
+ * to keyboard state.  For example, on a QWERTY keyboard, pressing the key
+ * labled \<A\> generates the symbol ‘a’.  If the Shift key is held, it
+ * generates the symbol ‘A’.  If a different layout is used, say Greek,
+ * it generates the symbol ‘α’.  And so on.
+ *
+ * Each such symbol is represented by a *keysym* (short for “key symbol”).
+ * Note that keysyms are somewhat more general, in that they can also represent
+ * some “function”, such as “Left” or “Right” for the arrow keys.  For more
+ * information, see: Appendix A [“KEYSYM Encoding”][encoding] of the X Window
+ * System Protocol.
+ *
+ * Specifically named keysyms can be found in the
+ * xkbcommon/xkbcommon-keysyms.h header file.  Their name does not include
+ * the `XKB_KEY_` prefix.
+ *
+ * Besides those, any Unicode/ISO&nbsp;10646 character in the range U+0100 to
+ * U+10FFFF can be represented by a keysym value in the range 0x01000100 to
+ * 0x0110FFFF.  The name of Unicode keysyms is `U<codepoint>`, e.g. `UA1B2`.
+ *
+ * The name of other unnamed keysyms is the hexadecimal representation of
+ * their value, e.g. `0xabcd1234`.
+ *
+ * Keysym names are case-sensitive.
+ *
+ * @note **Encoding:** Keysyms are 32-bit integers with the 3 most significant
+ * bits always set to zero.  See: Appendix A [“KEYSYM Encoding”][encoding] of
+ * the X Window System Protocol.
+ *
+ * [encoding]: https://www.x.org/releases/current/doc/xproto/x11protocol.html#keysym_encoding
+ *
+ * @ingroup keysyms
+ * @sa XKB_KEYSYM_MAX
+ */
+Xkb_Keysym :: distinct u32
+
 // Bindings for libxkbcommon to support keycode resolution for wl_keyboard
 foreign xkb {
     /**
@@ -270,6 +309,25 @@ foreign xkb {
      * @since 0.4.1
      */
     xkb_state_key_get_utf32 :: proc "c" (state: ^Xkb_State, key: Xkb_Keycode) -> u32 ---
+
+    /**
+     * Get the single keysym obtained from pressing a particular key in a
+     * given keyboard state.
+     *
+     * This function is similar to xkb_state_key_get_syms(), but intended
+     * for users which cannot or do not want to handle the case where
+     * multiple keysyms are returned (in which case this function is
+     * preferred).
+     *
+     * @returns The keysym.  If the key does not have exactly one keysym,
+     * returns XKB_KEY_NoSymbol
+     *
+     * This function performs Capitalization @ref keysym-transformations.
+     *
+     * @sa xkb_state_key_get_syms()
+     * @memberof xkb_state
+     */
+    xkb_state_key_get_one_sym :: proc "c" (state: ^Xkb_State, key: Xkb_Keycode) -> Xkb_Keysym ---
 
     /**
      * Test whether a modifier is active in a given keyboard state by name.
