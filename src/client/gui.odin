@@ -221,7 +221,7 @@ gui_init_buffer :: proc(gui_state: ^Gui_State) -> (err: Maybe(string)) {
     errno: linux.Errno
     gui_state.frame_buf.shm_fd, errno = linux.memfd_create("clipbender", {.CLOEXEC})
     if errno != .NONE {
-        return fmt.tprintf("Failed to create mem-backed shm FD, errno: %v", errno)
+        return fmt.tprintf("Failed to create mem-backed shm FD: errno %v", errno)
     }
 
     // Truncate size to 4 bytes per pixel (#argb8888)
@@ -230,14 +230,14 @@ gui_init_buffer :: proc(gui_state: ^Gui_State) -> (err: Maybe(string)) {
     area_bytes := 4 * width * height
     errno = linux.ftruncate(gui_state.frame_buf.shm_fd, i64(area_bytes))
     if errno != .NONE {
-        return fmt.tprintf("Failed to truncate shm FD, errno: %v", errno)
+        return fmt.tprintf("Failed to truncate shm FD: errno %v", errno)
     }
 
     // Map FD into address space to write pixels to
     pixels_ptr: rawptr
     pixels_ptr, errno = linux.mmap(0, area_bytes, {.READ, .WRITE}, {.SHARED}, gui_state.frame_buf.shm_fd, 0)
     if errno != .NONE {
-        return fmt.tprintf("Failed to mmap shm FD for pixel array, errno: %v", errno)
+        return fmt.tprintf("Failed to mmap shm FD for pixel array: errno %v", errno)
     }
     gui_state.frame_buf.pixels = cast([^]u32)pixels_ptr
 
@@ -504,8 +504,8 @@ keyboard_listener := wl.keyboard_listener {
         // mmap the keymap fd
         map_ptr, mmap_err := linux.mmap(0, size_, {.READ}, {.PRIVATE}, cast(linux.Fd)fd_, 0)
         linux.close(cast(linux.Fd)fd_)
-        if mmap_err != nil {
-            log.error("Failed to mmap keymap fd")
+        if mmap_err != .NONE {
+            log.error("Failed to mmap keymap fd: errno %v", mmap_err)
             return
         }
         defer linux.munmap(map_ptr, size_)
@@ -596,80 +596,147 @@ keyboard_listener := wl.keyboard_listener {
             shift_active,
         )
 
-        // <C-[>        | cancel / exit edit
-        // <C-{alpha}>  | clipboard -> overwrite named register, dismiss
-        // @<C-{alpha}> | primary selection -> overwrite named register, dismiss
+        // Check prefix keys first, regardless of modifiers
+        if codepoint == '@' || codepoint == '*' {
+            if gui_state.kb.prefix != nil {
+                gui_state.kb.prefix = nil
+                return
+            }
+            gui_state.kb.prefix = cast(rune)codepoint
+            return
+        }
+
+        // Otherwise, consume the keypress and reset prefix to nil.
+        // These operations invoke a SET call from the daemon one way or another.
+        msg: [5]byte // SET with source reg is 5-byte message
+        dest_reg: lib.Reg_Id
+        source_reg: lib.Reg_Id
+        set_mode: lib.Set_Mode
+        defer gui_state.kb.prefix = nil
+
         if ctrl_active {
+            // <C-[>        | cancel / exit edit
+            // <C-{alpha}>  | clipboard -> overwrite named register, dismiss
+            // @<C-{alpha}> | primary selection -> overwrite named register, dismiss
             switch codepoint {
             case '[':
                 // Ctrl+[ and dismiss (same as Escape)
                 gui_state.running = false
                 return
             case 'a' ..= 'z':
+                // Send message of form `SET <codepoint> <clipboard|primary> OVERWRITE`
                 switch gui_state.kb.prefix {
                 case nil:
-                // TODO: set <codepoint> clipboard OVERWRITE
+                    source_reg = lib.SELECTION_CLIPBOARD
                 case '@':
-                // TODO: set <codepoint> primary OVERWRITE
+                    source_reg = lib.SELECTION_PRIMARY
                 case '*':
                     log.debugf("`*<C-%c>` is not a valid key sequence, did you mean `*%c`?", codepoint, codepoint)
+                    return
                 }
+                dest_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'a'))
+            case:
+                return
             }
-            gui_state.kb.prefix = nil
-            return
-        }
-
-        // <S-{alpha}>  | clipboard -> append named register, dismiss
-        // @<S-{alpha}> | primary selection -> append named register, dismiss
-        // *<S-{alpha}> | inline edit (pre-populated) -> save register
-        if shift_active {
+            set_mode = lib.Set_Mode.OVERWRITE
+        } else if shift_active {
+            // <S-{alpha}>  | clipboard -> append named register, dismiss
+            // @<S-{alpha}> | primary selection -> append named register, dismiss
+            // *<S-{alpha}> | inline edit (pre-populated) -> save register
             switch codepoint {
             case 'A' ..= 'Z':
+                // Send message of form `SET <codepoint> <clipboard|primary> APPEND`
                 switch gui_state.kb.prefix {
                 case nil:
-                // TODO: set <codepoint> clipboard APPEND
+                    source_reg = lib.SELECTION_CLIPBOARD
                 case '@':
-                // TODO: set <codepoint> primary APPEND
+                    source_reg = lib.SELECTION_PRIMARY
                 case '*':
-                // TODO: inline edit from pre-populated and overwrite register
+                    // TODO: inline edit from pre-populated and overwrite register
+                    return
                 }
+                dest_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'A'))
+            case:
+                return
             }
-            gui_state.kb.prefix = nil
+            set_mode = lib.Set_Mode.APPEND
+        } else {
+            // {digit}  | clipboard recency -> clipboard, dismiss
+            // @{digit} | primary recency -> primary selection, dismiss
+            // {alpha}  | named register -> clipboard, dismiss
+            // @{alpha} | named register -> primary selection, dismiss
+            // *{alpha} | inline edit (empty) -> overwrite register
+            switch codepoint {
+            case '0' ..= '9':
+                // Send message of form `SET <clipboard|primary> <codepoint>`
+                switch gui_state.kb.prefix {
+                case nil:
+                    dest_reg = lib.SELECTION_CLIPBOARD
+                    source_reg = lib.reg_id_from_clipboard_index(cast(u8)(codepoint - '0'))
+                case '@':
+                    dest_reg = lib.SELECTION_PRIMARY
+                    source_reg = lib.reg_id_from_primary_index(cast(u8)(codepoint - '0'))
+                case '*':
+                    log.debugf(
+                        "`*%c` is not a valid key sequence, inline edit only works for named registers, did you mean `*{alpha}`?",
+                        codepoint,
+                    )
+                    return
+                }
+            case 'a' ..= 'z':
+                // Send message of form `SET <clipboard|primary> <codepoint>`
+                switch gui_state.kb.prefix {
+                case nil:
+                    dest_reg = lib.SELECTION_CLIPBOARD
+                case '@':
+                    dest_reg = lib.SELECTION_PRIMARY
+                case '*':
+                    // TODO: inline edit from empty and overwrite register
+                    return
+                }
+                source_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'a'))
+            case:
+                return
+            }
+            set_mode = lib.Set_Mode.OVERWRITE
+        }
+
+        // Encode and send the SET message
+        written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
+        linux.send(gui_state.client_fd, msg[:written], {})
+
+        // Receive response from daemon
+        resp_buf: [RESP_BUF_SMALL]u8
+        bytes_read, recv_err := linux.recv(gui_state.client_fd, resp_buf[:], {})
+        if recv_err != .NONE || bytes_read <= 0 {
+            log.errorf(
+                "Failed setting register `%s` from register `%s`: errno %v",
+                lib.reg_id_to_string(dest_reg),
+                lib.reg_id_to_string(source_reg),
+                recv_err,
+            )
             return
         }
 
-        // {digit}  | clipboard recency -> clipboard, dismiss
-        // @{digit} | primary recency -> primary selection, dismiss
-        // {alpha}  | named register -> clipboard, dismiss
-        // @{alpha} | named register -> primary selection, dismiss
-        // *{alpha} | inline edit (empty) -> overwrite register
-        switch codepoint {
-        case '@', '*':
-            gui_state.kb.prefix = cast(rune)codepoint
-            return
-        case '0' ..= '9':
-            switch gui_state.kb.prefix {
-            case nil:
-            // TODO: set clipboard <codepoint> OVERWRITE
-            case '@':
-            // TODO: set primary @<codepoint> OVERWRITE
-            case '*':
-                log.debugf(
-                    "`*%c` is not a valid key sequence, inline edit only works for named registers, did you mean `*{alpha}`?",
-                    codepoint,
-                )
-            }
-        case 'a' ..= 'z':
-            switch gui_state.kb.prefix {
-            case nil:
-            // TODO: set clipboard <codepoint>
-            case '@':
-            // TODO: set primary <codepoint>
-            case '*':
-            // TODO: inline edit from empty and overwrite register
-            }
+        status := lib.Resp_Status(resp_buf[0])
+        switch status {
+        case .OK:
+            // TODO: highlight green or something, indicate success
+            // Close GUI
+            gui_state.running = false
+        case .ERROR:
+            err_msg := string(resp_buf[1:bytes_read])
+            log.errorf(
+                "Failed setting register `%s` from register `%s`: %v",
+                lib.reg_id_to_string(dest_reg),
+                lib.reg_id_to_string(source_reg),
+                err_msg,
+            )
+        // TODO: highlight red or something, indicate failure
+        case .DATA:
+            log.error("Unexpected DATA response for `set` command")
+        // TODO: wtf how'd we get here?
         }
-        gui_state.kb.prefix = nil
     },
     modifiers = proc "c" (
         data: rawptr,
@@ -704,8 +771,8 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (coun
     // Receive response from daemon
     resp_buf: [RESP_BUF_LARGE]u8
     bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
-    if recv_err != nil || bytes_read <= 0 {
-        return {}, fmt.tprint("No response from daemon when fetching registers")
+    if recv_err != .NONE || bytes_read <= 0 {
+        return {}, fmt.tprintf("No response from daemon when fetching registers: errno %v", recv_err)
     }
 
     status := lib.Resp_Status(resp_buf[0])

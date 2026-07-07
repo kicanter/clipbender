@@ -348,8 +348,8 @@ wayland_read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^
     poll_fds := [1]linux.Poll_Fd{{fd = read_fd, events = {.IN}}}
     timeout: i32 = 2000 // 2s timeout
     poll_ret, poll_err := linux.poll(poll_fds[:], timeout)
-    if poll_err != nil || poll_ret <= 0 {
-        log.error("Timed out waiting for source app to write clipboard data")
+    if poll_err != .NONE || poll_ret <= 0 {
+        log.errorf("Timed out waiting for source app to write clipboard data: errno %v", poll_err)
         linux.close(read_fd)
         return nil
     }
@@ -359,7 +359,7 @@ wayland_read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^
     result: [dynamic]byte
     for {
         num_bytes, err := linux.read(read_fd, buf[:])
-        if err != nil || num_bytes <= 0 {break}
+        if err != .NONE || num_bytes <= 0 {break}
         append(&result, ..buf[:num_bytes])
     }
     linux.close(read_fd)

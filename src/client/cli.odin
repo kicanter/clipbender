@@ -252,8 +252,8 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
     // Receive response from daemon
     resp_buf: [RESP_BUF_SMALL]u8
     bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
-    if recv_err != nil || bytes_read <= 0 {
-        fmt.eprintln("Error: no response from daemon for `set` command")
+    if recv_err != .NONE || bytes_read <= 0 {
+        fmt.eprintfln("Error: no response from daemon for `set` command: errno %v", recv_err)
         os.exit(1)
     }
 
@@ -691,8 +691,8 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     // Receive response from daemon
     resp_buf: [RESP_BUF_LARGE]u8
     bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
-    if recv_err != nil || bytes_read <= 0 {
-        fmt.eprintln("Error: no response from daemon for `get` command")
+    if recv_err != .NONE || bytes_read <= 0 {
+        fmt.eprintfln("Error: no response from daemon for `get` command: errno %v", recv_err)
         os.exit(1)
     }
 
@@ -760,8 +760,8 @@ cmd_clear :: proc(args: []string, client_fd: linux.Fd) {
     // Receive response from daemon
     resp_buf: [RESP_BUF_SMALL]u8
     bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
-    if recv_err != nil || bytes_read <= 0 {
-        fmt.eprintln("Error: no response from daemon for `clear` command")
+    if recv_err != .NONE || bytes_read <= 0 {
+        fmt.eprintfln("Error: no response from daemon for `clear` command: errno %v", recv_err)
         os.exit(1)
     }
 
@@ -793,8 +793,8 @@ cmd_shutdown :: proc(args: []string, client_fd: linux.Fd) {
     // Receive response from daemon
     resp_buf: [RESP_BUF_SMALL]u8
     bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
-    if recv_err != nil || bytes_read <= 0 {
-        fmt.eprintln("Error: no response from daemon for `shutdown` command")
+    if recv_err != .NONE || bytes_read <= 0 {
+        fmt.eprintfln("Error: no response from daemon for `shutdown` command: errno %v", recv_err)
         os.exit(1)
     }
 

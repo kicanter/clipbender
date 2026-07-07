@@ -38,7 +38,7 @@ check_stale_socket :: proc(socket_path: string) {
 
     // Try connecting, if success then daemon is already running
     socket_fd, sockerr := linux.socket(.UNIX, .SEQPACKET, {.CLOEXEC}, {})
-    if sockerr != nil {
+    if sockerr != .NONE {
         return
     }
     defer linux.close(socket_fd)
@@ -269,8 +269,8 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
 
     // Submit the submission queue (tells the kernel to start asynchronously wait for these FDs to get written)
     _, err = uring.submit(&ring)
-    if (err != nil) {
-        log.errorf("Error submitting SQEs in submission queue: %v", err)
+    if (err != .NONE) {
+        log.errorf("Error submitting SQEs in submission queue: errno %v", err)
     }
 
     log.debug("Daemon ready, entering event loop")
@@ -280,8 +280,8 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
     for running {
         num_cqes: u32
         num_cqes, err = uring.copy_cqes(&ring, cqes[:], 1)
-        if (err != nil) {
-            log.errorf("Error copying CQEs from completion queue: %v", err)
+        if (err != .NONE) {
+            log.errorf("Error copying CQEs from completion queue: errno %v", err)
         }
 
         for i in 0 ..< num_cqes {
@@ -289,8 +289,8 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
         }
 
         _, err = uring.submit(&ring)
-        if (err != nil) {
-            log.errorf("Error submitting SQEs in submission queue: %v", err)
+        if (err != .NONE) {
+            log.errorf("Error submitting SQEs in submission queue: errno %v", err)
         }
 
         // Clear arena allocator to not balloon
