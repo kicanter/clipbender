@@ -62,6 +62,8 @@ Font :: struct {
 }
 
 Gui_State :: struct {
+    // Daemon IPC
+    client_fd:        linux.Fd,
     // General connection state
     display:          ^wl.display,
     registry:         ^wl.registry,
@@ -603,13 +605,12 @@ keyboard_listener := wl.keyboard_listener {
                 // Ctrl+[ and dismiss (same as Escape)
                 gui_state.running = false
                 return
-            // TODO: dispatch register actions based on codepoint + modifiers
             case 'a' ..= 'z':
                 switch gui_state.kb.prefix {
                 case nil:
-                // TODO: overwrite named reg with clipboard
+                // TODO: set <codepoint> clipboard OVERWRITE
                 case '@':
-                // TODO: overwrite named reg with primary
+                // TODO: set <codepoint> primary OVERWRITE
                 case '*':
                     log.debugf("`*<C-%c>` is not a valid key sequence, did you mean `*%c`?", codepoint, codepoint)
                 }
@@ -626,9 +627,9 @@ keyboard_listener := wl.keyboard_listener {
             case 'A' ..= 'Z':
                 switch gui_state.kb.prefix {
                 case nil:
-                // TODO: append named register with clipboard
+                // TODO: set <codepoint> clipboard APPEND
                 case '@':
-                // TODO: append named register with primary
+                // TODO: set <codepoint> primary APPEND
                 case '*':
                 // TODO: inline edit from pre-populated and overwrite register
                 }
@@ -649,9 +650,9 @@ keyboard_listener := wl.keyboard_listener {
         case '0' ..= '9':
             switch gui_state.kb.prefix {
             case nil:
-            // TODO: copy from clipboard recency to clipboard
+            // TODO: set clipboard <codepoint> OVERWRITE
             case '@':
-            // TODO: copy from primary recency to primary
+            // TODO: set primary @<codepoint> OVERWRITE
             case '*':
                 log.debugf(
                     "`*%c` is not a valid key sequence, inline edit only works for named registers, did you mean `*{alpha}`?",
@@ -661,9 +662,9 @@ keyboard_listener := wl.keyboard_listener {
         case 'a' ..= 'z':
             switch gui_state.kb.prefix {
             case nil:
-            // TODO: copy from named register to clipboard
+            // TODO: set clipboard <codepoint>
             case '@':
-            // TODO: copy from named register to primary
+            // TODO: set primary <codepoint>
             case '*':
             // TODO: inline edit from empty and overwrite register
             }
@@ -781,6 +782,7 @@ gui_render :: proc(gui_state: ^Gui_State) {
 
 run_gui :: proc(client_fd: linux.Fd) {
     gui_state: Gui_State
+    gui_state.client_fd = client_fd
     err := gui_init(&gui_state)
     if err != nil {
         fmt.eprintfln("Error initializing GUI state: %s", err)
