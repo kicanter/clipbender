@@ -703,14 +703,23 @@ keyboard_listener := wl.keyboard_listener {
 
         // Encode and send the SET message
         written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
-        linux.send(gui_state.client_fd, msg[:written], {.NOSIGNAL})
+        _, send_err := linux.send(gui_state.client_fd, msg[:written], {.NOSIGNAL})
+        if send_err != nil {
+            log.errorf(
+                "Failed sending SET reg `%s` from reg `%s` to daemon: errno %v",
+                lib.reg_id_to_string(dest_reg),
+                lib.reg_id_to_string(source_reg),
+                send_err,
+            )
+            return
+        }
 
         // Receive response from daemon
         resp_buf: [RESP_BUF_SMALL]u8
         bytes_read, recv_err := linux.recv(gui_state.client_fd, resp_buf[:], {})
         if recv_err != .NONE || bytes_read <= 0 {
             log.errorf(
-                "Failed setting register `%s` from register `%s`: errno %v",
+                "Failed receiving SET reg `%s` from reg `%s`: errno %v",
                 lib.reg_id_to_string(dest_reg),
                 lib.reg_id_to_string(source_reg),
                 recv_err,
@@ -766,7 +775,10 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (coun
     // Send GET message for all registers
     msg: [9]byte
     written := lib.encode_cmd_get(lib.CMD_GET_FILTER_ALL, msg[:])
-    linux.send(client_fd, msg[:written], {})
+    _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
+    if send_err != nil {
+        return {}, fmt.tprintf("Failed sending GET to daemon: errno %v", send_err)
+    }
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_LARGE]u8

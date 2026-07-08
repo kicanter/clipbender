@@ -220,7 +220,11 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
         }
         msg: [5]byte // SET with source reg is 5-byte message
         written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
-        linux.send(client_fd, msg[:written], {})
+        _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
+        if send_err != nil {
+            fmt.eprintfln("Error: failed sending SET (reg) to daemon: errno %v", send_err)
+            os.exit(1)
+        }
         success_msg = fmt.tprintf(
             "%s dest reg `%s` with source reg `%s`",
             "overwrote" if set_mode == .OVERWRITE else "appended",
@@ -237,7 +241,11 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
         msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
         defer delete(msg)
         written := lib.encode_cmd_set_inline(dest_reg, set_mode, mime, data, msg[:])
-        linux.send(client_fd, msg[:written], {})
+        _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
+        if send_err != nil {
+            fmt.eprintfln("Error: failed sending SET (inline) to daemon: errno %v", send_err)
+            os.exit(1)
+        }
         success_msg = fmt.tprintf(
             "%s dest reg `%s` with inline `%s` data `%s`",
             "overwrote" if set_mode == .OVERWRITE else "appended",
@@ -687,7 +695,11 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     // Send GET message
     msg: [9]byte
     written := lib.encode_cmd_get(filter, msg[:])
-    linux.send(client_fd, msg[:written], {})
+    _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
+    if send_err != nil {
+        fmt.eprintfln("Error: failed sending GET to daemon: errno %v", send_err)
+        os.exit(1)
+    }
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_LARGE]u8
@@ -756,7 +768,11 @@ cmd_clear :: proc(args: []string, client_fd: linux.Fd) {
     // Send CLEAR message
     msg: [2]byte
     written := lib.encode_cmd_clear(reg_id, msg[:])
-    linux.send(client_fd, msg[:written], {})
+    _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
+    if send_err != nil {
+        fmt.eprintfln("Error: failed sending CLEAR to daemon: errno %v", send_err)
+        os.exit(1)
+    }
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_SMALL]u8
@@ -789,7 +805,11 @@ cmd_shutdown :: proc(args: []string, client_fd: linux.Fd) {
     // Send SHUTDOWN message
     msg: [1]byte
     written := lib.encode_cmd_shutdown(msg[:])
-    linux.send(client_fd, msg[:written], {})
+    _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
+    if send_err != nil {
+        fmt.eprintfln("Error: failed sending SHUTDOWN to daemon: errno %v", send_err)
+        os.exit(1)
+    }
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_SMALL]u8
