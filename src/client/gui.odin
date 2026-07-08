@@ -703,7 +703,7 @@ keyboard_listener := wl.keyboard_listener {
 
         // Encode and send the SET message
         written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
-        linux.send(gui_state.client_fd, msg[:written], {})
+        linux.send(gui_state.client_fd, msg[:written], {.NOSIGNAL})
 
         // Receive response from daemon
         resp_buf: [RESP_BUF_SMALL]u8
