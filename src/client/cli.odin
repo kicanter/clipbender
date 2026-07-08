@@ -36,7 +36,7 @@ print_usage_and_exit :: proc() {
         "\tclipbender get +@012 +012            Print the first three numbered registers from primary and clipboard.\n" +
         "\tclipbender get +0:5 +@0:3            Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
         "\tclipbender get ++clipboard fmt=json  Print clipboard registers as structured JSON.\n" +
-        "\tclipbender get +a fmt=raw | wl-copy  Pipe only the contents of register `a` and pipe into wl-copy.\n" +
+        "\tclipbender get +a fmt=raw | wl-copy  Pipe only the contents of register `a` into wl-copy.\n" +
         "\tclipbender get +a fmt=raw > <file>   Redirect the contents of register `a` to `file`.\n",
     )
     os.exit(1)
@@ -84,7 +84,7 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
             "\tclipbender get +@012 +012             Print the first three numbered registers from primary and clipboard.\n" +
             "\tclipbender get +0:5 +@0:3             Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
             "\tclipbender get ++clipboard fmt=json   Print clipboard registers as structured JSON.\n" +
-            "\tclipbender get +a fmt=raw | wl-copy   Pipe only the contents of register `a` and pipe into wl-copy.\n" +
+            "\tclipbender get +a fmt=raw | wl-copy   Pipe only the contents of register `a` into wl-copy.\n" +
             "\tclipbender get +a fmt=raw > <file>    Redirect the contents of register `a` to `file`.\n",
         )
     case .CLEAR:
@@ -498,22 +498,22 @@ truncate_content :: proc(content: string, width: int) -> string {
 
 // Print `regs` register entries formatted as an ascii table.
 cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
-    table_top := "┌──────────┬─────────────────────┬──────────────────┬──────────────────────────────────────────┐"
-    table_sep := "├──────────┼─────────────────────┼──────────────────┼──────────────────────────────────────────┤"
-    table_bot := "└──────────┴─────────────────────┴──────────────────┴──────────────────────────────────────────┘"
+    table_top := "┌──────────┬─────────────────────┬──────────────────────────┬──────────────────────────────────────────┐"
+    table_sep := "├──────────┼─────────────────────┼──────────────────────────┼──────────────────────────────────────────┤"
+    table_bot := "└──────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┘"
     fmt.println(table_top)
     fmt.println(
-        "│ Register │ Timestamp           │ Mime Type        │ Content                                  │",
+        "│ Register │ Timestamp           │ Mime Type                │ Content                                  │",
     )
     if len(regs) == 0 {
         fmt.println(
-            "├──────────┴─────────────────────┴──────────────────┴──────────────────────────────────────────┤",
+            "├──────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┤",
         )
         fmt.println(
-            "│                                   No registers to display                                    │",
+            "│                                       No registers to display                                        │",
         )
         fmt.println(
-            "└──────────────────────────────────────────────────────────────────────────────────────────────┘",
+            "└──────────────────────────────────────────────────────────────────────────────────────────────────────┘",
         )
         return
     }
@@ -524,12 +524,13 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
     print_sep := false
     i := 0
 
+    CONTENT_FMT :: "│ % 8s │ % -10s │ % -24s │ % -40s │"
     CONTENT_COL_WIDTH :: 40 // How much of the content to show total including truncation
     // Clipboard registers
     for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
         entry := regs[i].entry
         fmt.printfln(
-            "│ % 8s │ % -10s │ % -16s │ % -40s │",
+            CONTENT_FMT,
             lib.reg_id_to_string(regs[i].id),
             format_unix_timestamp(entry.timestamp, &ts_buf),
             entry.mime_type,
@@ -550,7 +551,7 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
         }
         entry := regs[i].entry
         fmt.printfln(
-            "│ % 8s │ % -10s │ % -16s │ % -40s │",
+            CONTENT_FMT,
             lib.reg_id_to_string(regs[i].id),
             format_unix_timestamp(entry.timestamp, &ts_buf),
             entry.mime_type,
@@ -566,7 +567,7 @@ cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
         }
         entry := regs[j].entry
         fmt.printfln(
-            "│ % 8s │ % -10s │ % -16s │ % -40s │",
+            CONTENT_FMT,
             lib.reg_id_to_string(regs[j].id),
             format_unix_timestamp(entry.timestamp, &ts_buf),
             entry.mime_type,
