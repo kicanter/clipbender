@@ -197,6 +197,12 @@ dispatch_cqe :: proc(
         bytes_read := int(cqe.res)
         if bytes_read > 0 {
             running = handle_recv(bytes_read, client_fd, backend)
+            // Re-arm recv for this client to support multiple messages per connection
+            user_data := (u64(client_fd) << 8) | u64(Event.RECV)
+            uring.recv(ring, user_data, client_fd, data_buf[:], {})
+        } else {
+            // Client disconnected (EOF)
+            linux.close(client_fd)
         }
     case .SIGNAL:
         // Cast magic to get signal enum from signal number
