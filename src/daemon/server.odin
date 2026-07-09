@@ -276,7 +276,7 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
     // Submit the submission queue (tells the kernel to start asynchronously wait for these FDs to get written)
     _, err = uring.submit(&ring)
     if (err != .NONE) {
-        log.errorf("Error submitting SQEs in submission queue: errno %v", err)
+        log.errorf("Error: could not submit SQEs in submission queue: errno %v", err)
     }
 
     log.debug("Daemon ready, entering event loop")
@@ -287,7 +287,7 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
         num_cqes: u32
         num_cqes, err = uring.copy_cqes(&ring, cqes[:], 1)
         if (err != .NONE) {
-            log.errorf("Error copying CQEs from completion queue: errno %v", err)
+            log.errorf("Error: could not copy CQEs from completion queue: errno %v", err)
         }
 
         for i in 0 ..< num_cqes {
@@ -296,7 +296,7 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
 
         _, err = uring.submit(&ring)
         if (err != .NONE) {
-            log.errorf("Error submitting SQEs in submission queue: errno %v", err)
+            log.errorf("Error: could not submit SQEs in submission queue: errno %v", err)
         }
 
         // Clear arena allocator to not balloon

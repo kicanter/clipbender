@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:log"
 import "core:os"
 import "core:simd"
+import "core:strings"
 import "core:sys/linux"
 import "vendor:stb/truetype"
 
@@ -860,11 +861,30 @@ gui_render :: proc(gui_state: ^Gui_State) {
 }
 
 run_gui :: proc(client_fd: linux.Fd) {
+    // Single-instance lock to prevent multiple popups
+    lock_path := lib.clipbender_lock_path()
+    defer delete(lock_path)
+    lock_fd, open_err := linux.open(
+        strings.clone_to_cstring(lock_path, context.temp_allocator),
+        {.CREAT, .RDWR},
+        {.IRUSR, .IWUSR},
+    )
+    if open_err != .NONE {
+        fmt.eprintfln("Error: could not open lock file at %s: errno %v", lock_path, open_err)
+        os.exit(1)
+    }
+    defer linux.close(lock_fd)
+    flock_err := linux.flock(lock_fd, {.EX, .NB})
+    if flock_err != .NONE {
+        fmt.eprintln("Error: another clipbender popup is already running")
+        os.exit(0)
+    }
+
     gui_state: Gui_State
     gui_state.client_fd = client_fd
     err := gui_init(&gui_state)
     if err != nil {
-        fmt.eprintfln("Error initializing GUI state: %s", err)
+        fmt.eprintfln("Error: could not initialize GUI state: %s", err)
         os.exit(1)
     }
     defer gui_cleanup(&gui_state)
@@ -873,7 +893,7 @@ run_gui :: proc(client_fd: linux.Fd) {
     // Fetch registers
     gui_state.reg_count, err = gui_fetch_registers(client_fd, &gui_state)
     if err != nil {
-        fmt.eprintfln("Error fetching registers: %s", err)
+        fmt.eprintfln("Error: could not fetch registers: %s", err)
     }
     log.debugf("Fetched %d registers from daemon", gui_state.reg_count)
 

@@ -126,18 +126,27 @@ get_session_type :: proc() -> Session_Type {
 
 // Protocol/IPC
 SOCKET_PATH_SUFFIX :: "clipbender.sock"
-clipbender_socket_path :: proc() -> string {
-    // Get XDG_RUNTIME_DIR, fallback to /tmp
+LOCK_PATH_SUFFIX :: "clipbender-gui.lock"
+
+clipbender_runtime_path :: proc(suffix: string) -> string {
     socket_dir := os.get_env("XDG_RUNTIME_DIR", context.allocator)
     if len(socket_dir) == 0 || !os.is_directory(socket_dir) {
         if len(socket_dir) > 0 {
             log.warnf("XDG_RUNTIME_DIR env var is not a directory, you should probably fix this (got %s)", socket_dir)
-            delete(socket_dir) // free socket_dir if env var exists but not a directory
+            delete(socket_dir)
         }
-        return fmt.aprintf("/tmp/%s", SOCKET_PATH_SUFFIX)
+        return fmt.aprintf("/tmp/%s", suffix)
     }
     defer delete(socket_dir)
-    return fmt.aprintf("%s/%s", socket_dir, SOCKET_PATH_SUFFIX)
+    return fmt.aprintf("%s/%s", socket_dir, suffix)
+}
+
+clipbender_socket_path :: proc() -> string {
+    return clipbender_runtime_path(SOCKET_PATH_SUFFIX)
+}
+
+clipbender_lock_path :: proc() -> string {
+    return clipbender_runtime_path(LOCK_PATH_SUFFIX)
 }
 
 // Kinds of messages (commands) passed from client to daemon. IPC wire format:
