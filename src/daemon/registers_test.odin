@@ -19,7 +19,7 @@ test_push_recency_single :: proc(t: ^testing.T) {
     defer free_ring(&ring)
     push_to_ring_clone(&ring, transmute([]byte)string("hello"), "text/plain")
 
-    entry := get_recency_reg(&ring, 0)
+    entry := get_ring_entry(&ring, 0)
     testing.expect(t, entry != nil, "should get entry at recency 0")
     testing.expect_value(t, string(entry.data), "hello")
     testing.expect_value(t, entry.mime_type, "text/plain")
@@ -34,15 +34,15 @@ test_push_recency_ordering :: proc(t: ^testing.T) {
     push_to_ring_clone(&ring, transmute([]byte)string("second"), "text/plain")
     push_to_ring_clone(&ring, transmute([]byte)string("third"), "text/plain")
 
-    entry0 := get_recency_reg(&ring, 0)
+    entry0 := get_ring_entry(&ring, 0)
     testing.expect(t, entry0 != nil)
     testing.expect_value(t, string(entry0.data), "third")
 
-    entry1 := get_recency_reg(&ring, 1)
+    entry1 := get_ring_entry(&ring, 1)
     testing.expect(t, entry1 != nil)
     testing.expect_value(t, string(entry1.data), "second")
 
-    entry2 := get_recency_reg(&ring, 2)
+    entry2 := get_ring_entry(&ring, 2)
     testing.expect(t, entry2 != nil)
     testing.expect_value(t, string(entry2.data), "first")
 
@@ -62,11 +62,11 @@ test_push_recency_overflow :: proc(t: ^testing.T) {
 
     testing.expect_value(t, ring.count, u8(lib.RECENCY_SIZE))
 
-    entry := get_recency_reg(&ring, 0)
+    entry := get_ring_entry(&ring, 0)
     testing.expect(t, entry != nil)
     testing.expect_value(t, entry.data[0], u8(11))
 
-    entry9 := get_recency_reg(&ring, 9)
+    entry9 := get_ring_entry(&ring, 9)
     testing.expect(t, entry9 != nil)
     testing.expect_value(t, entry9.data[0], u8(2))
 }
@@ -77,10 +77,10 @@ test_get_recency_out_of_bounds :: proc(t: ^testing.T) {
     defer free_ring(&ring)
     push_to_ring_clone(&ring, transmute([]byte)string("one"), "text/plain")
 
-    entry := get_recency_reg(&ring, 1)
+    entry := get_ring_entry(&ring, 1)
     testing.expect(t, entry == nil, "recency 1 should fail when only 1 entry exists")
 
-    entry2 := get_recency_reg(&ring, 10)
+    entry2 := get_ring_entry(&ring, 10)
     testing.expect(t, entry2 == nil, "recency 10 should always fail")
 }
 

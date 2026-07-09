@@ -303,27 +303,38 @@ wayland_handle_selection :: proc(
         data = wayland_read_offer_data(id_, wl_state.display, mime)
         if data == nil {
             log.error("Couldn't read the data from offer with mime type `%s`", mime)
+            delete(mime)
             return
         }
     }
 
-    push_recency_reg(data, mime, type)
+    // Deduplicate: don't push a new register if it's identical to the previous one
+    head_reg := get_recency_reg(type, 0)
+    if head_reg != nil && head_reg.mime_type == mime && slice.equal(head_reg.data, data) {
+        log.debug("Got duplicate copy, suppressing register push")
+        delete(data)
+        delete(mime)
+    } else {
+        push_recency_reg(type, data, mime)
+    }
+
     // Clear the pending mime map, we've consumed it and have already selected + copied our chosen mime type
     clear(&wl_state.advertised_mimes)
 }
 
-// Pick the highest-priority mime type, fall back to any available if none match
+// Pick the highest-priority mime type, fall back to any available if none match.
+// Caller is responsible for cleaning up the returned string.
 pick_best_mime :: proc(avail_mimes: map[string]struct{}) -> string {
     if len(avail_mimes) == 0 {return ""}
     for preferred in PREFERRED_MIMES {
         if preferred in avail_mimes {
-            return preferred
+            return strings.clone(preferred)
         }
     }
 
     for avail in avail_mimes {
         log.infof("No offered mime types matched preferred mimes, using offered mime: %s", avail)
-        return avail
+        return strings.clone(avail)
     }
 
     // Unreachable since we check empty `avail_mimes` at the start of the function

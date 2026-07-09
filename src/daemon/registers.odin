@@ -31,7 +31,7 @@ push_to_ring :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
     ring.count = min(ring.count + 1, lib.RECENCY_SIZE)
 }
 
-push_recency_reg :: proc(data: []u8, mime: string, type: lib.Selection_Type) {
+push_recency_reg :: proc(type: lib.Selection_Type, data: []u8, mime: string) {
     ring: ^Recency_Ring
     switch type {
     case .CLIPBOARD:
@@ -42,11 +42,22 @@ push_recency_reg :: proc(data: []u8, mime: string, type: lib.Selection_Type) {
     push_to_ring(ring, data, mime)
 }
 
-// Get the `recency` most recent `Register_Entry`
-get_recency_reg :: proc(ring: ^Recency_Ring, recency: u8) -> ^lib.Reg_Entry {
+// Get the `recency` most recent `Register_Entry` from a specific ring
+get_ring_entry :: proc(ring: ^Recency_Ring, recency: u8) -> ^lib.Reg_Entry {
     if recency >= ring.count {return nil}
     idx := (ring.head - recency + lib.RECENCY_SIZE) % lib.RECENCY_SIZE
     return &ring.entries[idx]
+}
+
+// Get the `recency` most recent `Register_Entry` by selection type
+get_recency_reg :: proc(type: lib.Selection_Type, recency: u8) -> ^lib.Reg_Entry {
+    switch type {
+    case .CLIPBOARD:
+        return get_ring_entry(&clipboard_registers, recency)
+    case .PRIMARY:
+        return get_ring_entry(&primary_registers, recency)
+    }
+    return nil
 }
 
 // Get the `idx` index `Register_Entry` from named registers array
@@ -60,20 +71,20 @@ get_named_reg :: proc(idx: u8) -> ^lib.Reg_Entry {
 get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
     if lib.reg_id_is_clipboard_num(reg_id) {
         recency := lib.reg_id_to_clipboard_index(reg_id)
-        return get_recency_reg(&clipboard_registers, recency)
+        return get_recency_reg(.CLIPBOARD, recency)
     } else if lib.reg_id_is_named(reg_id) {
         idx := lib.reg_id_to_named_index(reg_id)
         return get_named_reg(idx)
     } else if lib.reg_id_is_primary_num(reg_id) {
         recency := lib.reg_id_to_primary_index(reg_id)
-        return get_recency_reg(&primary_registers, recency)
+        return get_recency_reg(.PRIMARY, recency)
     } else if reg_id == lib.SELECTION_CLIPBOARD {
         // TODO: get the selection through cached data_offer in wayland layer. For now, just return the most recent
         // register (should be identical for now, but maybe offer filtering/only writing certain stuff to recency
         // registers in the future)
-        return get_recency_reg(&clipboard_registers, 0)
+        return get_recency_reg(.CLIPBOARD, 0)
     } else if reg_id == lib.SELECTION_PRIMARY {
-        return get_recency_reg(&primary_registers, 0)
+        return get_recency_reg(.PRIMARY, 0)
     }
     return nil
 }
@@ -81,7 +92,7 @@ get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
 get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (count: u8) {
     count = 0
     for bit in filter & lib.CMD_GET_FILTER_CLIPBOARD {
-        entry := get_recency_reg(&clipboard_registers, u8(bit))
+        entry := get_recency_reg(.CLIPBOARD, u8(bit))
         if entry == nil {continue}
         regs[count] = lib.Resp_Reg {
             id    = lib.Reg_Id(bit),
@@ -101,7 +112,7 @@ get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (c
     }
 
     for bit in filter & lib.CMD_GET_FILTER_PRIMARY {
-        entry := get_recency_reg(&primary_registers, u8(bit) - u8(lib.PRIMARY_START))
+        entry := get_recency_reg(.PRIMARY, u8(bit) - u8(lib.PRIMARY_START))
         if entry == nil {continue}
         regs[count] = lib.Resp_Reg {
             id    = lib.Reg_Id(bit),
@@ -182,17 +193,17 @@ clear_named_reg :: proc(reg_id: lib.Reg_Id) {
 }
 
 cleanup_registers :: proc() {
-    for &entry in clipboard_registers.entries { lib.free_reg_entry(&entry) }
-    for &entry in primary_registers.entries { lib.free_reg_entry(&entry) }
-    for &entry in named_registers { lib.free_reg_entry(&entry) }
+    for &entry in clipboard_registers.entries {lib.free_reg_entry(&entry)}
+    for &entry in primary_registers.entries {lib.free_reg_entry(&entry)}
+    for &entry in named_registers {lib.free_reg_entry(&entry)}
 }
 
 // Convenience clone functions
 push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
     push_to_ring(ring, slice.clone(data), strings.clone(mime))
 }
-push_recency_reg_clone :: proc(data: []u8, mime: string, type: lib.Selection_Type) {
-    push_recency_reg(slice.clone(data), strings.clone(mime), type)
+push_recency_reg_clone :: proc(type: lib.Selection_Type, data: []u8, mime: string) {
+    push_recency_reg(type, slice.clone(data), strings.clone(mime))
 }
 set_named_reg_clone :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) {
     set_named_reg(reg_id, slice.clone(data), strings.clone(mime), set_mode)
