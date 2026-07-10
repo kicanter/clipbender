@@ -39,7 +39,7 @@ Event :: enum u8 {
     ACCEPT,
     RECV,
     SIGNAL,
-    CLIPBOARD_MONITOR,
+    WAYLAND,
     DEBOUNCE,
 }
 
@@ -257,12 +257,12 @@ dispatch_cqe :: proc(
         signal := cast(linux.Signal)(cast(^i32)&sig_buf[0])^
         log.debugf("Received signal %v, shutting down", signal)
         running = false
-    case .CLIPBOARD_MONITOR:
+    case .WAYLAND:
         log.debug("Clipboard monitor event received")
         // `dispatch` returns false if error occurs
         if backend.dispatch(backend.state) {
             // Successful dispatch, re-arm the poll
-            uring.poll_add(ring, u64(Event.CLIPBOARD_MONITOR), backend.fd, {.IN}, {})
+            uring.poll_add(ring, u64(Event.WAYLAND), backend.fd, {.IN}, {})
 
             // Check if either selection needs a debounce timer (re)armed
             wl_state := cast(^Wayland_State)backend.state
@@ -344,8 +344,8 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend) {
     _, ok = uring.read(&ring, u64(Event.SIGNAL), sig_fd, sig_buf[:], 0)
     fmt.assertf(ok, "Failed to submit original SIGNAL read SQE, submission queue for io_uring is full")
     if backend.state != nil {
-        _, ok = uring.poll_add(&ring, u64(Event.CLIPBOARD_MONITOR), backend.fd, {.IN}, {})
-        fmt.assertf(ok, "Failed to submit original CLIPBOARD_MONITOR poll SQE, submission queue for io_uring is full")
+        _, ok = uring.poll_add(&ring, u64(Event.WAYLAND), backend.fd, {.IN}, {})
+        fmt.assertf(ok, "Failed to submit original WAYLAND poll SQE, submission queue for io_uring is full")
     }
 
     // Submit the submission queue (tells the kernel to start asynchronously wait for these FDs to get written)
