@@ -345,7 +345,9 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
         delete(data)
         delete(mime)
     } else {
+        // ownership of data and mime transferred
         push_recency_reg(type, data, mime)
+        data, mime = {}, {}
     }
 }
 
@@ -425,9 +427,9 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: stri
     // Cleanup any previous source set
     wayland_cleanup_source(selection)
 
-    // Clone data + mime to selection state
-    selection.source_data = slice.clone(data)
-    selection.source_mime = strings.clone(mime)
+    // Take ownership of data + mime
+    selection.source_data = data
+    selection.source_mime = mime
 
     // Create new data source to advertise
     selection.source = ext_dc.data_control_manager_v1_create_data_source(wl_state.data_control_manager)

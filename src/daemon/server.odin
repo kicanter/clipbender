@@ -130,16 +130,22 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
         // Destination register must be either named register or SELECTION_CLIPBOARD/PRIMARY
         resp_written: int
         if lib.reg_id_is_named(dest_reg) {
+            // ownership of data and mime transferred
             set_named_reg(dest_reg, data, mime, set_mode)
+            data, mime = {}, {}
             resp_written = lib.encode_resp_ok(resp_buf[:])
         } else if lib.reg_id_is_selection(dest_reg) {
+            // ownership of data and mime transferred
             set_selection_reg(backend, dest_reg, data, mime)
+            data, mime = {}, {}
             resp_written = lib.encode_resp_ok(resp_buf[:])
         } else {
             errmsg := fmt.tprintf(
                 "invalid destination register, must be named or selection register (got `%s`)",
                 lib.reg_id_to_string(dest_reg),
             )
+            delete(data)
+            delete(mime)
             resp_written = lib.encode_resp_error(errmsg, resp_buf[:])
         }
 
