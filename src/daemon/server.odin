@@ -14,15 +14,20 @@ data_buf: [4096]u8
 sig_buf: [128]u8
 MAX_DATA_SIZE :: 65536 // 64 KiB
 
-
 DEBOUNCE_MS :: 500 // 500ms debounce time between selection events
 Selection_Debounce :: struct {
     ts:    linux.Time_Spec,
     armed: bool,
 }
 
-clipboard_debounce: Selection_Debounce
-primary_debounce: Selection_Debounce
+clipboard_debounce := Selection_Debounce {
+    ts = linux.Time_Spec{time_nsec = DEBOUNCE_MS * 1_000_000},
+    armed = false,
+}
+primary_debounce := Selection_Debounce {
+    ts = linux.Time_Spec{time_nsec = DEBOUNCE_MS * 1_000_000},
+    armed = false,
+}
 
 Debounce_Event :: enum u8 {
     CLIPBOARD,
@@ -204,10 +209,6 @@ arm_debounce :: proc(
         if !ok {
             log.error("Failed to submit timeout_remove SQE, submission queue full")
         }
-    }
-
-    debounce.ts = linux.Time_Spec {
-        time_nsec = DEBOUNCE_MS * 1_000_000,
     }
     _, ok := uring.timeout(ring, timeout_data, &debounce.ts, 0, {})
     if !ok {
