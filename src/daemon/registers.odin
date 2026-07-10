@@ -89,12 +89,12 @@ get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
     return nil
 }
 
-get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (count: u8) {
+get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Reg) -> (count: u8) {
     count = 0
     for bit in filter & lib.CMD_GET_FILTER_CLIPBOARD {
         entry := get_recency_reg(.CLIPBOARD, u8(bit))
         if entry == nil {continue}
-        regs[count] = lib.Resp_Reg {
+        regs[count] = lib.Reg {
             id    = lib.Reg_Id(bit),
             entry = entry^,
         }
@@ -104,7 +104,7 @@ get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (c
     for bit in filter & lib.CMD_GET_FILTER_NAMED {
         entry := get_named_reg(u8(bit) - u8(lib.NAMED_START))
         if entry == nil {continue}
-        regs[count] = lib.Resp_Reg {
+        regs[count] = lib.Reg {
             id    = lib.Reg_Id(bit),
             entry = entry^,
         }
@@ -114,7 +114,7 @@ get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Resp_Reg) -> (c
     for bit in filter & lib.CMD_GET_FILTER_PRIMARY {
         entry := get_recency_reg(.PRIMARY, u8(bit) - u8(lib.PRIMARY_START))
         if entry == nil {continue}
-        regs[count] = lib.Resp_Reg {
+        regs[count] = lib.Reg {
             id    = lib.Reg_Id(bit),
             entry = entry^,
         }

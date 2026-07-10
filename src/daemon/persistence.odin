@@ -29,3 +29,6 @@ load_registers :: proc() {
 
 }
 
+// Binary serialization contract for clipbender registers state
+// See `libclipbender.Reg` for binary serialization of a single `Reg`
+// `[1 byte Reg_Id][8 bytes i64 timestamp][1 byte mime type len][M bytes mime type][4 bytes data length][N bytes data]`

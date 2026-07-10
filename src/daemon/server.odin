@@ -160,11 +160,11 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
         log.debugf("\tNamed:     %026b", (raw >> 10) & 0x3FFFFFF)
         log.debugf("\tPrimary:   %010b", (raw >> 36) & 0x3FF)
 
-        regs: [46]lib.Resp_Reg
+        regs: [46]lib.Reg
         reg_count := get_registers(filter, &regs)
 
-        // Send DATA response back to client
-        resp_written := lib.marshal_resp_data(regs[:reg_count], resp_buf[:])
+        // Send REGISTERS response back to client
+        resp_written := lib.marshal_resp_registers(regs[:reg_count], resp_buf[:])
         linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.CLEAR:
         log.debugf("Got clear message: %v", data_buf[:bytes_read])

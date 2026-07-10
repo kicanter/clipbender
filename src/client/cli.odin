@@ -9,7 +9,7 @@ import "core:time"
 import lib "src:libclipbender"
 
 RESP_BUF_SMALL :: 256 // OK/ERROR responses
-RESP_BUF_LARGE :: 65536 // 64 KiB, DATA responses (GET)
+RESP_BUF_LARGE :: 65536 // 64 KiB, REGISTERS responses (GET)
 
 print_usage_and_exit :: proc() {
     fmt.eprintln(
@@ -273,8 +273,8 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
         err_msg := string(resp_buf[1:bytes_read])
         fmt.eprintfln("Error: %v", err_msg)
         os.exit(1)
-    case .DATA:
-        fmt.eprintln("Error: unexpected DATA response for `set` command")
+    case .REGISTERS:
+        fmt.eprintln("Error: unexpected REGISTERS response for `set` command")
         os.exit(1)
     }
 }
@@ -505,7 +505,7 @@ truncate_content :: proc(content: string, width: int) -> string {
 }
 
 // Print `regs` register entries formatted as an ascii table.
-cmd_get_format_table :: proc(regs: []lib.Resp_Reg) {
+cmd_get_format_table :: proc(regs: []lib.Reg) {
     table_top := "┌──────────┬─────────────────────┬──────────────────────────┬──────────────────────────────────────────┐"
     table_sep := "├──────────┼─────────────────────┼──────────────────────────┼──────────────────────────────────────────┤"
     table_bot := "└──────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┘"
@@ -608,7 +608,7 @@ json_escape_string :: proc(str: string) -> string {
     return strings.to_string(escaped)
 }
 
-print_json_entry :: proc(reg: lib.Resp_Reg, id_str: string, printed: ^bool) {
+print_json_entry :: proc(reg: lib.Reg, id_str: string, printed: ^bool) {
     if printed^ {fmt.print(", ")}
     fmt.printf(
         `{{"reg": "%s", "time": "%d", "mime": "%s", "content": "%s"}}`,
@@ -621,7 +621,7 @@ print_json_entry :: proc(reg: lib.Resp_Reg, id_str: string, printed: ^bool) {
 }
 
 // Print `regs` register entries formatted as json.
-cmd_get_format_json :: proc(regs: []lib.Resp_Reg) {
+cmd_get_format_json :: proc(regs: []lib.Reg) {
     printed := false
     i := 0
 
@@ -649,7 +649,7 @@ cmd_get_format_json :: proc(regs: []lib.Resp_Reg) {
 }
 
 // Print just the raw content from `regs` register entries (newline-delimited).
-cmd_get_format_raw :: proc(regs: []lib.Resp_Reg) {
+cmd_get_format_raw :: proc(regs: []lib.Reg) {
     printed := false
     i := 0
 
@@ -709,7 +709,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         os.exit(1)
     }
 
-    regs: [46]lib.Resp_Reg // buffer to store the response data
+    regs: [46]lib.Reg // buffer to store the response data
     count: u8 // number of registers sent in response
     status := lib.Resp_Status(resp_buf[0])
     switch status {
@@ -720,12 +720,12 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         err_msg := string(resp_buf[1:bytes_read])
         fmt.eprintfln("Error: %v", err_msg)
         os.exit(1)
-    case .DATA:
-        count = lib.unmarshal_resp_data(resp_buf[1:bytes_read], &regs)
+    case .REGISTERS:
+        count = lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &regs)
     }
 
     // At this point, we either have the data or have already errored and exited.
-    // Handle printing + formatting the received Resp_Reg entries.
+    // Handle printing + formatting the received Reg entries.
     // Output order: clipboard, primary, named.
     switch format {
     case .TABLE:
@@ -790,8 +790,8 @@ cmd_clear :: proc(args: []string, client_fd: linux.Fd) {
         err_msg := string(resp_buf[1:bytes_read])
         fmt.eprintfln("Error: %v", err_msg)
         os.exit(1)
-    case .DATA:
-        fmt.eprintln("Error: unexpected DATA response for `clear` command")
+    case .REGISTERS:
+        fmt.eprintln("Error: unexpected REGISTERS response for `clear` command")
         os.exit(1)
     }
 }
@@ -827,8 +827,8 @@ cmd_shutdown :: proc(args: []string, client_fd: linux.Fd) {
         err_msg := string(resp_buf[1:bytes_read])
         fmt.eprintfln("Error: %v", err_msg)
         os.exit(1)
-    case .DATA:
-        fmt.eprintln("Error: unexpected DATA response for `shutdown` command")
+    case .REGISTERS:
+        fmt.eprintln("Error: unexpected REGISTERS response for `shutdown` command")
         os.exit(1)
     }
 }

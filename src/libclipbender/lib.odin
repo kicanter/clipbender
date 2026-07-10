@@ -214,17 +214,17 @@ CMD_GET_FILTER_ALL :: CMD_GET_FILTER_NAMED + CMD_GET_FILTER_NUMBERED
 //
 // OK:    `[1 byte Response_Status]`
 // ERROR: `[1 byte Response_Status][N bytes error message]`
-// DATA:  `[1 byte Response_Status][1 byte u8 count][count * Resp_Reg]`
+// REGISTERS:  `[1 byte Response_Status][1 byte u8 count][count * Reg]`
 Resp_Status :: enum u8 {
     OK,
     ERROR,
-    DATA,
+    REGISTERS,
 }
 
 // Register data daemon returns to client for a GET operation. IPC wire format:
 //
 // `[1 byte Reg_Id][8 bytes i64 timestamp][1 byte mime type len][M bytes mime type][4 bytes data length][N bytes data]`
-Resp_Reg :: struct {
+Reg :: struct {
     id:    Reg_Id,
     entry: Reg_Entry,
 }
@@ -287,10 +287,10 @@ marshal_cmd_shutdown :: proc(buf: []byte) -> int {
 }
 
 // ok/error responses handled inline
-// DATA: `[1 byte Response_Status][1 byte u8 count][count * Resp_Reg]`
+// REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * Reg]`
 // buf starts after first Response_Status byte
 // NOTE: caller is responsible for freeing all entries in `regs`
-unmarshal_resp_data :: proc(buf: []byte, regs: ^[46]Resp_Reg) -> (count: u8) {
+unmarshal_resp_registers :: proc(buf: []byte, regs: ^[46]Reg) -> (count: u8) {
     count = u8(buf[0])
 
     offset := 1
@@ -321,7 +321,7 @@ unmarshal_resp_data :: proc(buf: []byte, regs: ^[46]Resp_Reg) -> (count: u8) {
             timestamp = time,
         }
 
-        resp_reg := Resp_Reg {
+        resp_reg := Reg {
             id    = reg_id,
             entry = reg_entry,
         }
@@ -347,9 +347,9 @@ marshal_resp_error :: proc(message: string, buf: []byte) -> int {
     return size_of(Resp_Status) + len(message)
 }
 
-// DATA: `[1 byte Response_Status][1 byte u8 count][count * Resp_Reg]`
-marshal_resp_data :: proc(regs: []Resp_Reg, buf: []byte) -> int {
-    buf[0] = byte(Resp_Status.DATA)
+// REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * Reg]`
+marshal_resp_registers :: proc(regs: []Reg, buf: []byte) -> int {
+    buf[0] = byte(Resp_Status.REGISTERS)
     count := u8(len(regs))
     buf[1] = byte(count)
     written := size_of(Resp_Status) + size_of(u8)

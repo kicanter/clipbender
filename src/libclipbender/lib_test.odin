@@ -132,22 +132,22 @@ test_marshal_unmarshal_cmd_get :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_marshal_unmarshal_resp_data :: proc(t: ^testing.T) {
+test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
     buf: [1024]byte
 
-    regs := []Resp_Reg{
+    regs := []Reg{
         {id = reg_id_from_clipboard_index(0), entry = Reg_Entry{data = transmute([]byte)string("first"), mime_type = "text/plain", timestamp = 1000}},
         {id = reg_id_from_named_index(3), entry = Reg_Entry{data = transmute([]byte)string("second entry"), mime_type = "text/html", timestamp = 2000}},
         {id = reg_id_from_primary_index(2), entry = Reg_Entry{data = transmute([]byte)string("third"), mime_type = "text/plain", timestamp = 3000}},
     }
 
-    n := marshal_resp_data(regs, buf[:])
+    n := marshal_resp_registers(regs, buf[:])
     testing.expect(t, n > 0)
-    testing.expect_value(t, Resp_Status(buf[0]), Resp_Status.DATA)
+    testing.expect_value(t, Resp_Status(buf[0]), Resp_Status.REGISTERS)
     testing.expect_value(t, buf[1], u8(3))
 
-    dec_regs: [46]Resp_Reg
-    count := unmarshal_resp_data(buf[1:], &dec_regs)
+    dec_regs: [46]Reg
+    count := unmarshal_resp_registers(buf[1:], &dec_regs)
     testing.expect_value(t, count, u8(3))
 
     for i in 0 ..< int(count) {

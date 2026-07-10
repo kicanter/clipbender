@@ -88,7 +88,7 @@ Gui_State :: struct {
     font:             Font,
     // Register data
     reg_count:        u8,
-    regs:             [46]lib.Resp_Reg,
+    regs:             [46]lib.Reg,
 }
 
 gui_init_surface :: proc(gui_state: ^Gui_State) {
@@ -743,8 +743,8 @@ keyboard_listener := wl.keyboard_listener {
                 err_msg,
             )
         // TODO: highlight red or something, indicate failure
-        case .DATA:
-            log.error("Unexpected DATA response for `set` command")
+        case .REGISTERS:
+            log.error("Unexpected REGISTERS response for `set` command")
         // TODO: wtf how'd we get here?
         }
     },
@@ -795,8 +795,8 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (coun
     case .ERROR:
         err_msg := string(resp_buf[1:bytes_read])
         return {}, fmt.tprint("%s", err_msg)
-    case .DATA:
-        count = lib.unmarshal_resp_data(resp_buf[1:bytes_read], &gui_state.regs)
+    case .REGISTERS:
+        count = lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &gui_state.regs)
     }
 
     return count, nil
@@ -864,6 +864,7 @@ run_gui :: proc(client_fd: linux.Fd) {
     // Single-instance lock to prevent multiple popups
     lock_path := lib.clipbender_lock_path()
     defer delete(lock_path)
+
     lock_fd, open_err := linux.open(
         strings.clone_to_cstring(lock_path, context.temp_allocator),
         {.CREAT, .RDWR},
