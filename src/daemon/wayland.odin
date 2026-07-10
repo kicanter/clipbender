@@ -318,9 +318,23 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
 
     data: []u8
     mime: string
-    // Self-source: we own this selection, push directly from our cached data to avoid deadlocking on the pipe read
-    // (the send callback can't fire while we're blocking here)
+    // Check if this selection event was triggered by clipbender setting the clipboard/primary, this means we still
+    // have ownership of the clipboard at this point. In these scenarios, the sequence of events is:
+    // 1. Set clipboard/primary with register e.g. `clipbender set clipboard a`
+    // 2. Daemon sets the clipboard selection to register `a` (clipbender takes ownership of clipboard)
+    // 3. We set the cached clipboard selection source to this one
+    // 4. Compositor echoes a selection event and we arrive back here
+    //
+    // If we didn't have this check, we would try to read the data offer and timeout because we would also have to be
+    // the one sending it (in `wayland_read_offer_data()` the pipe read would time out waiting for us to write).
     if selection.source != nil {
+        // Check for duplicate before allocating
+        head_reg := get_recency_reg(type, 0)
+        if head_reg != nil && head_reg.mime_type == mime && slice.equal(head_reg.data, data) {
+            log.debugf("Got duplicate %v copy (self-source), suppressing register push", type)
+            return
+        }
+        // Copy the data from our own cache to give to the register
         data = slice.clone(selection.source_data)
         mime = strings.clone(selection.source_mime)
     } else {
