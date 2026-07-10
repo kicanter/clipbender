@@ -14,11 +14,28 @@ data_buf: [4096]u8
 sig_buf: [128]u8
 MAX_DATA_SIZE :: 65536 // 64 KiB
 
+
+DEBOUNCE_MS :: 500 // 500ms debounce time between selection events
+Selection_Debounce :: struct {
+    ts:    linux.Time_Spec,
+    armed: bool,
+}
+
+clipboard_debounce: Selection_Debounce
+primary_debounce: Selection_Debounce
+
+Debounce_Event :: enum u8 {
+    CLIPBOARD,
+    PRIMARY,
+    CANCEL,
+}
+
 Event :: enum u8 {
     ACCEPT,
     RECV,
     SIGNAL,
     CLIPBOARD_MONITOR,
+    DEBOUNCE,
 }
 
 sigaddset :: proc(set: ^linux.Sig_Set, sig: linux.Signal) {
@@ -170,6 +187,36 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
     return running
 }
 
+arm_debounce :: proc(
+    ring: ^uring.Ring,
+    selection: ^Selection_State,
+    debounce: ^Selection_Debounce,
+    debounce_event: Debounce_Event,
+) {
+    if !selection.staged {return}
+    selection.staged = false
+
+    cancel_data := (u64(Debounce_Event.CANCEL) << 8) | u64(Event.DEBOUNCE)
+    timeout_data := (u64(debounce_event) << 8) | u64(Event.DEBOUNCE)
+
+    if debounce.armed {
+        _, ok := uring.timeout_remove(ring, cancel_data, timeout_data, {})
+        if !ok {
+            log.error("Failed to submit timeout_remove SQE, submission queue full")
+        }
+    }
+
+    debounce.ts = linux.Time_Spec {
+        time_nsec = DEBOUNCE_MS * 1_000_000,
+    }
+    _, ok := uring.timeout(ring, timeout_data, &debounce.ts, 0, {})
+    if !ok {
+        log.error("Failed to submit timeout SQE, submission queue full")
+        return
+    }
+    debounce.armed = true
+}
+
 dispatch_cqe :: proc(
     cqe: linux.IO_Uring_CQE,
     ring: ^uring.Ring,
@@ -215,6 +262,11 @@ dispatch_cqe :: proc(
         if backend.dispatch(backend.state) {
             // Successful dispatch, re-arm the poll
             uring.poll_add(ring, u64(Event.CLIPBOARD_MONITOR), backend.fd, {.IN}, {})
+
+            // Check if either selection needs a debounce timer (re)armed
+            wl_state := cast(^Wayland_State)backend.state
+            arm_debounce(ring, &wl_state.clipboard_state, &clipboard_debounce, .CLIPBOARD)
+            arm_debounce(ring, &wl_state.primary_state, &primary_debounce, .PRIMARY)
         } else {
             log.warn(
                 "Clipboard backend disabled, dropping clipboard monitoring (named registers still functional). " +
@@ -222,6 +274,28 @@ dispatch_cqe :: proc(
             )
             backend.cleanup(backend.state)
             backend.state = nil
+        }
+    case .DEBOUNCE:
+        // Debounce event tells us we successfully surpassed debounce timeout, process the data offer
+        debounce_event := cast(Debounce_Event)(cqe.user_data >> 8)
+        switch debounce_event {
+        case .CLIPBOARD:
+            clipboard_debounce.armed = false
+            // Linux kernel errors are negative, negate ECANCELED (indicates timeout removed)
+            if cqe.res == -cast(i32)linux.Errno.ECANCELED {return running}
+            log.debug("Clipboard debounce timer fired, reading pending offer")
+            if backend.state != nil {
+                wayland_commit_selection(cast(^Wayland_State)backend.state, .CLIPBOARD)
+            }
+        case .PRIMARY:
+            primary_debounce.armed = false
+            // Linux kernel errors are negative, negate ECANCELED (indicates timeout removed)
+            if cqe.res == -cast(i32)linux.Errno.ECANCELED {return running}
+            log.debug("Primary debounce timer fired, reading pending offer")
+            if backend.state != nil {
+                wayland_commit_selection(cast(^Wayland_State)backend.state, .PRIMARY)
+            }
+        case .CANCEL:
         }
     }
     return running

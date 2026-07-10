@@ -24,7 +24,7 @@ test:
 ifdef PKG
 	odin test src/$(PKG) -warnings-as-errors -vet $(COLLECTIONS) $(FLAGS)
 else
-	odin test src/libclipbender/base -warnings-as-errors -vet $(COLLECTIONS) $(FLAGS)
+	odin test src/libclipbender -warnings-as-errors -vet $(COLLECTIONS) $(FLAGS)
 	odin test src/daemon -warnings-as-errors -vet $(COLLECTIONS) $(FLAGS)
 	odin test src/client -warnings-as-errors -vet $(COLLECTIONS) $(FLAGS)
 endif

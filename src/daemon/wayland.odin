@@ -34,6 +34,8 @@ PREFERRED_MIMES :: [?]string {
 Selection_State :: struct {
     // Copy: selection monitoring (push to recency registers)
     offer:       ^ext_dc.data_control_offer_v1,
+    mimes:       map[string]struct{}, // Transferred from `advertised_mimes` upon selection event
+    staged:      bool, // Check whether we are in a debounce window
     // Paste: selection writing (setting clipboard/primary for paste)
     source:      ^ext_dc.data_control_source_v1,
     source_data: []byte,
@@ -97,13 +99,28 @@ wayland_init :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
     return true
 }
 
+wayland_cleanup_source :: proc(selection: ^Selection_State) {
+    if selection.source != nil {ext_dc.data_control_source_v1_destroy(selection.source)}
+    selection.source = nil
+    delete(selection.source_data)
+    selection.source_data = nil
+    delete(selection.source_mime)
+    selection.source_mime = ""
+}
+
+wayland_cleanup_selection :: proc(selection: ^Selection_State) {
+    if selection.offer != nil {ext_dc.data_control_offer_v1_destroy(selection.offer)}
+    selection.offer = nil
+    wayland_cleanup_source(selection)
+    for mime in selection.mimes {delete(mime)}
+    delete(selection.mimes)
+    selection.mimes = {}
+}
+
 // Destroy in reverse order of creation, children before parents
 wayland_cleanup :: proc(wl_state: ^Wayland_State) {
-    // Cleanup clipboard/primary states
-    if wl_state.clipboard_state.offer != nil {ext_dc.data_control_offer_v1_destroy(wl_state.clipboard_state.offer)}
-    wayland_cleanup_source(&wl_state.clipboard_state)
-    if wl_state.primary_state.offer != nil {ext_dc.data_control_offer_v1_destroy(wl_state.primary_state.offer)}
-    wayland_cleanup_source(&wl_state.primary_state)
+    wayland_cleanup_selection(&wl_state.clipboard_state)
+    wayland_cleanup_selection(&wl_state.primary_state)
     delete(wl_state.advertised_mimes)
 
     // Cleanup connection state
@@ -190,7 +207,7 @@ device_listener := ext_dc.data_control_device_v1_listener {
         context.logger = _logger
         wl_state := cast(^Wayland_State)data
         log.debug("Received ext_data_control_device_v1::selection event")
-        wayland_handle_selection(wl_state, id_, .CLIPBOARD)
+        wayland_stage_selection(wl_state, &wl_state.clipboard_state, id_)
     },
     finished = proc "c" (data: rawptr, data_control_device_v1: ^ext_dc.data_control_device_v1) {
         context = runtime.default_context()
@@ -208,7 +225,7 @@ device_listener := ext_dc.data_control_device_v1_listener {
         context.logger = _logger
         wl_state := cast(^Wayland_State)data
         log.debug("Received ext_data_control_device_v1::primary_selection event")
-        wayland_handle_selection(wl_state, id_, .PRIMARY)
+        wayland_stage_selection(wl_state, &wl_state.primary_state, id_)
     },
 }
 
@@ -261,30 +278,43 @@ source_listener := ext_dc.data_control_source_v1_listener {
     },
 }
 
-wayland_handle_selection :: proc(
+// Stage a selection event for debounced processing. Stores the offer and mimes, sets the pending flag.
+wayland_stage_selection :: proc(
     wl_state: ^Wayland_State,
+    selection: ^Selection_State,
     id_: ^ext_dc.data_control_offer_v1,
-    type: lib.Selection_Type,
 ) {
     if id_ == nil {
         log.debug("Received offer is nil (selection was cleared)")
         return
     }
 
-    cached_offer: ^^ext_dc.data_control_offer_v1
+    // Destroy previous pending offer if replacing (debounce reset)
+    if selection.offer != nil {ext_dc.data_control_offer_v1_destroy(selection.offer)}
+    selection.offer = id_
+
+    // Snapshot advertised mimes into this selection's state
+    for mime in selection.mimes {delete(mime)}
+    clear(&selection.mimes)
+    for mime in wl_state.advertised_mimes {
+        selection.mimes[strings.clone(mime)] = {}
+    }
+    clear(&wl_state.advertised_mimes)
+    selection.staged = true
+}
+
+// Called when a debounce timer successfully expires. Reads the pending offer and pushes to recency ring.
+wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_Type) {
     selection: ^Selection_State
     switch type {
     case .CLIPBOARD:
-        cached_offer = &wl_state.clipboard_state.offer
         selection = &wl_state.clipboard_state
     case .PRIMARY:
-        cached_offer = &wl_state.primary_state.offer
         selection = &wl_state.primary_state
     }
 
-    // Cleanup existing data offer if exists
-    if cached_offer^ != nil {ext_dc.data_control_offer_v1_destroy(cached_offer^)}
-    cached_offer^ = id_
+    offer := selection.offer
+    if offer == nil {return}
 
     data: []u8
     mime: string
@@ -294,32 +324,29 @@ wayland_handle_selection :: proc(
         data = slice.clone(selection.source_data)
         mime = strings.clone(selection.source_mime)
     } else {
-        mime = pick_best_mime(wl_state.advertised_mimes)
+        mime = pick_best_mime(selection.mimes)
         if mime == "" {
-            log.errorf("No mime found for copied %v selection, canceling push to recency register", type)
+            log.errorf("No mime found for debounced %v selection, canceling push to recency register", type)
             return
         }
 
-        data = wayland_read_offer_data(id_, wl_state.display, mime)
+        data = wayland_read_offer_data(offer, wl_state.display, mime)
         if data == nil {
-            log.error("Couldn't read the data from offer with mime type `%s`", mime)
+            log.errorf("Couldn't read data from debounced %v offer", type)
             delete(mime)
             return
         }
     }
 
-    // Deduplicate: don't push a new register if it's identical to the previous one
+    // Deduplicate: don't push if identical to the most recent entry
     head_reg := get_recency_reg(type, 0)
     if head_reg != nil && head_reg.mime_type == mime && slice.equal(head_reg.data, data) {
-        log.debug("Got duplicate copy, suppressing register push")
+        log.debugf("Got duplicate %v copy, suppressing register push", type)
         delete(data)
         delete(mime)
     } else {
         push_recency_reg(type, data, mime)
     }
-
-    // Clear the pending mime map, we've consumed it and have already selected + copied our chosen mime type
-    clear(&wl_state.advertised_mimes)
 }
 
 // Pick the highest-priority mime type, fall back to any available if none match.
@@ -439,14 +466,5 @@ wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, fd: 
     }
     linux.write(fd, selection.source_data)
     linux.close(fd)
-}
-
-wayland_cleanup_source :: proc(selection: ^Selection_State) {
-    if selection.source != nil {ext_dc.data_control_source_v1_destroy(selection.source)}
-    selection.source = nil
-    delete(selection.source_data)
-    selection.source_data = nil
-    delete(selection.source_mime)
-    selection.source_mime = ""
 }
 
