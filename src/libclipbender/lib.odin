@@ -225,7 +225,7 @@ free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
 // Client-side
 
 // SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b source Reg_Id]`
-encode_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, buf: []byte) -> int {
+marshal_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, buf: []byte) -> int {
     buf[0] = byte(Command_Type.SET)
     buf[1] = byte(dest)
     buf[2] = byte(set_mode)
@@ -235,7 +235,7 @@ encode_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, buf
 }
 
 // SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
-encode_cmd_set_inline :: proc(dest: Reg_Id, set_mode: Set_Mode, mime: string, data: []byte, buf: []byte) -> int {
+marshal_cmd_set_inline :: proc(dest: Reg_Id, set_mode: Set_Mode, mime: string, data: []byte, buf: []byte) -> int {
     buf[0] = byte(Command_Type.SET)
     buf[1] = byte(dest)
     buf[2] = byte(set_mode)
@@ -251,7 +251,7 @@ encode_cmd_set_inline :: proc(dest: Reg_Id, set_mode: Set_Mode, mime: string, da
 }
 
 // GET: `[1b Message_Type][8b Cmd_Get_filter]`
-encode_cmd_get :: proc(filter: Cmd_Get_Filter, buf: []byte) -> int {
+marshal_cmd_get :: proc(filter: Cmd_Get_Filter, buf: []byte) -> int {
     buf[0] = byte(Command_Type.GET)
     bytes := transmute([8]byte)filter
     copy(buf[1:9], bytes[:])
@@ -259,31 +259,23 @@ encode_cmd_get :: proc(filter: Cmd_Get_Filter, buf: []byte) -> int {
 }
 
 // CLEAR: `[1b Message_Type][1b Reg_Id]`
-encode_cmd_clear :: proc(reg_id: Reg_Id, buf: []byte) -> int {
+marshal_cmd_clear :: proc(reg_id: Reg_Id, buf: []byte) -> int {
     buf[0] = byte(Command_Type.CLEAR)
     buf[1] = byte(reg_id)
     return size_of(Command_Type) + size_of(Reg_Id)
 }
 
 // SHUTDOWN: `[1b Message_Type]`
-encode_cmd_shutdown :: proc(buf: []byte) -> int {
+marshal_cmd_shutdown :: proc(buf: []byte) -> int {
     buf[0] = byte(Command_Type.SHUTDOWN)
     return size_of(Command_Type)
-}
-
-encode_cmd :: proc {
-    encode_cmd_set_reg,
-    encode_cmd_set_inline,
-    encode_cmd_get,
-    encode_cmd_clear,
-    encode_cmd_shutdown,
 }
 
 // ok/error responses handled inline
 // DATA: `[1 byte Response_Status][1 byte u8 count][count * Resp_Reg]`
 // buf starts after first Response_Status byte
 // NOTE: caller is responsible for freeing all entries in `regs`
-decode_resp_data :: proc(buf: []byte, regs: ^[46]Resp_Reg) -> (count: u8) {
+unmarshal_resp_data :: proc(buf: []byte, regs: ^[46]Resp_Reg) -> (count: u8) {
     count = u8(buf[0])
 
     offset := 1
@@ -328,20 +320,20 @@ decode_resp_data :: proc(buf: []byte, regs: ^[46]Resp_Reg) -> (count: u8) {
 // Daemon-side
 
 // OK: `1 byte Response_Status]`
-encode_resp_ok :: proc(buf: []byte) -> int {
+marshal_resp_ok :: proc(buf: []byte) -> int {
     buf[0] = byte(Resp_Status.OK)
     return size_of(Resp_Status)
 }
 
 // ERROR: `[1 byte Response_Status][N bytes error message]`
-encode_resp_error :: proc(message: string, buf: []byte) -> int {
+marshal_resp_error :: proc(message: string, buf: []byte) -> int {
     buf[0] = byte(Resp_Status.ERROR)
     copy(buf[1:][:len(message)], message)
     return size_of(Resp_Status) + len(message)
 }
 
 // DATA: `[1 byte Response_Status][1 byte u8 count][count * Resp_Reg]`
-encode_resp_data :: proc(regs: []Resp_Reg, buf: []byte) -> int {
+marshal_resp_data :: proc(regs: []Resp_Reg, buf: []byte) -> int {
     buf[0] = byte(Resp_Status.DATA)
     count := u8(len(regs))
     buf[1] = byte(count)
@@ -374,15 +366,15 @@ encode_resp_data :: proc(regs: []Resp_Reg, buf: []byte) -> int {
     return written
 }
 
-encode_resp :: proc {
-    encode_resp_ok,
-    encode_resp_error,
-    encode_resp_data,
+// SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b source Reg_Id]`
+// buf starts after Source_Kind byte
+unmarshal_cmd_set_reg :: proc(buf: []byte) -> Reg_Id {
+    return Reg_Id(buf[0])
 }
 
 // SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
 // buf starts after Source_Kind byte
-decode_cmd_set_inline :: proc(buf: []byte) -> (mime: string, data: []byte) {
+unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mime: string, data: []byte) {
     mime_len := u8(buf[0])
     mime = strings.clone(string(buf[1:1 + mime_len]))
     data = slice.clone(buf[1 + mime_len:])
@@ -391,9 +383,27 @@ decode_cmd_set_inline :: proc(buf: []byte) -> (mime: string, data: []byte) {
 
 // GET: `[1b Message_Type][8b Cmd_Get_filter]`
 // buf starts after first Message_Type byte
-decode_cmd_get :: proc(buf: []byte) -> Cmd_Get_Filter {
+unmarshal_cmd_get :: proc(buf: []byte) -> Cmd_Get_Filter {
     filter_bytes: [8]byte
     copy(filter_bytes[:], buf)
     return transmute(Cmd_Get_Filter)(transmute(u64)(filter_bytes))
+}
+
+// CLEAR: `[1b Message_Type][1b Reg_Id]`
+// buf starts after first Message_Type byte
+unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
+    return Reg_Id(buf[0])
+}
+
+// OK: `[1 byte Response_Status]`
+// No payload to unmarshal
+unmarshal_resp_ok :: proc(buf: []byte) -> Resp_Status {
+    return .OK
+}
+
+// ERROR: `[1 byte Response_Status][N bytes error message]`
+// buf starts after first Response_Status byte
+unmarshal_resp_error :: proc(buf: []byte) -> string {
+    return string(buf)
 }
 

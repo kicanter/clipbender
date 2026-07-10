@@ -219,7 +219,7 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
             print_cmd_usage_and_exit(.SET)
         }
         msg: [5]byte // SET with source reg is 5-byte message
-        written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
+        written := lib.marshal_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
         _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
         if send_err != nil {
             fmt.eprintfln("Error: failed sending SET (reg) to daemon: errno %v", send_err)
@@ -240,7 +240,7 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
         defer delete(data)
         msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
         defer delete(msg)
-        written := lib.encode_cmd_set_inline(dest_reg, set_mode, mime, data, msg[:])
+        written := lib.marshal_cmd_set_inline(dest_reg, set_mode, mime, data, msg[:])
         _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
         if send_err != nil {
             fmt.eprintfln("Error: failed sending SET (inline) to daemon: errno %v", send_err)
@@ -694,7 +694,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
 
     // Send GET message
     msg: [9]byte
-    written := lib.encode_cmd_get(filter, msg[:])
+    written := lib.marshal_cmd_get(filter, msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {
         fmt.eprintfln("Error: failed sending GET to daemon: errno %v", send_err)
@@ -721,7 +721,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         fmt.eprintfln("Error: %v", err_msg)
         os.exit(1)
     case .DATA:
-        count = lib.decode_resp_data(resp_buf[1:bytes_read], &regs)
+        count = lib.unmarshal_resp_data(resp_buf[1:bytes_read], &regs)
     }
 
     // At this point, we either have the data or have already errored and exited.
@@ -767,7 +767,7 @@ cmd_clear :: proc(args: []string, client_fd: linux.Fd) {
 
     // Send CLEAR message
     msg: [2]byte
-    written := lib.encode_cmd_clear(reg_id, msg[:])
+    written := lib.marshal_cmd_clear(reg_id, msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {
         fmt.eprintfln("Error: failed sending CLEAR to daemon: errno %v", send_err)
@@ -804,7 +804,7 @@ cmd_shutdown :: proc(args: []string, client_fd: linux.Fd) {
 
     // Send SHUTDOWN message
     msg: [1]byte
-    written := lib.encode_cmd_shutdown(msg[:])
+    written := lib.marshal_cmd_shutdown(msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {
         fmt.eprintfln("Error: failed sending SHUTDOWN to daemon: errno %v", send_err)

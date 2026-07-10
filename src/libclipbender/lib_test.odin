@@ -87,7 +87,7 @@ test_encode_cmd_set_reg :: proc(t: ^testing.T) {
     source := SELECTION_CLIPBOARD
     mode := Set_Mode.OVERWRITE
 
-    n := encode_cmd_set_reg(dest, source, mode, buf[:])
+    n := marshal_cmd_set_reg(dest, source, mode, buf[:])
     testing.expect_value(t, n, 5)
     testing.expect_value(t, Command_Type(buf[0]), Command_Type.SET)
     testing.expect_value(t, Reg_Id(buf[1]), dest)
@@ -104,14 +104,14 @@ test_encode_decode_cmd_set_inline :: proc(t: ^testing.T) {
     mime := "text/plain"
     data := transmute([]byte)string("hello world")
 
-    n := encode_cmd_set_inline(dest, mode, mime, data, buf[:])
+    n := marshal_cmd_set_inline(dest, mode, mime, data, buf[:])
     expected_size := size_of(Command_Type) + size_of(Reg_Id) + size_of(Set_Mode) + size_of(Source_Kind) + size_of(u8) + len(mime) + len(data)
     testing.expect_value(t, n, expected_size)
     testing.expect_value(t, Set_Mode(buf[2]), mode)
     testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.INLINE)
 
     // decode_cmd_set_inline expects buf starting after Source_Kind byte
-    dec_mime, dec_data := decode_cmd_set_inline(buf[4:n])
+    dec_mime, dec_data := unmarshal_cmd_set_inline(buf[4:n])
     defer delete(dec_mime)
     defer delete(dec_data)
 
@@ -124,10 +124,10 @@ test_encode_decode_cmd_get :: proc(t: ^testing.T) {
     buf: [16]byte
     filter := CMD_GET_FILTER_CLIPBOARD + CMD_GET_FILTER_NAMED
 
-    n := encode_cmd_get(filter, buf[:])
+    n := marshal_cmd_get(filter, buf[:])
     testing.expect(t, n == size_of(Command_Type) + size_of(Cmd_Get_Filter))
 
-    dec_filter := decode_cmd_get(buf[1:])
+    dec_filter := unmarshal_cmd_get(buf[1:])
     testing.expect_value(t, dec_filter, filter)
 }
 
@@ -141,13 +141,13 @@ test_encode_decode_resp_data :: proc(t: ^testing.T) {
         {id = reg_id_from_primary_index(2), entry = Reg_Entry{data = transmute([]byte)string("third"), mime_type = "text/plain", timestamp = 3000}},
     }
 
-    n := encode_resp_data(regs, buf[:])
+    n := marshal_resp_data(regs, buf[:])
     testing.expect(t, n > 0)
     testing.expect_value(t, Resp_Status(buf[0]), Resp_Status.DATA)
     testing.expect_value(t, buf[1], u8(3))
 
     dec_regs: [46]Resp_Reg
-    count := decode_resp_data(buf[1:], &dec_regs)
+    count := unmarshal_resp_data(buf[1:], &dec_regs)
     testing.expect_value(t, count, u8(3))
 
     for i in 0 ..< int(count) {
@@ -181,7 +181,7 @@ test_encode_cmd_set_reg_append :: proc(t: ^testing.T) {
     source := reg_id_from_clipboard_index(0)
     mode := Set_Mode.APPEND
 
-    n := encode_cmd_set_reg(dest, source, mode, buf[:])
+    n := marshal_cmd_set_reg(dest, source, mode, buf[:])
     testing.expect_value(t, n, 5)
     testing.expect_value(t, Command_Type(buf[0]), Command_Type.SET)
     testing.expect_value(t, Reg_Id(buf[1]), dest)

@@ -106,7 +106,7 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
             source := get_reg(source_reg)
             if source == nil {
                 errmsg := fmt.tprintf("source register `%s` is empty", lib.reg_id_to_string(source_reg))
-                resp_written := lib.encode_resp_error(errmsg, resp_buf[:])
+                resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
                 linux.send(client_fd, resp_buf[:resp_written], {})
                 return running
             }
@@ -115,7 +115,7 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
             log.debug("REGISTER:")
             log.debugf("\tSource Reg: `%s`", lib.reg_id_to_string(source_reg))
         case .INLINE:
-            mime, data = lib.decode_cmd_set_inline(data_buf[4:bytes_read])
+            mime, data = lib.unmarshal_cmd_set_inline(data_buf[4:bytes_read])
             log.debug("INLINE:")
         }
 
@@ -133,12 +133,12 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
             // ownership of data and mime transferred
             set_named_reg(dest_reg, data, mime, set_mode)
             data, mime = {}, {}
-            resp_written = lib.encode_resp_ok(resp_buf[:])
+            resp_written = lib.marshal_resp_ok(resp_buf[:])
         } else if lib.reg_id_is_selection(dest_reg) {
             // ownership of data and mime transferred
             set_selection_reg(backend, dest_reg, data, mime)
             data, mime = {}, {}
-            resp_written = lib.encode_resp_ok(resp_buf[:])
+            resp_written = lib.marshal_resp_ok(resp_buf[:])
         } else {
             errmsg := fmt.tprintf(
                 "invalid destination register, must be named or selection register (got `%s`)",
@@ -146,14 +146,14 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
             )
             delete(data)
             delete(mime)
-            resp_written = lib.encode_resp_error(errmsg, resp_buf[:])
+            resp_written = lib.marshal_resp_error(errmsg, resp_buf[:])
         }
 
         // Send response back to client
         linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.GET:
         log.debugf("Got get message: %v", data_buf[:bytes_read])
-        filter := lib.decode_cmd_get(data_buf[1:bytes_read])
+        filter := lib.unmarshal_cmd_get(data_buf[1:bytes_read])
         raw := transmute(u64)filter
         log.debug("Filter:")
         log.debugf("\tClipboard: %010b", raw & 0x3FF)
@@ -164,7 +164,7 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
         reg_count := get_registers(filter, &regs)
 
         // Send DATA response back to client
-        resp_written := lib.encode_resp_data(regs[:reg_count], resp_buf[:])
+        resp_written := lib.marshal_resp_data(regs[:reg_count], resp_buf[:])
         linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.CLEAR:
         log.debugf("Got clear message: %v", data_buf[:bytes_read])
@@ -177,12 +177,12 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
                 "invalid register, can only clear named registers (got `%s`)",
                 lib.reg_id_to_string(reg),
             )
-            resp_written = lib.encode_resp_error(errmsg, resp_buf[:])
+            resp_written = lib.marshal_resp_error(errmsg, resp_buf[:])
         } else {
             // Clear named reg
             log.debugf("Register: `%s`", lib.reg_id_to_string(reg))
             clear_named_reg(reg)
-            resp_written = lib.encode_resp_ok(resp_buf[:])
+            resp_written = lib.marshal_resp_ok(resp_buf[:])
         }
 
         // Send response back to client
@@ -191,7 +191,7 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
         fmt.println("Shutting clipbenderd down")
         running = false
         // Send OK response back to client
-        resp_written := lib.encode_resp_ok(resp_buf[:])
+        resp_written := lib.marshal_resp_ok(resp_buf[:])
         linux.send(client_fd, resp_buf[:resp_written], {})
     }
 

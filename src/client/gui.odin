@@ -703,7 +703,7 @@ keyboard_listener := wl.keyboard_listener {
         }
 
         // Encode and send the SET message
-        written := lib.encode_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
+        written := lib.marshal_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
         _, send_err := linux.send(gui_state.client_fd, msg[:written], {.NOSIGNAL})
         if send_err != nil {
             log.errorf(
@@ -775,7 +775,7 @@ keyboard_listener := wl.keyboard_listener {
 gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (count: u8, err: Maybe(string)) {
     // Send GET message for all registers
     msg: [9]byte
-    written := lib.encode_cmd_get(lib.CMD_GET_FILTER_ALL, msg[:])
+    written := lib.marshal_cmd_get(lib.CMD_GET_FILTER_ALL, msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {
         return {}, fmt.tprintf("Failed sending GET to daemon: errno %v", send_err)
@@ -796,7 +796,7 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (coun
         err_msg := string(resp_buf[1:bytes_read])
         return {}, fmt.tprint("%s", err_msg)
     case .DATA:
-        count = lib.decode_resp_data(resp_buf[1:bytes_read], &gui_state.regs)
+        count = lib.unmarshal_resp_data(resp_buf[1:bytes_read], &gui_state.regs)
     }
 
     return count, nil
