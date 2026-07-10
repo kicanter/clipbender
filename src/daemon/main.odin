@@ -83,6 +83,8 @@ main :: proc() {
 
     // Check for an existing stale socket first
     check_stale_socket(socket_path)
+    // Free any temp allocations made during initialization
+    free_all(context.temp_allocator)
     // Run socket event loop
     uds_serve(socket_path, &backend)
 }

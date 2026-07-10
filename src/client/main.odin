@@ -12,7 +12,7 @@ _logger: log.Logger
 
 uds_connect :: proc(socket_path: string) -> linux.Fd {
     if !os.exists(socket_path) {
-        fmt.eprintln("Error: socket path does not exist")
+        fmt.eprintln("Error: socket path does not exist, you probably need to start the `clipbenderd` daemon")
         os.exit(1)
     }
 
@@ -40,11 +40,14 @@ main :: proc() {
     client_fd := uds_connect(socket_path)
     defer linux.close(client_fd)
 
-    args := os.args[1:]
+    // Free any temp allocations made during initialization
+    free_all(context.temp_allocator)
 
+    args := os.args[1:]
     if len(args) == 0 {
         run_gui(client_fd)
     } else {
         run_cli(client_fd, args)
     }
 }
+

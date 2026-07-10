@@ -125,28 +125,43 @@ get_session_type :: proc() -> Session_Type {
 }
 
 // Protocol/IPC
-SOCKET_PATH_SUFFIX :: "clipbender.sock"
-LOCK_PATH_SUFFIX :: "clipbender-gui.lock"
 
-clipbender_runtime_path :: proc(suffix: string) -> string {
-    socket_dir := os.get_env("XDG_RUNTIME_DIR", context.allocator)
-    if len(socket_dir) == 0 || !os.is_directory(socket_dir) {
-        if len(socket_dir) > 0 {
-            log.warnf("XDG_RUNTIME_DIR env var is not a directory, you should probably fix this (got %s)", socket_dir)
-            delete(socket_dir)
+// Return a path built from an env var directory, using a fallback if the env var doesn't exist or isn't a directory.
+// Fallback to using `fallback_dir` if the `env_var` doesn't exist or isn't a directory.
+// Caller is responsible for freeing returned string.
+env_path_with_fallback :: proc(env_var: string, subdir: string, filename: string, fallback_dir: string) -> string {
+    env_var_dir := os.get_env(env_var, context.allocator)
+    defer delete(env_var_dir)
+
+    dir: string
+    if len(env_var_dir) == 0 || !os.is_directory(env_var_dir) {
+        if len(env_var_dir) > 0 {
+            log.warnf("%s env var is not a directory, you should probably fix this (got %s)", env_var, env_var_dir)
         }
-        return fmt.aprintf("/tmp/%s", suffix)
+        // Use fallback if we can't build a path from the env var
+        dir = fmt.tprintf("%s/%s", fallback_dir, subdir)
+    } else {
+        dir = fmt.tprintf("%s/%s", env_var_dir, subdir)
     }
-    defer delete(socket_dir)
-    return fmt.aprintf("%s/%s", socket_dir, suffix)
+
+    os.make_directory_all(dir)
+    return fmt.aprintf("%s/%s", dir, filename)
 }
 
+RUNTIME_ENV_VAR :: "XDG_RUNTIME_DIR"
+TMP_DIR :: "/tmp"
+CLIPBENDER_SUBDIR :: "clipbender"
+SOCKET_FILENAME :: "clipbender.sock"
+LOCK_FILENAME :: "clipbender-gui.lock"
+
+// Caller is responsible for freeing returned string.
 clipbender_socket_path :: proc() -> string {
-    return clipbender_runtime_path(SOCKET_PATH_SUFFIX)
+    return env_path_with_fallback(RUNTIME_ENV_VAR, CLIPBENDER_SUBDIR, SOCKET_FILENAME, TMP_DIR)
 }
 
+// Caller is responsible for freeing returned string.
 clipbender_lock_path :: proc() -> string {
-    return clipbender_runtime_path(LOCK_PATH_SUFFIX)
+    return env_path_with_fallback(RUNTIME_ENV_VAR, CLIPBENDER_SUBDIR, LOCK_FILENAME, TMP_DIR)
 }
 
 // Kinds of messages (commands) passed from client to daemon. IPC wire format:
