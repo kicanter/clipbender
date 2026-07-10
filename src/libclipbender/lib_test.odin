@@ -81,7 +81,7 @@ test_reg_id_primary_roundtrip :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_encode_cmd_set_reg :: proc(t: ^testing.T) {
+test_marshal_cmd_set_reg :: proc(t: ^testing.T) {
     buf: [64]byte
     dest := reg_id_from_named_index(5)
     source := SELECTION_CLIPBOARD
@@ -97,7 +97,7 @@ test_encode_cmd_set_reg :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_encode_decode_cmd_set_inline :: proc(t: ^testing.T) {
+test_marshal_unmarshal_cmd_set_inline :: proc(t: ^testing.T) {
     buf: [256]byte
     dest := reg_id_from_named_index(0)
     mode := Set_Mode.APPEND
@@ -120,7 +120,7 @@ test_encode_decode_cmd_set_inline :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_encode_decode_cmd_get :: proc(t: ^testing.T) {
+test_marshal_unmarshal_cmd_get :: proc(t: ^testing.T) {
     buf: [16]byte
     filter := CMD_GET_FILTER_CLIPBOARD + CMD_GET_FILTER_NAMED
 
@@ -132,7 +132,7 @@ test_encode_decode_cmd_get :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_encode_decode_resp_data :: proc(t: ^testing.T) {
+test_marshal_unmarshal_resp_data :: proc(t: ^testing.T) {
     buf: [1024]byte
 
     regs := []Resp_Reg{
@@ -175,7 +175,7 @@ test_reg_id_to_string :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_encode_cmd_set_reg_append :: proc(t: ^testing.T) {
+test_marshal_cmd_set_reg_append :: proc(t: ^testing.T) {
     buf: [64]byte
     dest := reg_id_from_named_index(3)
     source := reg_id_from_clipboard_index(0)
