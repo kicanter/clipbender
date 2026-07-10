@@ -184,3 +184,108 @@ test_json_escape_string_mixed :: proc(t: ^testing.T) {
     result := json_escape_string("\"hello\"\n\t\\end")
     testing.expect_value(t, result, `\"hello\"\n\t\\end`)
 }
+
+// parse_cmd_set_dest_reg tests
+
+@(test)
+test_parse_cmd_set_dest_reg_named :: proc(t: ^testing.T) {
+    dest, mode, err := parse_cmd_set_dest_reg("a")
+    testing.expect(t, err == nil)
+    testing.expect_value(t, dest, lib.reg_id_from_named_index(0))
+    testing.expect_value(t, mode, lib.Set_Mode.OVERWRITE)
+}
+
+@(test)
+test_parse_cmd_set_dest_reg_append :: proc(t: ^testing.T) {
+    dest, mode, err := parse_cmd_set_dest_reg("A")
+    testing.expect(t, err == nil)
+    testing.expect_value(t, dest, lib.reg_id_from_named_index(0))
+    testing.expect_value(t, mode, lib.Set_Mode.APPEND)
+}
+
+@(test)
+test_parse_cmd_set_dest_reg_clipboard :: proc(t: ^testing.T) {
+    dest, mode, err := parse_cmd_set_dest_reg("clipboard")
+    testing.expect(t, err == nil)
+    testing.expect_value(t, dest, lib.SELECTION_CLIPBOARD)
+    testing.expect_value(t, mode, lib.Set_Mode.OVERWRITE)
+}
+
+@(test)
+test_parse_cmd_set_dest_reg_primary :: proc(t: ^testing.T) {
+    dest, mode, err := parse_cmd_set_dest_reg("primary")
+    testing.expect(t, err == nil)
+    testing.expect_value(t, dest, lib.SELECTION_PRIMARY)
+    testing.expect_value(t, mode, lib.Set_Mode.OVERWRITE)
+}
+
+@(test)
+test_parse_cmd_set_dest_reg_invalid :: proc(t: ^testing.T) {
+    _, _, err := parse_cmd_set_dest_reg("9")
+    testing.expect(t, err != nil)
+}
+
+// parse_cmd_set_source_reg tests
+
+@(test)
+test_parse_cmd_set_source_reg_clipboard_num :: proc(t: ^testing.T) {
+    source, err := parse_cmd_set_source_reg("3")
+    testing.expect(t, err == nil)
+    testing.expect_value(t, source, lib.reg_id_from_clipboard_index(3))
+}
+
+@(test)
+test_parse_cmd_set_source_reg_primary_num :: proc(t: ^testing.T) {
+    source, err := parse_cmd_set_source_reg("@5")
+    testing.expect(t, err == nil)
+    testing.expect_value(t, source, lib.reg_id_from_primary_index(5))
+}
+
+@(test)
+test_parse_cmd_set_source_reg_named :: proc(t: ^testing.T) {
+    source, err := parse_cmd_set_source_reg("z")
+    testing.expect(t, err == nil)
+    testing.expect_value(t, source, lib.reg_id_from_named_index(25))
+}
+
+@(test)
+test_parse_cmd_set_source_reg_clipboard_keyword :: proc(t: ^testing.T) {
+    source, err := parse_cmd_set_source_reg("clipboard")
+    testing.expect(t, err == nil)
+    testing.expect_value(t, source, lib.SELECTION_CLIPBOARD)
+}
+
+@(test)
+test_parse_cmd_set_source_reg_primary_keyword :: proc(t: ^testing.T) {
+    source, err := parse_cmd_set_source_reg("primary")
+    testing.expect(t, err == nil)
+    testing.expect_value(t, source, lib.SELECTION_PRIMARY)
+}
+
+@(test)
+test_parse_cmd_set_source_reg_uppercase_error :: proc(t: ^testing.T) {
+    _, err := parse_cmd_set_source_reg("A")
+    testing.expect(t, err != nil)
+}
+
+// parse_cmd_get additional tests
+
+@(test)
+test_parse_cmd_get_named_range :: proc(t: ^testing.T) {
+    filter, _, err := parse_cmd_get({"+a:f"})
+    testing.expect(t, err == nil)
+    // a=10, b=11, c=12, d=13, e=14, f=15
+    for bit in 10 ..= 15 {
+        testing.expect(t, bit in filter)
+    }
+}
+
+@(test)
+test_parse_cmd_get_primary_specific :: proc(t: ^testing.T) {
+    filter, _, err := parse_cmd_get({"+@038"})
+    testing.expect(t, err == nil)
+    // PRIMARY_START=36, so @0=36, @3=39, @8=44
+    testing.expect(t, 36 in filter)
+    testing.expect(t, 39 in filter)
+    testing.expect(t, 44 in filter)
+}

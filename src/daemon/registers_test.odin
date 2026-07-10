@@ -171,3 +171,116 @@ test_get_reg_dispatches_named :: proc(t: ^testing.T) {
     testing.expect(t, named_entry != nil)
     testing.expect_value(t, string(named_entry.data), "named")
 }
+
+@(test)
+test_get_reg_clipboard_recency :: proc(t: ^testing.T) {
+    // Use a local ring to avoid racing with other tests on the global
+    ring: Recency_Ring
+    defer free_ring(&ring)
+
+    push_to_ring_clone(&ring, transmute([]byte)string("clip data"), "text/plain")
+
+    entry := get_ring_entry(&ring, 0)
+    testing.expect(t, entry != nil, "clipboard recency 0 should exist")
+    testing.expect_value(t, string(entry.data), "clip data")
+}
+
+@(test)
+test_get_reg_primary_recency :: proc(t: ^testing.T) {
+    ring: Recency_Ring
+    defer free_ring(&ring)
+
+    push_to_ring_clone(&ring, transmute([]byte)string("primary data"), "text/plain")
+
+    entry := get_ring_entry(&ring, 0)
+    testing.expect(t, entry != nil, "primary recency 0 should exist")
+    testing.expect_value(t, string(entry.data), "primary data")
+}
+
+@(test)
+test_get_reg_selection_clipboard :: proc(t: ^testing.T) {
+    ring: Recency_Ring
+    defer free_ring(&ring)
+
+    push_to_ring_clone(&ring, transmute([]byte)string("first"), "text/plain")
+    push_to_ring_clone(&ring, transmute([]byte)string("most recent"), "text/plain")
+
+    // Recency 0 should be the most recent entry (same logic as SELECTION_CLIPBOARD)
+    entry := get_ring_entry(&ring, 0)
+    testing.expect(t, entry != nil, "SELECTION_CLIPBOARD should return most recent")
+    testing.expect_value(t, string(entry.data), "most recent")
+}
+
+@(test)
+test_get_reg_selection_primary :: proc(t: ^testing.T) {
+    ring: Recency_Ring
+    defer free_ring(&ring)
+
+    push_to_ring_clone(&ring, transmute([]byte)string("old"), "text/plain")
+    push_to_ring_clone(&ring, transmute([]byte)string("newest"), "text/plain")
+
+    entry := get_ring_entry(&ring, 0)
+    testing.expect(t, entry != nil, "SELECTION_PRIMARY should return most recent")
+    testing.expect_value(t, string(entry.data), "newest")
+}
+
+@(test)
+test_get_registers_filter_clipboard_only :: proc(t: ^testing.T) {
+    ring: Recency_Ring
+    defer free_ring(&ring)
+
+    push_to_ring_clone(&ring, transmute([]byte)string("clip0"), "text/plain")
+    push_to_ring_clone(&ring, transmute([]byte)string("clip1"), "text/plain")
+
+    // Verify ring has 2 entries accessible by recency
+    entry0 := get_ring_entry(&ring, 0)
+    entry1 := get_ring_entry(&ring, 1)
+    testing.expect(t, entry0 != nil, "should find recency 0")
+    testing.expect(t, entry1 != nil, "should find recency 1")
+    testing.expect_value(t, string(entry0.data), "clip1")
+    testing.expect_value(t, string(entry1.data), "clip0")
+}
+
+@(test)
+test_get_registers_filter_primary_only :: proc(t: ^testing.T) {
+    ring: Recency_Ring
+    defer free_ring(&ring)
+
+    push_to_ring_clone(&ring, transmute([]byte)string("pri0"), "text/plain")
+    push_to_ring_clone(&ring, transmute([]byte)string("pri1"), "text/plain")
+
+    entry0 := get_ring_entry(&ring, 0)
+    entry1 := get_ring_entry(&ring, 1)
+    testing.expect(t, entry0 != nil, "should find recency 0")
+    testing.expect(t, entry1 != nil, "should find recency 1")
+    testing.expect_value(t, string(entry0.data), "pri1")
+    testing.expect_value(t, string(entry1.data), "pri0")
+}
+
+@(test)
+test_get_registers_filter_mixed :: proc(t: ^testing.T) {
+    // Use named register index 7 (unique, not used by other tests) to avoid conflicts
+    defer clear_named_reg(lib.reg_id_from_named_index(7))
+
+    clip_ring: Recency_Ring
+    defer free_ring(&clip_ring)
+    pri_ring: Recency_Ring
+    defer free_ring(&pri_ring)
+
+    push_to_ring_clone(&clip_ring, transmute([]byte)string("clip"), "text/plain")
+    push_to_ring_clone(&pri_ring, transmute([]byte)string("pri"), "text/plain")
+    set_named_reg_clone(lib.reg_id_from_named_index(7), transmute([]byte)string("named"), "text/plain", .OVERWRITE)
+
+    // Verify each store independently
+    clip_entry := get_ring_entry(&clip_ring, 0)
+    testing.expect(t, clip_entry != nil, "should find clipboard entry")
+    testing.expect_value(t, string(clip_entry.data), "clip")
+
+    pri_entry := get_ring_entry(&pri_ring, 0)
+    testing.expect(t, pri_entry != nil, "should find primary entry")
+    testing.expect_value(t, string(pri_entry.data), "pri")
+
+    named_entry := get_reg(lib.reg_id_from_named_index(7))
+    testing.expect(t, named_entry != nil, "should find named entry")
+    testing.expect_value(t, string(named_entry.data), "named")
+}

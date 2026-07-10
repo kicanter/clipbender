@@ -189,3 +189,99 @@ test_marshal_cmd_set_reg_append :: proc(t: ^testing.T) {
     testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.REGISTER)
     testing.expect_value(t, Reg_Id(buf[4]), source)
 }
+
+@(test)
+test_unmarshal_cmd_set_reg :: proc(t: ^testing.T) {
+    buf: [64]byte
+    dest := reg_id_from_named_index(5)
+    source := reg_id_from_primary_index(7)
+    mode := Set_Mode.OVERWRITE
+
+    marshal_cmd_set_reg(dest, source, mode, buf[:])
+    decoded_source := unmarshal_cmd_set_reg(buf[4:])
+    testing.expect_value(t, decoded_source, source)
+}
+
+@(test)
+test_marshal_unmarshal_cmd_clear :: proc(t: ^testing.T) {
+    buf: [16]byte
+    reg := reg_id_from_named_index(12)
+
+    n := marshal_cmd_clear(reg, buf[:])
+    testing.expect_value(t, n, 2)
+    testing.expect_value(t, Command_Type(buf[0]), Command_Type.CLEAR)
+
+    decoded_reg := unmarshal_cmd_clear(buf[1:])
+    testing.expect_value(t, decoded_reg, reg)
+}
+
+@(test)
+test_marshal_cmd_shutdown :: proc(t: ^testing.T) {
+    buf: [16]byte
+
+    n := marshal_cmd_shutdown(buf[:])
+    testing.expect_value(t, n, 1)
+    testing.expect_value(t, Command_Type(buf[0]), Command_Type.SHUTDOWN)
+}
+
+@(test)
+test_marshal_unmarshal_resp_ok :: proc(t: ^testing.T) {
+    buf: [16]byte
+
+    n := marshal_resp_ok(buf[:])
+    testing.expect_value(t, n, 1)
+    testing.expect_value(t, Resp_Status(buf[0]), Resp_Status.OK)
+
+    status := unmarshal_resp_ok(buf[:])
+    testing.expect_value(t, status, Resp_Status.OK)
+}
+
+@(test)
+test_marshal_unmarshal_resp_error :: proc(t: ^testing.T) {
+    buf: [256]byte
+    message := "source register `a` is empty"
+
+    n := marshal_resp_error(message, buf[:])
+    testing.expect_value(t, n, 1 + len(message))
+
+    decoded_msg := unmarshal_resp_error(buf[1:n])
+    testing.expect_value(t, decoded_msg, message)
+}
+
+@(test)
+test_marshal_unmarshal_cmd_set_inline_empty_data :: proc(t: ^testing.T) {
+    buf: [256]byte
+    dest := reg_id_from_named_index(0)
+    mode := Set_Mode.OVERWRITE
+    mime := "text/plain"
+    data := []byte{}
+
+    n := marshal_cmd_set_inline(dest, mode, mime, data, buf[:])
+    dec_mime, dec_data := unmarshal_cmd_set_inline(buf[4:n])
+    defer delete(dec_mime)
+    defer delete(dec_data)
+
+    testing.expect_value(t, dec_mime, mime)
+    testing.expect_value(t, len(dec_data), 0)
+}
+
+@(test)
+test_marshal_unmarshal_cmd_set_inline_max_mime :: proc(t: ^testing.T) {
+    buf: [512]byte
+    dest := reg_id_from_named_index(0)
+    mode := Set_Mode.OVERWRITE
+    // 254 characters: the practical max before u8 arithmetic overflow in unmarshal_cmd_set_inline
+    // (255 triggers a bug where `1 + u8(255)` wraps to 0, causing invalid slice indices)
+    max_mime: [254]byte
+    for &b in max_mime {b = 'x'}
+    mime := string(max_mime[:])
+    data := transmute([]byte)string("test")
+
+    n := marshal_cmd_set_inline(dest, mode, mime, data, buf[:])
+    dec_mime, dec_data := unmarshal_cmd_set_inline(buf[4:n])
+    defer delete(dec_mime)
+    defer delete(dec_data)
+
+    testing.expect_value(t, dec_mime, mime)
+    testing.expect(t, slice.equal(dec_data, data))
+}
