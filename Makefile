@@ -65,5 +65,6 @@ distclean: clean
 install: all
 	install -Dm755 $(BUILD_DIR)/clipbenderd $(PREFIX)/bin/clipbenderd
 	install -Dm755 $(BUILD_DIR)/clipbender $(PREFIX)/bin/clipbender
+	install -Dm644 packaging/systemd/clipbenderd.service /usr/lib/systemd/user/clipbenderd.service
 
 .PHONY: all daemon client test debug release protocols clean distclean install

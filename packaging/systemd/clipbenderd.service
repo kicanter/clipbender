@@ -1,0 +1,16 @@
+[Unit]
+Description=Clipbender clipboard monitor daemon
+Documentation=https://github.com/kicanter/clipbender
+After=graphical-session.target
+PartOf=graphical-session.target
+StartLimitBurst=5
+StartLimitIntervalSec=30
+
+[Service]
+Type=simple
+ExecStart=clipbenderd
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
