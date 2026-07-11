@@ -19,19 +19,38 @@ clipboard_registers: Recency_Ring
 named_registers: [26]lib.Reg_Entry
 primary_registers: Recency_Ring
 
+load_registers :: proc(count: u8, regs: ^[46]lib.Reg) {
+    // Regs are serialized in recency order (most recent first).
+    // Push in reverse so oldest goes in first and most recent ends up at head.
+    for i := int(count) - 1; i >= 0; i -= 1 {
+        reg := regs[i]
+        if lib.reg_id_is_clipboard_num(reg.id) {
+            push_recency_reg(.CLIPBOARD, reg.entry.data, reg.entry.mime_type)
+        } else if lib.reg_id_is_named(reg.id) {
+            overwrite_named_reg(lib.reg_id_to_named_index(reg.id), reg.entry.data, reg.entry.mime_type)
+        } else if lib.reg_id_is_primary_num(reg.id) {
+            push_recency_reg(.PRIMARY, reg.entry.data, reg.entry.mime_type)
+        } else {
+            log.warn("Somehow encountered invalid register ID during state loading?")
+        }
+    }
+}
+
 // Push to head, takes ownership of data and mime (caller must provide heap-allocated memory)
-push_to_ring :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
+push_to_ring :: proc(ring: ^Recency_Ring, data: []u8, mime: string, timestamp: Maybe(i64) = nil) {
     ring.head = (ring.head + 1) % lib.RECENCY_SIZE
     lib.free_reg_entry(&ring.entries[ring.head])
+
+    ts := timestamp.? or_else time.time_to_unix(time.now())
     ring.entries[ring.head] = lib.Reg_Entry {
         data      = data,
         mime_type = mime,
-        timestamp = time.time_to_unix(time.now()),
+        timestamp = ts,
     }
     ring.count = min(ring.count + 1, lib.RECENCY_SIZE)
 }
 
-push_recency_reg :: proc(type: lib.Selection_Type, data: []u8, mime: string) {
+push_recency_reg :: proc(type: lib.Selection_Type, data: []u8, mime: string, timestamp: Maybe(i64) = nil) {
     ring: ^Recency_Ring
     switch type {
     case .CLIPBOARD:
@@ -39,7 +58,8 @@ push_recency_reg :: proc(type: lib.Selection_Type, data: []u8, mime: string) {
     case .PRIMARY:
         ring = &primary_registers
     }
-    push_to_ring(ring, data, mime)
+
+    push_to_ring(ring, data, mime, timestamp)
 }
 
 // Get the `recency` most recent `Register_Entry` from a specific ring

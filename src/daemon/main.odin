@@ -61,25 +61,18 @@ main :: proc() {
     defer if backend.state != nil {backend.cleanup(backend.state)}
     defer cleanup_registers()
 
-    // TODO: Remove test data once clipboard monitoring is working
-    set_named_reg_clone(
-        lib.Reg_Id(lib.NAMED_START + 3),
-        transmute([]u8)string("persistent snippet stored in register d"),
-        "text/plain",
-        .OVERWRITE,
-    )
-    set_named_reg_clone(
-        lib.Reg_Id(lib.NAMED_START + 5),
-        transmute([]u8)string("git@github.com:user/repo.git"),
-        "text/plain",
-        .OVERWRITE,
-    )
-    set_named_reg_clone(
-        lib.Reg_Id(lib.NAMED_END - 2),
-        transmute([]u8)string("<p>some html content</p>"),
-        "text/html",
-        .OVERWRITE,
-    )
+    // Load the persisted state
+    state_path := clipbender_state_path()
+    defer delete(state_path)
+    {     // new block so we can release the pointers in `regs` after we load them
+        regs: [46]lib.Reg
+        count, err := load_registers_state(state_path, &regs)
+        if err != os.General_Error.None {
+            log.warnf("Failed to load registers state from path %s: errno %v", state_path, err)
+        } else {
+            load_registers(count, &regs)
+        }
+    }
 
     // Check for an existing stale socket first
     check_stale_socket(socket_path)
