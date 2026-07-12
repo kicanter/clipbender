@@ -46,3 +46,21 @@
 [DEBUG] --- [2026-07-12 18:45:22] [wayland.odin:227:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
 [DEBUG] --- [2026-07-12 18:45:23] [server.odin:299:dispatch_cqe()] Primary debounce timer fired, reading pending offer
 [DEBUG] --- [2026-07-12 18:45:23] [wayland.odin:373:wayland_commit_selection()] Got duplicate PRIMARY copy, suppressing register push
+
+[3136400.427] {Default Queue} ext_data_control_device_v1#3.primary_selection(ext_data_control_offer_v1#4278190081)
+[DEBUG] --- [2026-07-12 19:10:43] [wayland.odin:227:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
+[3149898.784] {Default Queue} ext_data_control_device_v1#3.primary_selection(ext_data_control_offer_v1#4278190082)
+[DEBUG] --- [2026-07-12 19:10:56] [wayland.odin:227:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
+[3151810.349] {Default Queue} ext_data_control_device_v1#3.primary_selection(ext_data_control_offer_v1#4278190081)
+[DEBUG] --- [2026-07-12 19:10:58] [wayland.odin:227:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
+[3157679.363] {Default Queue}  -> ext_data_control_manager_v1#5.create_data_source(new id ext_data_control_source_v1#6)
+[3157679.398] {Default Queue}  -> ext_data_control_source_v1#6.offer("text/plain")
+[3157679.417] {Default Queue}  -> ext_data_control_source_v1#6.offer("text/plain;charset=utf-8")
+[3157679.427] {Default Queue}  -> ext_data_control_source_v1#6.offer("TEXT")
+[3157679.433] {Default Queue}  -> ext_data_control_source_v1#6.offer("STRING")
+[3157679.440] {Default Queue}  -> ext_data_control_source_v1#6.offer("UTF8_STRING")
+[3157679.446] {Default Queue}  -> ext_data_control_device_v1#3.set_primary_selection(ext_data_control_source_v1#6)
+[DEBUG] --- [2026-07-12 19:11:04] [wayland.odin:492:wayland_set_selection()] Created PRIMARY source=0x7BBF815E25A0
+[DEBUG] --- [2026-07-12 19:11:04] [wayland.odin:496:wayland_set_selection()] Set PRIMARY selection with mime `text/plain;charset=utf-8` (42 bytes)
+[3157679.860] {Default Queue} ext_data_control_device_v1#3.primary_selection(ext_data_control_offer_v1#4278190082)
+[DEBUG] --- [2026-07-12 19:11:04] [wayland.odin:227:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
