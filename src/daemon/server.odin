@@ -264,7 +264,7 @@ dispatch_cqe :: proc(
         log.debugf("Received signal %v, shutting down", signal)
         running = false
     case .WAYLAND:
-        log.debug("Clipboard monitor event received")
+        log.debug("Wayland event received")
         // `dispatch` returns false if error occurs
         if backend.dispatch(backend.state) {
             // Successful dispatch, re-arm the poll
