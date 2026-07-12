@@ -3,6 +3,8 @@ package main
 import "core:fmt"
 import "core:log"
 import "core:os"
+import "core:slice"
+import "core:strings"
 
 import lib "src:libclipbender"
 
@@ -72,6 +74,17 @@ main :: proc() {
         } else {
             load_registers(count, &regs)
         }
+    }
+
+    // TEST: set primary to a literal string at startup, bypassing all register/monitoring/debounce machinery.
+    // If `wl-paste --primary` returns this, the set path works and something else breaks it. If not, set is broken.
+    if backend.state != nil {
+        wayland_set_selection(
+            cast(^Wayland_State)backend.state,
+            slice.clone(transmute([]u8)string("PRIMARY_SET_TEST")),
+            strings.clone("text/plain"),
+            .PRIMARY,
+        )
     }
 
     // Check for an existing stale socket first
