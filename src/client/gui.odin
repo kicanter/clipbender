@@ -573,8 +573,10 @@ keyboard_listener := wl.keyboard_listener {
         // evdev keycodes need +8 offset for xkbcommon
         keycode := xkb.Xkb_Keycode(key_ + 8)
 
-        // keysym is what xkb knows what the physical key maps to (e.g. caps lock remapped to ESC), so checking the
-        // keysym lets us account for remapped keys in order to treat those as different than their physical key.
+        // Use the keysym (not the UTF-32 codepoint) as the logical key for dispatch. The keysym accounts for the user's
+        // layout and any remaps, and it is NOT subject to the control-character transformation that
+        // `xkb_state_key_get_utf32` applies (e.g. <C-a> yields codepoint 1, but keysym stays `XKB_KEY_a`). For the
+        // ASCII printable range, keysym values equal their ASCII codepoint, so `rune(keysym)` is the char.
         keysym := xkb.xkb_state_key_get_one_sym(gui_state.kb.state, keycode)
         // ESC to exit GUI
         if keysym == XKB_KEYSYM_ESCAPE {
@@ -582,17 +584,16 @@ keyboard_listener := wl.keyboard_listener {
             return
         }
 
-        codepoint := xkb.xkb_state_key_get_utf32(gui_state.kb.state, keycode)
-        if codepoint == 0 {return}
+        codepoint := rune(keysym)
 
         // Check modifier state
         ctrl_active := xkb.xkb_state_mod_name_is_active(gui_state.kb.state, "Control", .XKB_STATE_MODS_EFFECTIVE) == 1
         shift_active := xkb.xkb_state_mod_name_is_active(gui_state.kb.state, "Shift", .XKB_STATE_MODS_EFFECTIVE) == 1
 
         log.debugf(
-            "Key pressed: codepoint=%d ('%c'), ctrl=%v, shift=%v",
+            "Key pressed: keysym='%d' (codepoint='%c'), ctrl=%v, shift=%v",
+            keysym,
             codepoint,
-            cast(rune)codepoint,
             ctrl_active,
             shift_active,
         )
@@ -678,7 +679,10 @@ keyboard_listener := wl.keyboard_listener {
                 case nil:
                     source_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'a'))
                 case '@':
-                    log.debugf("`@%c` is not a valid key sequence, `@` only applies to primary recency digits", codepoint)
+                    log.debugf(
+                        "`@%c` is not a valid key sequence, `@` only applies to primary recency digits",
+                        codepoint,
+                    )
                     return
                 case '*':
                     // TODO: inline edit from empty and overwrite register
