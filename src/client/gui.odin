@@ -604,7 +604,7 @@ keyboard_listener := wl.keyboard_listener {
                 gui_state.kb.prefix = nil
                 return
             }
-            gui_state.kb.prefix = cast(rune)codepoint
+            gui_state.kb.prefix = codepoint
             return
         }
 
