@@ -551,7 +551,7 @@ keyboard_listener := wl.keyboard_listener {
         context.logger = _logger
         gui_state := cast(^Gui_State)data
         log.debug("Received wl_keyboard::leave event")
-        gui_state.running = true
+        gui_state.running = false
     },
     key = proc "c" (
         data: rawptr,
@@ -615,47 +615,37 @@ keyboard_listener := wl.keyboard_listener {
         set_mode: lib.Set_Mode
         defer gui_state.kb.prefix = nil
 
+        // The GUI always writes to the clipboard; `@` is only a source modifier (read from primary recency).
         if ctrl_active {
-            // <C-[>        | cancel / exit edit
-            // <C-{alpha}>  | clipboard -> overwrite named register, dismiss
-            // @<C-{alpha}> | primary selection -> overwrite named register, dismiss
+            // <C-[>       | cancel / exit edit
+            // <C-{alpha}> | clipboard -> overwrite named register, dismiss
             switch codepoint {
             case '[':
-                // Ctrl+[ and dismiss (same as Escape)
+                // Ctrl+[ dismisses (same as Escape)
                 gui_state.running = false
                 return
             case 'a' ..= 'z':
-                // Send message of form `SET <codepoint> <clipboard|primary> OVERWRITE`
-                switch gui_state.kb.prefix {
-                case nil:
-                    source_reg = lib.SELECTION_CLIPBOARD
-                case '@':
-                    source_reg = lib.SELECTION_PRIMARY
-                case '*':
-                    log.debugf("`*<C-%c>` is not a valid key sequence, did you mean `*%c`?", codepoint, codepoint)
+                if gui_state.kb.prefix != nil {
+                    log.debugf("`%v<C-%c>` is not a valid key sequence", gui_state.kb.prefix, codepoint)
                     return
                 }
+                // Send message of form `SET {alpha} clipboard OVERWRITE`
+                source_reg = lib.SELECTION_CLIPBOARD
                 dest_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'a'))
             case:
                 return
             }
             set_mode = lib.Set_Mode.OVERWRITE
         } else if shift_active {
-            // <S-{alpha}>  | clipboard -> append named register, dismiss
-            // @<S-{alpha}> | primary selection -> append named register, dismiss
-            // *<S-{alpha}> | inline edit (pre-populated) -> save register
+            // <S-{alpha}> | clipboard -> append named register, dismiss
             switch codepoint {
             case 'A' ..= 'Z':
-                // Send message of form `SET <codepoint> <clipboard|primary> APPEND`
-                switch gui_state.kb.prefix {
-                case nil:
-                    source_reg = lib.SELECTION_CLIPBOARD
-                case '@':
-                    source_reg = lib.SELECTION_PRIMARY
-                case '*':
-                    // TODO: inline edit from pre-populated and overwrite register
+                if gui_state.kb.prefix != nil {
+                    log.debugf("`%v<S-%c>` is not a valid key sequence", gui_state.kb.prefix, codepoint)
                     return
                 }
+                // Send message of form `SET {ALPHA} clipboard APPEND`
+                source_reg = lib.SELECTION_CLIPBOARD
                 dest_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'A'))
             case:
                 return
@@ -663,19 +653,17 @@ keyboard_listener := wl.keyboard_listener {
             set_mode = lib.Set_Mode.APPEND
         } else {
             // {digit}  | clipboard recency -> clipboard, dismiss
-            // @{digit} | primary recency -> primary selection, dismiss
+            // @{digit} | primary recency -> clipboard, dismiss
             // {alpha}  | named register -> clipboard, dismiss
-            // @{alpha} | named register -> primary selection, dismiss
-            // *{alpha} | inline edit (empty) -> overwrite register
+            // The GUI always copies to the clipboard, never the primary selection.
+            dest_reg = lib.SELECTION_CLIPBOARD
             switch codepoint {
             case '0' ..= '9':
-                // Send message of form `SET <clipboard|primary> <codepoint>`
+                // Send message of form `SET clipboard {digit}`
                 switch gui_state.kb.prefix {
                 case nil:
-                    dest_reg = lib.SELECTION_CLIPBOARD
                     source_reg = lib.reg_id_from_clipboard_index(cast(u8)(codepoint - '0'))
                 case '@':
-                    dest_reg = lib.SELECTION_PRIMARY
                     source_reg = lib.reg_id_from_primary_index(cast(u8)(codepoint - '0'))
                 case '*':
                     log.debugf(
@@ -685,17 +673,17 @@ keyboard_listener := wl.keyboard_listener {
                     return
                 }
             case 'a' ..= 'z':
-                // Send message of form `SET <clipboard|primary> <codepoint>`
+                // Send message of form `SET clipboard {alpha}`
                 switch gui_state.kb.prefix {
                 case nil:
-                    dest_reg = lib.SELECTION_CLIPBOARD
+                    source_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'a'))
                 case '@':
-                    dest_reg = lib.SELECTION_PRIMARY
+                    log.debugf("`@%c` is not a valid key sequence, `@` only applies to primary recency digits", codepoint)
+                    return
                 case '*':
                     // TODO: inline edit from empty and overwrite register
                     return
                 }
-                source_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'a'))
             case:
                 return
             }
@@ -733,7 +721,7 @@ keyboard_listener := wl.keyboard_listener {
         case .OK:
             // TODO: highlight green or something, indicate success
             // Close GUI
-            gui_state.running = true
+            gui_state.running = false
         case .ERROR:
             err_msg := string(resp_buf[1:bytes_read])
             log.errorf(

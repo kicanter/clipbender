@@ -3,8 +3,6 @@ package main
 import "core:fmt"
 import "core:log"
 import "core:os"
-import "core:slice"
-import "core:strings"
 
 import lib "src:libclipbender"
 

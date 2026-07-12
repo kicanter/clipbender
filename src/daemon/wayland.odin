@@ -252,13 +252,6 @@ source_listener := ext_dc.data_control_source_v1_listener {
         context = runtime.default_context()
         context.logger = _logger
         wl_state := cast(^Wayland_State)data
-        log.debugf(
-            "send event: source=%p clipboard_source=%p primary_source=%p mime=%s",
-            data_control_source_v1,
-            wl_state.clipboard_state.source,
-            wl_state.primary_state.source,
-            mime_type_,
-        )
 
         switch data_control_source_v1 {
         case wl_state.clipboard_state.source:
@@ -273,12 +266,6 @@ source_listener := ext_dc.data_control_source_v1_listener {
         context = runtime.default_context()
         context.logger = _logger
         wl_state := cast(^Wayland_State)data
-        log.debugf(
-            "cancelled event: source=%p clipboard_source=%p primary_source=%p",
-            data_control_source_v1,
-            wl_state.clipboard_state.source,
-            wl_state.primary_state.source,
-        )
 
         switch data_control_source_v1 {
         case wl_state.clipboard_state.source:
@@ -468,15 +455,8 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: stri
         return
     }
 
-    // TEST: offer common text aliases so any paste client finds a matching mime
-    TEXT_ALIASES :: [?]string{"text/plain", "text/plain;charset=utf-8", "TEXT", "STRING", "UTF8_STRING"}
-    if strings.has_prefix(mime, "text/") {
-        for alias in TEXT_ALIASES {
-            ext_dc.data_control_source_v1_offer(selection.source, strings.clone_to_cstring(alias, context.temp_allocator))
-        }
-    } else {
-        ext_dc.data_control_source_v1_offer(selection.source, strings.clone_to_cstring(mime, context.temp_allocator))
-    }
+    // Offer mime type
+    ext_dc.data_control_source_v1_offer(selection.source, strings.clone_to_cstring(mime, context.temp_allocator))
 
     // Attach listener for send/cancelled events
     ext_dc.data_control_source_v1_add_listener(selection.source, &source_listener, rawptr(wl_state))
@@ -489,15 +469,20 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: stri
         ext_dc.data_control_device_v1_set_primary_selection(wl_state.data_control_device, selection.source)
     }
 
-    log.debugf("Created %v source=%p", type, selection.source)
-
     // Flush display
     wl.display_flush(wl_state.display)
     log.debugf("Set %v selection with mime `%s` (%d bytes)", type, mime, len(data))
 }
 
 wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, fd: linux.Fd) {
-    // TEST: serve our data for any requested mime (we offered text aliases that all map to the same data)
+    if mime_type != selection.source_mime {
+        log.errorf(
+            "Requested mime `%s` does not match offered mime `%s`, this is unexpected",
+            mime_type,
+            selection.source_mime,
+        )
+        return
+    }
     linux.write(fd, selection.source_data)
     linux.close(fd)
 }
