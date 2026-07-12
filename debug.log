@@ -1,90 +1,48 @@
-[DEBUG] --- [2026-07-05 19:35:33] [main.odin:19:main()] Writing socket file to path /run/user/1000/clipbender.sock
-[DEBUG] --- [2026-07-05 19:35:33] [main.odin:28:main()] Wayland session type found, initializing clipboard monitoring via `ext-data-control-v1` protocol
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:148:_proclit$anon-1()] Successfully bound Wayland interface `wl_seat`
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:148:_proclit$anon-1()] Successfully bound Wayland interface `ext_data_control_manager_v1`
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:178:_proclit$anon-3()] Received ext_data_control_device_v1::data_offer event
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain;charset=utf-8)
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain)
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/html)
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:190:_proclit$anon-4()] Received ext_data_control_device_v1::selection event
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:178:_proclit$anon-3()] Received ext_data_control_device_v1::data_offer event
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain;charset=utf-8)
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain)
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/html)
-[DEBUG] --- [2026-07-05 19:35:33] [wayland.odin:208:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
-[DEBUG] --- [2026-07-05 19:35:33] [main.odin:56:main()] Clipboard backend initialized (fd=3)
-[DEBUG] --- [2026-07-05 19:35:33] [server.odin:276:uds_serve()] Daemon ready, entering event loop
-[DEBUG] --- [2026-07-05 19:35:35] [server.odin:207:dispatch_cqe()] Clipboard monitor event received
-[DEBUG] --- [2026-07-05 19:35:35] [wayland.odin:178:_proclit$anon-3()] Received ext_data_control_device_v1::data_offer event
-[DEBUG] --- [2026-07-05 19:35:35] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain;charset=utf-8)
-[DEBUG] --- [2026-07-05 19:35:35] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain)
-[DEBUG] --- [2026-07-05 19:35:35] [wayland.odin:219:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/html)
-[DEBUG] --- [2026-07-05 19:35:35] [wayland.odin:208:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
-=================================================================
-==191184==ERROR: AddressSanitizer: stack-use-after-return on address 0x7bf7ca5faa90 at pc 0x000000671f0b bp 0x7ffcd9e16fb0 sp 0x7ffcd9e16fa8
-READ of size 8 at 0x7bf7ca5faa90 thread T0
-    #0 0x000000671f0a in main::wayland_handle_selection /home/kieran/Dev/clipbender/src/daemon/wayland.odin:284:5
-    #1 0x00000065bb24 in _proclit$anon-6 /home/kieran/Dev/clipbender/src/daemon/wayland.odin:209:9
-    #2 0x7ff7cc6de1d5  (/usr/lib/libffi.so.8+0x81d5) (BuildId: 18b2b58562701d61d68acef78f8ab611e9a41576)
-    #3 0x7ff7cc6da9ac  (/usr/lib/libffi.so.8+0x49ac) (BuildId: 18b2b58562701d61d68acef78f8ab611e9a41576)
-    #4 0x7ff7cc6dd7cd in ffi_call (/usr/lib/libffi.so.8+0x77cd) (BuildId: 18b2b58562701d61d68acef78f8ab611e9a41576)
-    #5 0x7ff7cc85b77c  (/usr/lib/libwayland-client.so.0+0x477c) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
-    #6 0x7ff7cc85c608  (/usr/lib/libwayland-client.so.0+0x5608) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
-    #7 0x7ff7cc85ca12 in wl_display_dispatch_queue_pending (/usr/lib/libwayland-client.so.0+0x5a12) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
-    #8 0x7ff7cc860583 in wl_display_dispatch_queue_timeout (/usr/lib/libwayland-client.so.0+0x9583) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
-    #9 0x7ff7cc86065f in wl_display_dispatch_queue (/usr/lib/libwayland-client.so.0+0x965f) (BuildId: 9290a5fdea7541994bd32b77779ff4b351c85cd0)
-    #10 0x00000066e3ec in main::wayland_dispatch /home/kieran/Dev/clipbender/src/daemon/wayland.odin:122:5
-    #11 0x000000674f3f in _proclit$anon-11 /home/kieran/Dev/clipbender/src/daemon/main.odin:39:53
-    #12 0x00000066fdef in main::dispatch_cqe /home/kieran/Dev/clipbender/src/daemon/server.odin:209:9
-    #13 0x00000067171e in main::uds_serve /home/kieran/Dev/clipbender/src/daemon/server.odin:288:21
-    #14 0x0000006675fc in main::main /home/kieran/Dev/clipbender/src/daemon/main.odin:98:5
-    #15 0x000000661b39 in main /home/kieran/.local/bin/odin-2026-04-02/odin-linux-amd64-nightly+2026-04-02/base/runtime/entry_unix.odin:57:4
-    #16 0x7ff7cc427740  (/usr/lib/libc.so.6+0x27740) (BuildId: d8ceb52a8c6e1fefece4ca75f7396d1d5bffc565)
-    #17 0x7ff7cc427878 in __libc_start_main (/usr/lib/libc.so.6+0x27878) (BuildId: d8ceb52a8c6e1fefece4ca75f7396d1d5bffc565)
-    #18 0x00000042c1d4 in _start (/home/kieran/Dev/clipbender/build/clipbenderd+0x42c1d4) (BuildId: 663192623920a10fe07b1c0e0e0ea8a03b8a79db)
+[1496828.141] {Default Queue} wl_registry#2.global(52, "ext_data_control_manager_v1", 1)
+[1496828.141] {Default Queue}  -> wl_registry#2.bind(52, "ext_data_control_manager_v1", 1, new id [unknown]#12)
+[1496828.337] {Default Queue}  -> ext_data_control_manager_v1#12.get_data_device(new id ext_data_control_device_v1#3, wl_seat#4)
+[1496828.417] {Default Queue} ext_data_control_device_v1#3.data_offer(new id ext_data_control_offer_v1#4278190080)
+[1496828.419] {Default Queue} ext_data_control_offer_v1#4278190080.offer("text/plain;charset=utf-8")
+[1496828.421] {Default Queue} ext_data_control_offer_v1#4278190080.offer("text/plain")
+[1496828.423] {Default Queue} ext_data_control_offer_v1#4278190080.offer("text/html")
+[1496828.424] {Default Queue} ext_data_control_device_v1#3.selection(ext_data_control_offer_v1#4278190080)
+[1496828.426] {Default Queue}  -> ext_data_control_offer_v1#4278190080.destroy()
+[1496828.429] {Default Queue} ext_data_control_device_v1#3.data_offer(new id ext_data_control_offer_v1#4278190081)
+[1496828.430] {Default Queue} ext_data_control_offer_v1#4278190081.offer("text/plain")
+[1496828.432] {Default Queue} ext_data_control_offer_v1#4278190081.offer("text/plain;charset=utf-8")
+[1496828.433] {Default Queue} ext_data_control_offer_v1#4278190081.offer("TEXT")
+[1496828.434] {Default Queue} ext_data_control_offer_v1#4278190081.offer("STRING")
+[1496828.436] {Default Queue} ext_data_control_offer_v1#4278190081.offer("UTF8_STRING")
+[1496828.437] {Default Queue} ext_data_control_device_v1#3.primary_selection(ext_data_control_offer_v1#4278190081)
+[1496828.438] {Default Queue}  -> ext_data_control_offer_v1#4278190081.destroy()
+[1496828.442] {Default Queue}  -> ext_data_control_manager_v1#12.create_data_source(new id ext_data_control_source_v1#13)
+[1496828.444] {Default Queue}  -> ext_data_control_source_v1#13.offer("text/plain")
+[1496828.445] {Default Queue}  -> ext_data_control_source_v1#13.offer("text/plain;charset=utf-8")
+[1496828.447] {Default Queue}  -> ext_data_control_source_v1#13.offer("TEXT")
+[1496828.448] {Default Queue}  -> ext_data_control_source_v1#13.offer("STRING")
+[1496828.449] {Default Queue}  -> ext_data_control_source_v1#13.offer("UTF8_STRING")
+[1496828.451] {Default Queue}  -> ext_data_control_device_v1#3.set_primary_selection(ext_data_control_source_v1#13)
+[1496828.586] {Default Queue} ext_data_control_device_v1#3.data_offer(new id ext_data_control_offer_v1#4278190081)
+[1496828.589] {Default Queue} ext_data_control_offer_v1#4278190081.offer("text/plain")
+[1496828.592] {Default Queue} ext_data_control_offer_v1#4278190081.offer("text/plain;charset=utf-8")
+[1496828.594] {Default Queue} ext_data_control_offer_v1#4278190081.offer("TEXT")
+[1496828.595] {Default Queue} ext_data_control_offer_v1#4278190081.offer("STRING")
+[1496828.596] {Default Queue} ext_data_control_offer_v1#4278190081.offer("UTF8_STRING")
+[1496828.597] {Default Queue} ext_data_control_device_v1#3.primary_selection(ext_data_control_offer_v1#4278190081)
+[1496828.600] {Default Queue}  -> ext_data_control_offer_v1#4278190081.destroy()
+[1521230.007] {Default Queue} ext_data_control_source_v1#13.cancelled()
 
-Address 0x7bf7ca5faa90 is located in stack of thread T0 at offset 144 in frame
-    #0 0x00000066b99f in main::wayland_init /home/kieran/Dev/clipbender/src/daemon/wayland.odin:57
-
-  This frame has 6 object(s):
-    [32, 224) 'wl_state' <== Memory access at offset 144 is inside this variable
-    [288, 304) ''
-    [320, 336) ''
-    [352, 368) ''
-    [384, 400) ''
-    [416, 432) ''
-HINT: this may be a false positive if your program uses some custom stack unwind mechanism, swapcontext or vfork
-      (longjmp and C++ exceptions *are* supported)
-SUMMARY: AddressSanitizer: stack-use-after-return /home/kieran/Dev/clipbender/src/daemon/wayland.odin:284:5 in main::wayland_handle_selection
-Shadow bytes around the buggy address:
-  0x7bf7ca5fa800: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-  0x7bf7ca5fa880: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-  0x7bf7ca5fa900: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-  0x7bf7ca5fa980: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-  0x7bf7ca5faa00: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-=>0x7bf7ca5faa80: f5 f5[f5]f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-  0x7bf7ca5fab00: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-  0x7bf7ca5fab80: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-  0x7bf7ca5fac00: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-  0x7bf7ca5fac80: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-  0x7bf7ca5fad00: f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5 f5
-Shadow byte legend (one shadow byte represents 8 application bytes):
-  Addressable:           00
-  Partially addressable: 01 02 03 04 05 06 07 
-  Heap left redzone:       fa
-  Freed heap region:       fd
-  Stack left redzone:      f1
-  Stack mid redzone:       f2
-  Stack right redzone:     f3
-  Stack after return:      f5
-  Stack use after scope:   f8
-  Global redzone:          f9
-  Global init order:       f6
-  Poisoned by user:        f7
-  Container overflow:      fc
-  Array cookie:            ac
-  Intra object redzone:    bb
-  ASan internal:           fe
-  Left alloca redzone:     ca
-  Right alloca redzone:    cb
-==191184==ABORTING
+[DEBUG] --- [2026-07-12 18:45:22] [server.odin:93:handle_recv()] Got set message: [0, 254, 0, 0, 37]
+[DEBUG] --- [2026-07-12 18:45:22] [server.odin:112:handle_recv()] REGISTER:
+[DEBUG] --- [2026-07-12 18:45:22] [server.odin:113:handle_recv()]       Source Reg: `@1`
+[DEBUG] --- [2026-07-12 18:45:22] [server.odin:128:handle_recv()]       Content: `Received`
+[DEBUG] --- [2026-07-12 18:45:22] [server.odin:129:handle_recv()]       Mime: `text/plain;charset=utf-8`
+[DEBUG] --- [2026-07-12 18:45:22] [server.odin:130:handle_recv()]       Destination Reg: OVERWRITE `primary`
+[DEBUG] --- [2026-07-12 18:45:22] [wayland.odin:485:wayland_set_selection()] Created PRIMARY source=0x7BAFBB1E13A0
+[DEBUG] --- [2026-07-12 18:45:22] [wayland.odin:489:wayland_set_selection()] Set PRIMARY selection with mime `text/plain;charset=utf-8` (8 bytes)
+[DEBUG] --- [2026-07-12 18:45:22] [server.odin:267:dispatch_cqe()] Wayland event received
+[DEBUG] --- [2026-07-12 18:45:22] [wayland.odin:197:_proclit$anon-3()] Received ext_data_control_device_v1::data_offer event
+[DEBUG] --- [2026-07-12 18:45:22] [wayland.odin:238:_proclit$anon-7()] Received ext_data_control_offer_v1::offer event (mime: text/plain;charset=utf-8)
+[DEBUG] --- [2026-07-12 18:45:22] [wayland.odin:227:_proclit$anon-6()] Received ext_data_control_device_v1::primary_selection event
+[DEBUG] --- [2026-07-12 18:45:23] [server.odin:299:dispatch_cqe()] Primary debounce timer fired, reading pending offer
+[DEBUG] --- [2026-07-12 18:45:23] [wayland.odin:373:wayland_commit_selection()] Got duplicate PRIMARY copy, suppressing register push
