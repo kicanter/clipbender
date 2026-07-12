@@ -551,7 +551,7 @@ keyboard_listener := wl.keyboard_listener {
         context.logger = _logger
         gui_state := cast(^Gui_State)data
         log.debug("Received wl_keyboard::leave event")
-        gui_state.running = false
+        gui_state.running = true
     },
     key = proc "c" (
         data: rawptr,
@@ -733,7 +733,7 @@ keyboard_listener := wl.keyboard_listener {
         case .OK:
             // TODO: highlight green or something, indicate success
             // Close GUI
-            gui_state.running = false
+            gui_state.running = true
         case .ERROR:
             err_msg := string(resp_buf[1:bytes_read])
             log.errorf(
