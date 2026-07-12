@@ -14,25 +14,22 @@ data_buf: [4096]u8
 sig_buf: [128]u8
 MAX_DATA_SIZE :: 65536 // 64 KiB
 
-DEBOUNCE_MS :: 1000 // 500ms debounce time between selection events
+DEBOUNCE_MS :: 1000 // 1000ms debounce time between selection events
 Selection_Debounce :: struct {
-    ts:    linux.Time_Spec,
-    armed: bool,
+    ts:         linux.Time_Spec,
+    generation: u64, // id-like field, bumped on each arm so only the timer matching the current generation commits
 }
 
 clipboard_debounce := Selection_Debounce {
     ts = linux.Time_Spec{time_nsec = DEBOUNCE_MS * 1_000_000},
-    armed = false,
 }
 primary_debounce := Selection_Debounce {
     ts = linux.Time_Spec{time_nsec = DEBOUNCE_MS * 1_000_000},
-    armed = false,
 }
 
 Debounce_Event :: enum u8 {
     CLIPBOARD,
     PRIMARY,
-    CANCEL,
 }
 
 Event :: enum u8 {
@@ -207,21 +204,15 @@ arm_debounce :: proc(
     if !selection.staged {return}
     selection.staged = false
 
-    cancel_data := (u64(Debounce_Event.CANCEL) << 8) | u64(Event.DEBOUNCE)
-    timeout_data := (u64(debounce_event) << 8) | u64(Event.DEBOUNCE)
+    // Bump generation so any previously-armed timers become stale. Encode it in the upper bits of user_data:
+    // [byte 0: Event][byte 1: Debounce_Event][bytes 2-7: generation]
+    debounce.generation += 1
+    timeout_data := (debounce.generation << 16) | (u64(debounce_event) << 8) | u64(Event.DEBOUNCE)
 
-    if debounce.armed {
-        _, ok := uring.timeout_remove(ring, cancel_data, timeout_data, {})
-        if !ok {
-            log.error("Failed to submit timeout_remove SQE, submission queue full")
-        }
-    }
     _, ok := uring.timeout(ring, timeout_data, &debounce.ts, 0, {})
     if !ok {
         log.error("Failed to submit timeout SQE, submission queue full")
-        return
     }
-    debounce.armed = true
 }
 
 dispatch_cqe :: proc(
@@ -283,26 +274,23 @@ dispatch_cqe :: proc(
             backend.state = nil
         }
     case .DEBOUNCE:
-        // Debounce event tells us we successfully surpassed debounce timeout, process the data offer
-        debounce_event := cast(Debounce_Event)(cqe.user_data >> 8)
+        // A debounce timer fired. Only commit if it matches the current generation, otherwise a newer selection event
+        // superseded it and this timer is stale (e.g. Chrome drag-select fires many events in a row).
+        debounce_event := cast(Debounce_Event)((cqe.user_data >> 8) & 0xFF)
+        generation := cqe.user_data >> 16
         switch debounce_event {
         case .CLIPBOARD:
-            clipboard_debounce.armed = false
-            // Linux kernel errors are negative, negate ECANCELED (indicates timeout removed)
-            if cqe.res == -cast(i32)linux.Errno.ECANCELED {return running}
+            if generation != clipboard_debounce.generation {return running}
             log.debug("Clipboard debounce timer fired, reading pending offer")
             if backend.state != nil {
                 wayland_commit_selection(cast(^Wayland_State)backend.state, .CLIPBOARD)
             }
         case .PRIMARY:
-            primary_debounce.armed = false
-            // Linux kernel errors are negative, negate ECANCELED (indicates timeout removed)
-            if cqe.res == -cast(i32)linux.Errno.ECANCELED {return running}
+            if generation != primary_debounce.generation {return running}
             log.debug("Primary debounce timer fired, reading pending offer")
             if backend.state != nil {
                 wayland_commit_selection(cast(^Wayland_State)backend.state, .PRIMARY)
             }
-        case .CANCEL:
         }
     }
     return running
