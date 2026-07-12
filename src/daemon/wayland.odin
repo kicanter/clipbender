@@ -468,8 +468,15 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: stri
         return
     }
 
-    // Offer mime type
-    ext_dc.data_control_source_v1_offer(selection.source, strings.clone_to_cstring(mime, context.temp_allocator))
+    // TEST: offer common text aliases so any paste client finds a matching mime
+    TEXT_ALIASES :: [?]string{"text/plain", "text/plain;charset=utf-8", "TEXT", "STRING", "UTF8_STRING"}
+    if strings.has_prefix(mime, "text/") {
+        for alias in TEXT_ALIASES {
+            ext_dc.data_control_source_v1_offer(selection.source, strings.clone_to_cstring(alias, context.temp_allocator))
+        }
+    } else {
+        ext_dc.data_control_source_v1_offer(selection.source, strings.clone_to_cstring(mime, context.temp_allocator))
+    }
 
     // Attach listener for send/cancelled events
     ext_dc.data_control_source_v1_add_listener(selection.source, &source_listener, rawptr(wl_state))
@@ -490,14 +497,7 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: stri
 }
 
 wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, fd: linux.Fd) {
-    if mime_type != selection.source_mime {
-        log.errorf(
-            "Requested mime `%s` does not match offered mime `%s`, this is unexpected",
-            mime_type,
-            selection.source_mime,
-        )
-        return
-    }
+    // TEST: serve our data for any requested mime (we offered text aliases that all map to the same data)
     linux.write(fd, selection.source_data)
     linux.close(fd)
 }
