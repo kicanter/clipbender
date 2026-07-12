@@ -62,6 +62,32 @@ push_recency_reg :: proc(type: lib.Selection_Type, data: []u8, mime: string, tim
     push_to_ring(ring, data, mime, timestamp)
 }
 
+// Move the entry at `recency` to the front (recency 0), shifting the entries in between back one slot. Refreshes the
+// moved entry's timestamp. No allocations, just shuffling existing entries. Head/count unchanged.
+move_ring_entry_to_front :: proc(ring: ^Recency_Ring, recency: u8) {
+    if recency == 0 || recency >= ring.count {return}
+
+    saved := ring.entries[(ring.head - recency + lib.RECENCY_SIZE) % lib.RECENCY_SIZE]
+    // Shift each entry one step toward the head, opening up the front slot
+    for i := recency; i > 0; i -= 1 {
+        src := (ring.head - (i - 1) + lib.RECENCY_SIZE) % lib.RECENCY_SIZE
+        dst := (ring.head - i + lib.RECENCY_SIZE) % lib.RECENCY_SIZE
+        ring.entries[dst] = ring.entries[src]
+    }
+    saved.timestamp = time.time_to_unix(time.now())
+    ring.entries[ring.head] = saved
+}
+
+// Move the `recency` most recent `Register_Entry` to the front of the `type` selection ring
+move_recency_reg_to_front :: proc(type: lib.Selection_Type, recency: u8) {
+    switch type {
+    case .CLIPBOARD:
+        move_ring_entry_to_front(&clipboard_registers, recency)
+    case .PRIMARY:
+        move_ring_entry_to_front(&primary_registers, recency)
+    }
+}
+
 // Get the `recency` most recent `Register_Entry` from a specific ring
 get_ring_entry :: proc(ring: ^Recency_Ring, recency: u8) -> ^lib.Reg_Entry {
     if recency >= ring.count {return nil}

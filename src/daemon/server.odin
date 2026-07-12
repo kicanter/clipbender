@@ -111,6 +111,15 @@ handle_recv :: proc(bytes_read: int, client_fd: linux.Fd, backend: ^lib.Clipboar
             data, mime = slice.clone(source.data), strings.clone(source.mime_type)
             log.debug("REGISTER:")
             log.debugf("\tSource Reg: `%s`", lib.reg_id_to_string(source_reg))
+
+            // Setting a selection from its own recency ring, so to avoid pushing out unique data just to copy the
+            // existing data from source register, move that register to the front and update the timestamp.
+            // Note: duplicating this entry is avoided by self-source check in wayland.odin::wayland_commit_selection()
+            if dest_reg == lib.SELECTION_CLIPBOARD && lib.reg_id_is_clipboard_num(source_reg) {
+                move_recency_reg_to_front(.CLIPBOARD, lib.reg_id_to_clipboard_index(source_reg))
+            } else if dest_reg == lib.SELECTION_PRIMARY && lib.reg_id_is_primary_num(source_reg) {
+                move_recency_reg_to_front(.PRIMARY, lib.reg_id_to_primary_index(source_reg))
+            }
         case .INLINE:
             mime, data = lib.unmarshal_cmd_set_inline(data_buf[4:bytes_read])
             log.debug("INLINE:")
