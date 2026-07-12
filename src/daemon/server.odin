@@ -14,7 +14,7 @@ data_buf: [4096]u8
 sig_buf: [128]u8
 MAX_DATA_SIZE :: 65536 // 64 KiB
 
-DEBOUNCE_MS :: 500 // 500ms debounce time between selection events
+DEBOUNCE_MS :: 1000 // 500ms debounce time between selection events
 Selection_Debounce :: struct {
     ts:    linux.Time_Spec,
     armed: bool,

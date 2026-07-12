@@ -327,6 +327,7 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
     //
     // If we didn't have this check, we would try to read the data offer and timeout because we would also have to be
     // the one sending it (in `wayland_read_offer_data()` the pipe read would time out waiting for us to write).
+    self_source_str := ""
     if selection.source != nil {
         // Check for duplicate before allocating
         head_reg := get_recency_reg(type, 0)
@@ -335,8 +336,12 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
             return
         }
         // Copy the data from our own cache to give to the register
+        // TODO: we want to _move_ the register back up to the front of the ring buffer to avoid pushing out actually
+        // unique data and filling our numbered registers with duplicated data, so instead of copying the data, add some
+        // sort of function to registers.odin like `move_to_front()` or something such that we 
         data = slice.clone(selection.source_data)
         mime = strings.clone(selection.source_mime)
+        self_source_str = " (self-source)"
     } else {
         mime = pick_best_mime(selection.mimes)
         if mime == "" {
@@ -362,6 +367,7 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
         // ownership of data and mime transferred
         push_recency_reg(type, data, mime)
         data, mime = {}, {}
+        log.infof("Pushed to %v recency register%s", type, self_source_str)
     }
 }
 
