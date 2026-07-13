@@ -15,29 +15,30 @@ print_usage_and_exit :: proc() {
     fmt.eprintln(
         "Usage: clipbender [command] \n\n" +
         "Commands:\n" +
-        "\t(none)                               Launch the clipbender GUI\n" +
-        "\tset <dest-reg> [source-reg]          Set the `dest-reg` with the content from `source-reg` or stdin.\n" +
-        "\tget <filter...> [fmt=<json|raw>]     Retrieve the content, mime type, and timestamp of the registers matching `filter`.\n" +
-        "\tclear <reg-id>                       Clear the data stored in register `reg-id`.\n" +
-        "\tshutdown                             Shutdown the `clipbenderd` daemon.\n\n" +
+        "\t(none)                                  Launch the clipbender GUI\n" +
+        "\tset <dest-reg> [source-reg]             Set the `dest-reg` with the content from `source-reg` or stdin.\n" +
+        "\tget <filter...> [fmt=<json|raw>]        Retrieve the content, mime type, and timestamp of the registers matching `filter`.\n" +
+        "\tclear <reg-id>                          Clear the data stored in register `reg-id`.\n" +
+        "\tshutdown                                Shutdown the `clipbenderd` daemon.\n\n" +
         "Examples:\n" +
-        "\tclipbender                           Open GUI popup.\n" +
-        "\tclipbender shutdown                  Stop daemon.\n" +
-        "\tclipbender set a clipboard           Set register `a` from system clipboard selection.\n" +
-        "\tclipbender set clipboard 1           Set system clipboard selection from clipboard register `1`.\n" +
-        "\tclipbender set a primary             Set register `a` from system primary selection.\n" +
-        "\tclipbender set A clipboard           Append system clipboard selection to register `a`.\n" +
-        "\tclipbender set primary @5            Set system primary selection from primary register `5`.\n" +
-        "\t<cmd> | clipbender set a             Set register `a` from stdin pipe.\n" +
-        "\tclipbender set a < <file>            Set register `a` from stdin redirection.\n" +
-        "\tclipbender clear a                   Clear register `a`.\n" +
-        "\tclipbender get ++all                 Print all registers.\n" +
-        "\tclipbender get ++named -adz          Print named registers except `a`, `d`, `z`.\n" +
-        "\tclipbender get +@012 +012            Print the first three numbered registers from primary and clipboard.\n" +
-        "\tclipbender get +0:5 +@0:3            Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
-        "\tclipbender get ++clipboard fmt=json  Print clipboard registers as structured JSON.\n" +
-        "\tclipbender get +a fmt=raw | wl-copy  Pipe only the contents of register `a` into wl-copy.\n" +
-        "\tclipbender get +a fmt=raw > <file>   Redirect the contents of register `a` to `file`.\n",
+        "\tclipbender                              Open GUI popup.\n" +
+        "\tclipbender shutdown                     Stop daemon.\n" +
+        "\tclipbender set a clipboard              Set register `a` from system clipboard selection.\n" +
+        "\tclipbender set clipboard 1              Set system clipboard selection from clipboard register `1`.\n" +
+        "\tclipbender set a primary                Set register `a` from system primary selection.\n" +
+        "\tclipbender set A clipboard              Append system clipboard selection to register `a`.\n" +
+        "\tclipbender set primary @5               Set system primary selection from primary register `5`.\n" +
+        "\t<cmd> | clipbender set a                Set register `a` from stdin pipe.\n" +
+        "\tclipbender set a < <file>               Set register `a` from stdin redirection.\n" +
+        "\tclipbender clear a                      Clear register `a`.\n" +
+        "\tclipbender get ++all                    Print all registers.\n" +
+        "\tclipbender get ++all --@selection       Print all registers except the live primary selection.\n" +
+        "\tclipbender get ++named -adz             Print named registers except `a`, `d`, `z`.\n" +
+        "\tclipbender get +@012 +012               Print the first three numbered registers from primary and clipboard.\n" +
+        "\tclipbender get +0:5 +@0:3               Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
+        "\tclipbender get ++numbered fmt=json      Print clipboard numbered registers as structured JSON.\n" +
+        "\tclipbender get +a fmt=raw | wl-copy     Pipe only the contents of register `a` into wl-copy.\n" +
+        "\tclipbender get +a fmt=raw > <file>      Redirect the contents of register `a` to `file`.\n",
     )
     os.exit(1)
 }
@@ -71,19 +72,24 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
             "Retrieve the content, mime type, and timestamp of the registers matching `filter`. Use the `fmt=json` flag\n" +
             "to output the data as structured JSON and the `fmt=raw` flag to output just the contents of the registers\n" +
             "in newline-delimited byte arrays.\n\n" +
-            "Filter tokens:\n" +
-            "\t++all, ++clipboard, ++named, ++primary, ++numbered   Include category\n" +
-            "\t--all, --clipboard, --named, --primary, --numbered   Exclude category\n" +
+            "Keywords (double prefix `++`/`--`), `@` selects the primary-side variant:\n" +
+            "\t++all, --all                                         All registers\n" +
+            "\t++numbered, ++@numbered                              Clipboard / primary recency registers\n" +
+            "\t++named                                              Named registers (a-z)\n" +
+            "\t++selection, ++@selection                            Live clipboard / primary selection\n\n" +
+            "Register tokens (single prefix `+`/`-`):\n" +
             "\t+adz, +038, +@038                                    Include specific registers\n" +
             "\t-adz, -038, -@038                                    Exclude specific registers\n" +
             "\t+0:5, +a:f, +@0:5                                    Include range\n" +
             "\t-0:5, -a:f, -@0:5                                    Exclude range\n\n" +
             "Examples:\n" +
             "\tclipbender get ++all                  Print all registers.\n" +
+            "\tclipbender get ++all --@selection     Print all registers except the live primary selection.\n" +
             "\tclipbender get ++named -adz           Print named registers except `a`, `d`, `z`.\n" +
             "\tclipbender get +@012 +012             Print the first three numbered registers from primary and clipboard.\n" +
             "\tclipbender get +0:5 +@0:3             Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
-            "\tclipbender get ++clipboard fmt=json   Print clipboard registers as structured JSON.\n" +
+            "\tclipbender get ++numbered fmt=json    Print clipboard recency registers as structured JSON.\n" +
+            "\tclipbender get ++selection            Print the live clipboard selection.\n" +
             "\tclipbender get +a fmt=raw | wl-copy   Pipe only the contents of register `a` into wl-copy.\n" +
             "\tclipbender get +a fmt=raw > <file>    Redirect the contents of register `a` to `file`.\n",
         )
@@ -367,13 +373,13 @@ parse_cmd_get_registers :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err:
     }
 }
 
+KEYWORD_HELP :: "use one of `all`, `numbered`, `@numbered`, `named`, `selection`, `@selection`"
+
 // Parse a keyword token for a GET command, `arg` is everything after the double prefix `--` or `++`.
+// `@` prefix selects the primary-side variant (e.g. `@numbered` = primary recency, `@selection` = live primary).
 parse_cmd_get_keyword :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err: Maybe(string)) {
     if len(arg) == 0 {
-        return(
-            "a double prefix token must precede a keyword (one of `all`, `numbered`, `named`, `clipboard`, " +
-            "`primary`)" \
-        )
+        return fmt.tprintf("a double prefix token must precede a keyword (%s)", KEYWORD_HELP)
     }
 
     // immediately following double prefix token must be a keyword
@@ -382,14 +388,16 @@ parse_cmd_get_keyword :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err: M
         mask^ += lib.CMD_GET_FILTER_ALL
     case "numbered":
         mask^ += lib.CMD_GET_FILTER_NUMBERED
+    case "@numbered":
+        mask^ += lib.CMD_GET_FILTER_PRIMARY_NUMBERED
     case "named":
         mask^ += lib.CMD_GET_FILTER_NAMED
-    case "clipboard":
-        mask^ += lib.CMD_GET_FILTER_CLIPBOARD
-    case "primary":
-        mask^ += lib.CMD_GET_FILTER_PRIMARY
+    case "selection":
+        mask^ += lib.CMD_GET_FILTER_SELECTION
+    case "@selection":
+        mask^ += lib.CMD_GET_FILTER_PRIMARY_SELECTION
     case:
-        return "invalid keyword, use one of `all`, `numbered`, `named`, `clipboard`, `primary`"
+        return fmt.tprintf("invalid keyword, %s", KEYWORD_HELP)
     }
     return {}
 }
@@ -504,8 +512,21 @@ truncate_content :: proc(content: string, width: int) -> string {
     return fmt.tprintf("%s...", cleaned[:width - 3])
 }
 
+// Ordered groups of register IDs for display: clipboard recency, named, primary recency, then live selections.
+// Each group is an inclusive [start, end] range so consumers can iterate directly by Reg_Id.
+Reg_Group :: struct {
+    start: lib.Reg_Id,
+    end:   lib.Reg_Id,
+}
+REG_GROUPS :: [?]Reg_Group {
+    {lib.CLIPBOARD_START, lib.CLIPBOARD_END},
+    {lib.NAMED_START, lib.NAMED_END},
+    {lib.PRIMARY_START, lib.PRIMARY_END},
+    {lib.SELECTION_PRIMARY, lib.SELECTION_CLIPBOARD},
+}
+
 // Print `regs` register entries formatted as an ascii table.
-cmd_get_format_table :: proc(regs: []lib.Reg) {
+cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     table_top := "┌──────────┬─────────────────────┬──────────────────────────┬──────────────────────────────────────────┐"
     table_sep := "├──────────┼─────────────────────┼──────────────────────────┼──────────────────────────────────────────┤"
     table_bot := "└──────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┘"
@@ -513,7 +534,34 @@ cmd_get_format_table :: proc(regs: []lib.Reg) {
     fmt.println(
         "│ Register │ Timestamp           │ Mime Type                │ Content                                  │",
     )
-    if len(regs) == 0 {
+
+    CONTENT_FMT :: "│ % 8s │ % -10s │ % -24s │ % -40s │"
+    CONTENT_COL_WIDTH :: 40 // How much of the content to show total including truncation
+
+    ts_buf: [19]u8
+    any_printed := false
+    for group in REG_GROUPS {
+        group_printed := false
+        for id := group.start; id <= group.end; id += 1 {
+            entry := regs[id]
+            if entry.data == nil {continue}
+            // Print a rule above each group that has at least one entry (also separates the header from the body)
+            if !group_printed {
+                fmt.println(table_sep)
+            }
+            fmt.printfln(
+                CONTENT_FMT,
+                lib.reg_id_to_string(id),
+                format_unix_timestamp(entry.timestamp, &ts_buf),
+                entry.mime_type,
+                truncate_content(string(entry.data), CONTENT_COL_WIDTH),
+            )
+            any_printed = true
+            group_printed = true
+        }
+    }
+
+    if !any_printed {
         fmt.println(
             "├──────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┤",
         )
@@ -524,64 +572,6 @@ cmd_get_format_table :: proc(regs: []lib.Reg) {
             "└──────────────────────────────────────────────────────────────────────────────────────────────────────┘",
         )
         return
-    }
-
-    fmt.println(table_sep)
-
-    ts_buf: [19]u8
-    print_sep := false
-    i := 0
-
-    CONTENT_FMT :: "│ % 8s │ % -10s │ % -24s │ % -40s │"
-    CONTENT_COL_WIDTH :: 40 // How much of the content to show total including truncation
-    // Clipboard registers
-    for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
-        entry := regs[i].entry
-        fmt.printfln(
-            CONTENT_FMT,
-            lib.reg_id_to_string(regs[i].id),
-            format_unix_timestamp(entry.timestamp, &ts_buf),
-            entry.mime_type,
-            truncate_content(string(entry.data), CONTENT_COL_WIDTH),
-        )
-        print_sep = true
-    }
-
-    // Skip named to find primary
-    named_start := i
-    for ; i < len(regs) && lib.reg_id_is_named(regs[i].id); i += 1 {}
-    primary_start := i
-
-    // Primary registers
-    for ; i < len(regs) && lib.reg_id_is_primary_num(regs[i].id); i += 1 {
-        if print_sep && i == primary_start {
-            fmt.println(table_sep)
-        }
-        entry := regs[i].entry
-        fmt.printfln(
-            CONTENT_FMT,
-            lib.reg_id_to_string(regs[i].id),
-            format_unix_timestamp(entry.timestamp, &ts_buf),
-            entry.mime_type,
-            truncate_content(string(entry.data), CONTENT_COL_WIDTH),
-        )
-        print_sep = true
-    }
-
-    // Named registers
-    for j := named_start; j < primary_start; j += 1 {
-        if print_sep && j == named_start {
-            fmt.println(table_sep)
-        }
-        entry := regs[j].entry
-        fmt.printfln(
-            CONTENT_FMT,
-            lib.reg_id_to_string(regs[j].id),
-            format_unix_timestamp(entry.timestamp, &ts_buf),
-            entry.mime_type,
-            truncate_content(string(entry.data), CONTENT_COL_WIDTH),
-        )
-        print_sep = true
     }
 
     fmt.println(table_bot)
@@ -608,75 +598,43 @@ json_escape_string :: proc(str: string) -> string {
     return strings.to_string(escaped)
 }
 
-print_json_entry :: proc(reg: lib.Reg, id_str: string, printed: ^bool) {
+print_json_entry :: proc(entry: lib.Reg_Entry, id_str: string, printed: ^bool) {
     if printed^ {fmt.print(", ")}
     fmt.printf(
         `{{"reg": "%s", "time": "%d", "mime": "%s", "content": "%s"}}`,
         id_str,
-        reg.entry.timestamp,
-        json_escape_string(reg.entry.mime_type),
-        json_escape_string(string(reg.entry.data)),
+        entry.timestamp,
+        json_escape_string(entry.mime_type),
+        json_escape_string(string(entry.data)),
     )
     printed^ = true
 }
 
 // Print `regs` register entries formatted as json.
-cmd_get_format_json :: proc(regs: []lib.Reg) {
+cmd_get_format_json :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     printed := false
-    i := 0
-
     fmt.print("[")
-    // Clipboard registers
-    for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
-        print_json_entry(regs[i], lib.reg_id_to_string(regs[i].id), &printed)
-    }
-
-    // Skip named to find primary
-    named_start := i
-    for ; i < len(regs) && lib.reg_id_is_named(regs[i].id); i += 1 {}
-    primary_start := i
-
-    // Primary registers
-    for ; i < len(regs) && lib.reg_id_is_primary_num(regs[i].id); i += 1 {
-        print_json_entry(regs[i], lib.reg_id_to_string(regs[i].id), &printed)
-    }
-
-    // Named registers
-    for j := named_start; j < primary_start; j += 1 {
-        print_json_entry(regs[j], lib.reg_id_to_string(regs[j].id), &printed)
+    for group in REG_GROUPS {
+        for id := group.start; id <= group.end; id += 1 {
+            entry := regs[id]
+            if entry.data == nil {continue}
+            print_json_entry(entry, lib.reg_id_to_string(id), &printed)
+        }
     }
     fmt.print("]\n")
 }
 
 // Print just the raw content from `regs` register entries (newline-delimited).
-cmd_get_format_raw :: proc(regs: []lib.Reg) {
+cmd_get_format_raw :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     printed := false
-    i := 0
-
-    // Clipboard registers
-    for ; i < len(regs) && lib.reg_id_is_clipboard_num(regs[i].id); i += 1 {
-        if printed {fmt.print("\n")}
-        fmt.print(string(regs[i].entry.data))
-        printed = true
-    }
-
-    // Skip named to find primary
-    named_start := i
-    for ; i < len(regs) && lib.reg_id_is_named(regs[i].id); i += 1 {}
-    primary_start := i
-
-    // Primary registers
-    for ; i < len(regs) && lib.reg_id_is_primary_num(regs[i].id); i += 1 {
-        if printed {fmt.print("\n")}
-        fmt.print(string(regs[i].entry.data))
-        printed = true
-    }
-
-    // Named registers
-    for j := named_start; j < primary_start; j += 1 {
-        if printed {fmt.print("\n")}
-        fmt.print(string(regs[j].entry.data))
-        printed = true
+    for group in REG_GROUPS {
+        for id := group.start; id <= group.end; id += 1 {
+            entry := regs[id]
+            if entry.data == nil {continue}
+            if printed {fmt.print("\n")}
+            fmt.print(string(entry.data))
+            printed = true
+        }
     }
 }
 
@@ -709,8 +667,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         os.exit(1)
     }
 
-    regs: [46]lib.Reg // buffer to store the response data
-    count: u8 // number of registers sent in response
+    regs: [lib.MAX_REGS]lib.Reg_Entry // buffer to store the response data, indexed by Reg_Id
     status := lib.Resp_Status(resp_buf[0])
     switch status {
     case .OK:
@@ -721,24 +678,23 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         fmt.eprintfln("Error: %v", err_msg)
         os.exit(1)
     case .REGISTERS:
-        count = lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &regs)
+        lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &regs)
     }
 
     // At this point, we either have the data or have already errored and exited.
-    // Handle printing + formatting the received Reg entries.
-    // Output order: clipboard, primary, named.
+    // Handle printing + formatting the received register entries.
     switch format {
     case .TABLE:
-        cmd_get_format_table(regs[:count])
+        cmd_get_format_table(&regs)
     case .JSON:
-        cmd_get_format_json(regs[:count])
+        cmd_get_format_json(&regs)
     case .RAW:
-        cmd_get_format_raw(regs[:count])
+        cmd_get_format_raw(&regs)
     }
 
     // Free register data
-    for i in 0 ..< count {
-        lib.free_reg_entry(&regs[i].entry)
+    for &entry in regs {
+        lib.free_reg_entry(&entry)
     }
 }
 

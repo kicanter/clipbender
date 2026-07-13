@@ -65,12 +65,12 @@ main :: proc() {
     state_path := clipbender_state_path()
     defer delete(state_path)
     {     // new block so we can release the pointers in `regs` after we load them
-        regs: [46]lib.Reg
-        count, err := load_registers_state(state_path, &regs)
+        regs: [lib.MAX_REGS]lib.Reg_Entry
+        _, err := load_registers_state(state_path, &regs)
         if err != os.General_Error.None {
             log.warnf("Failed to load registers state from path %s: errno %v", state_path, err)
         } else {
-            load_registers(count, &regs)
+            load_registers(&regs)
         }
     }
 

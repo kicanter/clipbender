@@ -15,10 +15,14 @@ test_parse_cmd_get_all :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_cmd_get_all_minus_clipboard :: proc(t: ^testing.T) {
-    filter, _, err := parse_cmd_get({"++all", "--clipboard"})
+test_parse_cmd_get_all_minus_numbered :: proc(t: ^testing.T) {
+    filter, _, err := parse_cmd_get({"++all", "--numbered"})
     testing.expect(t, err == nil)
-    expected := lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY
+    expected :=
+        lib.CMD_GET_FILTER_NAMED +
+        lib.CMD_GET_FILTER_PRIMARY_NUMBERED +
+        lib.CMD_GET_FILTER_SELECTION +
+        lib.CMD_GET_FILTER_PRIMARY_SELECTION
     testing.expect_value(t, filter, expected)
 }
 

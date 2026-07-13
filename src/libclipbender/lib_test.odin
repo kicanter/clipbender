@@ -122,7 +122,7 @@ test_marshal_unmarshal_cmd_set_inline :: proc(t: ^testing.T) {
 @(test)
 test_marshal_unmarshal_cmd_get :: proc(t: ^testing.T) {
     buf: [16]byte
-    filter := CMD_GET_FILTER_CLIPBOARD + CMD_GET_FILTER_NAMED
+    filter := CMD_GET_FILTER_NUMBERED + CMD_GET_FILTER_NAMED
 
     n := marshal_cmd_get(filter, buf[:])
     testing.expect(t, n == size_of(Command_Type) + size_of(Cmd_Get_Filter))
@@ -135,30 +135,34 @@ test_marshal_unmarshal_cmd_get :: proc(t: ^testing.T) {
 test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
     buf: [1024]byte
 
-    regs := []Reg{
-        {id = reg_id_from_clipboard_index(0), entry = Reg_Entry{data = transmute([]byte)string("first"), mime_type = "text/plain", timestamp = 1000}},
-        {id = reg_id_from_named_index(3), entry = Reg_Entry{data = transmute([]byte)string("second entry"), mime_type = "text/html", timestamp = 2000}},
-        {id = reg_id_from_primary_index(2), entry = Reg_Entry{data = transmute([]byte)string("third"), mime_type = "text/plain", timestamp = 3000}},
-    }
+    // Source array is indexed by Reg_Id; populate a few non-adjacent slots
+    clip0 := reg_id_from_clipboard_index(0)
+    named3 := reg_id_from_named_index(3)
+    primary2 := reg_id_from_primary_index(2)
 
-    n := marshal_resp_registers(regs, buf[:])
+    regs: [MAX_REGS]Reg_Entry
+    regs[clip0] = Reg_Entry{data = transmute([]byte)string("first"), mime_type = "text/plain", timestamp = 1000}
+    regs[named3] = Reg_Entry{data = transmute([]byte)string("second entry"), mime_type = "text/html", timestamp = 2000}
+    regs[primary2] = Reg_Entry{data = transmute([]byte)string("third"), mime_type = "text/plain", timestamp = 3000}
+
+    n := marshal_resp_registers(&regs, buf[:])
     testing.expect(t, n > 0)
     testing.expect_value(t, Resp_Status(buf[0]), Resp_Status.REGISTERS)
     testing.expect_value(t, buf[1], u8(3))
 
-    dec_regs: [46]Reg
+    dec_regs: [MAX_REGS]Reg_Entry
     count := unmarshal_resp_registers(buf[1:], &dec_regs)
     testing.expect_value(t, count, u8(3))
 
-    for i in 0 ..< int(count) {
-        testing.expect_value(t, dec_regs[i].id, regs[i].id)
-        testing.expect_value(t, dec_regs[i].entry.timestamp, regs[i].entry.timestamp)
-        testing.expect_value(t, dec_regs[i].entry.mime_type, regs[i].entry.mime_type)
-        testing.expect(t, slice.equal(dec_regs[i].entry.data, regs[i].entry.data))
+    // Entries should land at their original Reg_Id slots
+    for id in ([]Reg_Id{clip0, named3, primary2}) {
+        testing.expect_value(t, dec_regs[id].timestamp, regs[id].timestamp)
+        testing.expect_value(t, dec_regs[id].mime_type, regs[id].mime_type)
+        testing.expect(t, slice.equal(dec_regs[id].data, regs[id].data))
     }
 
-    for i in 0 ..< int(count) {
-        free_reg_entry(&dec_regs[i].entry)
+    for &entry in dec_regs {
+        free_reg_entry(&entry)
     }
 }
 

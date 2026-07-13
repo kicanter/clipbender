@@ -25,8 +25,10 @@ NAMED_START :: Reg_Id(10)
 NAMED_END :: Reg_Id(35)
 PRIMARY_START :: Reg_Id(36)
 PRIMARY_END :: Reg_Id(45)
-SELECTION_PRIMARY :: Reg_Id(254)
-SELECTION_CLIPBOARD :: Reg_Id(255)
+// Live system selections. Kept in the top of the 0-63 range so they fit in the Cmd_Get_Filter bit_set (u64-backed)
+// and can be filtered/returned by GET like any other register. Bits 46-61 are reserved for future expansion.
+SELECTION_PRIMARY :: Reg_Id(62)
+SELECTION_CLIPBOARD :: Reg_Id(63)
 
 // Register ID validation
 reg_id_is_valid :: proc(id: Reg_Id) -> bool {
@@ -202,13 +204,23 @@ Source_Kind :: enum u8 {
 }
 
 // Bitmask filter assembled from GET args.
-Cmd_Get_Filter :: bit_set[0 ..= 45;u64]
+Cmd_Get_Filter :: bit_set[0 ..= 63;u64]
 // Keywords for GET CLI
-CMD_GET_FILTER_CLIPBOARD :: transmute(Cmd_Get_Filter)u64(0x3FF) // bits 0-9
-CMD_GET_FILTER_NAMED :: transmute(Cmd_Get_Filter)(u64(0x3FFFFFF) << 10) // bits 10-35
-CMD_GET_FILTER_PRIMARY :: transmute(Cmd_Get_Filter)(u64(0x3FF) << 36) // bits 36-45
-CMD_GET_FILTER_NUMBERED :: CMD_GET_FILTER_CLIPBOARD + CMD_GET_FILTER_PRIMARY
-CMD_GET_FILTER_ALL :: CMD_GET_FILTER_NAMED + CMD_GET_FILTER_NUMBERED
+CMD_GET_FILTER_NUMBERED :: transmute(Cmd_Get_Filter)u64(0x3FF) // clipboard recency, bits 0-9
+CMD_GET_FILTER_NAMED :: transmute(Cmd_Get_Filter)(u64(0x3FFFFFF) << 10) // named a-z, bits 10-35
+CMD_GET_FILTER_PRIMARY_NUMBERED :: transmute(Cmd_Get_Filter)(u64(0x3FF) << 36) // primary recency, bits 36-45
+CMD_GET_FILTER_PRIMARY_SELECTION :: transmute(Cmd_Get_Filter)(u64(1) << 62) // live primary selection, bit 62
+CMD_GET_FILTER_SELECTION :: transmute(Cmd_Get_Filter)(u64(1) << 63) // live clipboard selection, bit 63
+CMD_GET_FILTER_ALL ::
+    CMD_GET_FILTER_NUMBERED +
+    CMD_GET_FILTER_NAMED +
+    CMD_GET_FILTER_PRIMARY_NUMBERED +
+    CMD_GET_FILTER_SELECTION +
+    CMD_GET_FILTER_PRIMARY_SELECTION
+
+// Size of a register-indexed array. Matches the Cmd_Get_Filter bit width so any Reg_Id (0-63, including the live
+// selections at 62/63) can be used directly as an array index. Bits 46-61 are currently unused but reserved.
+MAX_REGS :: 64
 
 // Response status from daemon. IPC wire format:
 //
@@ -224,10 +236,6 @@ Resp_Status :: enum u8 {
 // Register data daemon returns to client for a GET operation. IPC wire format:
 //
 // `[1 byte Reg_Id][8 bytes i64 timestamp][1 byte mime type len][M bytes mime type][4 bytes data length][N bytes data]`
-Reg :: struct {
-    id:    Reg_Id,
-    entry: Reg_Entry,
-}
 
 free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
     delete(reg_entry.data)
@@ -289,12 +297,14 @@ marshal_cmd_shutdown :: proc(buf: []byte) -> int {
 // ok/error responses handled inline
 // REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * Reg]`
 // buf starts after first Response_Status byte
+// Scatters each packed wire entry into its Reg_Id slot in `regs`. Slots not present in the response are left zeroed.
 // NOTE: caller is responsible for freeing all entries in `regs`
-unmarshal_resp_registers :: proc(buf: []byte, regs: ^[46]Reg) -> (count: u8) {
+unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8) {
+    regs^ = {}
     count = u8(buf[0])
 
     offset := 1
-    for i in 0 ..< count {
+    for _ in 0 ..< count {
         reg_id := Reg_Id(buf[offset])
         offset += size_of(Reg_Id)
 
@@ -315,18 +325,12 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[46]Reg) -> (count: u8) {
         data := slice.clone(buf[offset:][:int(data_len)])
         offset += int(data_len)
 
-        reg_entry := Reg_Entry {
+        // Index by Reg_Id: the array position implicitly encodes the register identity
+        regs[reg_id] = Reg_Entry {
             data      = data,
             mime_type = mime,
             timestamp = time,
         }
-
-        resp_reg := Reg {
-            id    = reg_id,
-            entry = reg_entry,
-        }
-
-        regs[i] = resp_reg
     }
 
     return count
@@ -348,36 +352,42 @@ marshal_resp_error :: proc(message: string, buf: []byte) -> int {
 }
 
 // REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * Reg]`
-marshal_resp_registers :: proc(regs: []Reg, buf: []byte) -> int {
+// `regs` is indexed by Reg_Id; only non-empty slots are packed onto the wire, each tagged with its Reg_Id.
+marshal_resp_registers :: proc(regs: ^[MAX_REGS]Reg_Entry, buf: []byte) -> int {
     buf[0] = byte(Resp_Status.REGISTERS)
-    count := u8(len(regs))
-    buf[1] = byte(count)
+    // Reserve the count byte, fill it in after we know how many non-empty entries there are
     written := size_of(Resp_Status) + size_of(u8)
+    count: u8 = 0
 
-    for reg in regs {
-        buf[written] = byte(reg.id)
+    for entry, id in regs {
+        if entry.data == nil {continue}
+
+        buf[written] = byte(id)
         written += size_of(Reg_Id)
 
-        time_bytes := transmute([size_of(i64)]byte)reg.entry.timestamp
+        time_bytes := transmute([size_of(i64)]byte)entry.timestamp
         copy(buf[written:][:size_of(i64)], time_bytes[:])
         written += size_of(i64)
 
-        mime := reg.entry.mime_type
+        mime := entry.mime_type
         mime_len := u8(len(mime))
         buf[written] = byte(mime_len)
         written += size_of(mime_len)
         copy(buf[written:][:int(mime_len)], mime)
         written += int(mime_len)
 
-        data := reg.entry.data
+        data := entry.data
         data_len := u32(len(data))
         data_len_bytes := transmute([size_of(u32)]byte)data_len
         copy(buf[written:][:size_of(u32)], data_len_bytes[:])
         written += size_of(u32)
         copy(buf[written:][:int(data_len)], data)
         written += int(data_len)
+
+        count += 1
     }
 
+    buf[1] = byte(count)
     return written
 }
 

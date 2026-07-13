@@ -86,9 +86,8 @@ Gui_State :: struct {
     kb:               Keyboard,
     // Font
     font:             Font,
-    // Register data
-    reg_count:        u8,
-    regs:             [46]lib.Reg,
+    // Register data, indexed by Reg_Id
+    regs:             [lib.MAX_REGS]lib.Reg_Entry,
 }
 
 gui_init_surface :: proc(gui_state: ^Gui_State) {
@@ -341,9 +340,9 @@ gui_cleanup_surface :: proc(gui_state: ^Gui_State) {
 }
 
 gui_cleanup :: proc(gui_state: ^Gui_State) {
-    // Cleanup register data
-    for i in 0 ..< gui_state.reg_count {
-        lib.free_reg_entry(&gui_state.regs[i].entry)
+    // Cleanup register data (indexed by Reg_Id; empty slots free harmlessly)
+    for &entry in gui_state.regs {
+        lib.free_reg_entry(&entry)
     }
     // Cleanup font
     gui_cleanup_font(gui_state)
@@ -764,86 +763,69 @@ keyboard_listener := wl.keyboard_listener {
     repeat_info = proc "c" (data: rawptr, keyboard: ^wl.keyboard, rate_: int, delay_: int) {},
 }
 
-gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (count: u8, err: Maybe(string)) {
+gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (err: Maybe(string)) {
     // Send GET message for all registers
     msg: [9]byte
     written := lib.marshal_cmd_get(lib.CMD_GET_FILTER_ALL, msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {
-        return {}, fmt.tprintf("Failed sending GET to daemon: errno %v", send_err)
+        return fmt.tprintf("Failed sending GET to daemon: errno %v", send_err)
     }
 
     // Receive response from daemon
     resp_buf: [RESP_BUF_LARGE]u8
     bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
     if recv_err != .NONE || bytes_read <= 0 {
-        return {}, fmt.tprintf("No response from daemon when fetching registers: errno %v", recv_err)
+        return fmt.tprintf("No response from daemon when fetching registers: errno %v", recv_err)
     }
 
     status := lib.Resp_Status(resp_buf[0])
     switch status {
     case .OK:
-        return {}, fmt.tprint("Unexpected OK response when fetching registers")
+        return fmt.tprint("Unexpected OK response when fetching registers")
     case .ERROR:
         err_msg := string(resp_buf[1:bytes_read])
-        return {}, fmt.tprint("%s", err_msg)
+        return fmt.tprintf("%s", err_msg)
     case .REGISTERS:
-        count = lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &gui_state.regs)
+        lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &gui_state.regs)
     }
 
-    return count, nil
+    return nil
 }
 
-draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, curr: ^u8, x: uint, y: uint, color: u32) {
-    reg_str: string
+draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: uint, y: uint, color: u32) {
     CONTENT_WIDTH :: 100
     reg_fmt := "% 8s  % -" + "100s"
-    if curr^ < gui_state.reg_count && reg_id == gui_state.regs[curr^].id {
-        // Draw register data to line and increment where we are in the array
-        reg_entry := gui_state.regs[curr^].entry
-        reg_str = fmt.tprintf(
-            reg_fmt,
-            lib.reg_id_to_string(reg_id),
-            truncate_content(string(reg_entry.data), CONTENT_WIDTH),
-        )
-        curr^ += 1
-    } else {
-        // Draw empty register line
-        reg_str = fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), "")
-    }
+
+    // `regs` is indexed by Reg_Id; an empty slot (nil data) renders as a blank register line
+    entry := gui_state.regs[reg_id]
+    content := "" if entry.data == nil else truncate_content(string(entry.data), CONTENT_WIDTH)
+    reg_str := fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), content)
 
     draw_string(&gui_state.frame_buf, x, y, reg_str, color, &gui_state.font)
 }
 
 draw_all_registers :: proc(gui_state: ^Gui_State, x: uint, y: uint, color: u32) {
-    curr: u8 = 0
     cursor_x := x
     cursor_y := y
 
     // Draw all clipboard registers first
     for i := lib.CLIPBOARD_START; i <= lib.CLIPBOARD_END; i += 1 {
-        draw_register(gui_state, i, &curr, cursor_x, cursor_y, color)
+        draw_register(gui_state, i, cursor_x, cursor_y, color)
         cursor_y += LINE_HEIGHT
     }
-
-    // Save the first named index and skip named to find first primary index in array
-    first_named := curr
-    for ; curr < gui_state.reg_count && lib.reg_id_is_named(gui_state.regs[curr].id); curr += 1 {}
 
     // TODO: Probably increase cursor_x to place clipboard + primary side-by-side at some point
     // Draw all primary registers
     for i := lib.PRIMARY_START; i <= lib.PRIMARY_END; i += 1 {
-        draw_register(gui_state, i, &curr, cursor_x, cursor_y, color)
+        draw_register(gui_state, i, cursor_x, cursor_y, color)
         cursor_y += LINE_HEIGHT
     }
-
-    // Reset curr index to the first named in array
-    curr = first_named
 
     // TODO: If clipboard + primary are side-by-side, reset cursor_x to x
     // Draw all named registers
     for i := lib.NAMED_START; i <= lib.NAMED_END; i += 1 {
-        draw_register(gui_state, i, &curr, cursor_x, cursor_y, color)
+        draw_register(gui_state, i, cursor_x, cursor_y, color)
         cursor_y += LINE_HEIGHT
     }
 }
@@ -884,11 +866,10 @@ run_gui :: proc(client_fd: linux.Fd) {
     log.debug("GUI initialized")
 
     // Fetch registers
-    gui_state.reg_count, err = gui_fetch_registers(client_fd, &gui_state)
+    err = gui_fetch_registers(client_fd, &gui_state)
     if err != nil {
         fmt.eprintfln("Error: could not fetch registers: %s", err)
     }
-    log.debugf("Fetched %d registers from daemon", gui_state.reg_count)
 
     gui_render(&gui_state)
     log.debug("GUI rendered, entering event loop")

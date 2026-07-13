@@ -19,20 +19,28 @@ clipboard_registers: Recency_Ring
 named_registers: [26]lib.Reg_Entry
 primary_registers: Recency_Ring
 
-load_registers :: proc(count: u8, regs: ^[46]lib.Reg) {
-    // Regs are serialized in recency order (most recent first).
-    // Push in reverse so oldest goes in first and most recent ends up at head.
-    for i := int(count) - 1; i >= 0; i -= 1 {
-        reg := regs[i]
-        if lib.reg_id_is_clipboard_num(reg.id) {
-            push_recency_reg(.CLIPBOARD, reg.entry.data, reg.entry.mime_type)
-        } else if lib.reg_id_is_named(reg.id) {
-            overwrite_named_reg(lib.reg_id_to_named_index(reg.id), reg.entry.data, reg.entry.mime_type)
-        } else if lib.reg_id_is_primary_num(reg.id) {
-            push_recency_reg(.PRIMARY, reg.entry.data, reg.entry.mime_type)
-        } else {
-            log.warn("Somehow encountered invalid register ID during state loading?")
-        }
+// Live system selections: the actual current clipboard/primary selection, distinct from the recency rings.
+// Maintained by the Wayland layer on each selection event, seeded at startup, and never persisted.
+clipboard_selection: lib.Reg_Entry
+primary_selection: lib.Reg_Entry
+
+load_registers :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
+    // `regs` is indexed by Reg_Id. Recency rings are serialized most-recent-first, so within each ring we push in
+    // reverse (highest recency index first) so the most recent entry ends up at the ring head.
+    for i := int(lib.CLIPBOARD_END); i >= int(lib.CLIPBOARD_START); i -= 1 {
+        entry := regs[i]
+        if entry.data == nil {continue}
+        push_recency_reg(.CLIPBOARD, entry.data, entry.mime_type)
+    }
+    for i := int(lib.PRIMARY_END); i >= int(lib.PRIMARY_START); i -= 1 {
+        entry := regs[i]
+        if entry.data == nil {continue}
+        push_recency_reg(.PRIMARY, entry.data, entry.mime_type)
+    }
+    for i in int(lib.NAMED_START) ..= int(lib.NAMED_END) {
+        entry := regs[i]
+        if entry.data == nil {continue}
+        overwrite_named_reg(lib.reg_id_to_named_index(lib.Reg_Id(i)), entry.data, entry.mime_type)
     }
 }
 
@@ -135,35 +143,38 @@ get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
     return nil
 }
 
-get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[46]lib.Reg) -> (count: u8) {
+// Gather registers matching `filter` into `regs`, indexed by Reg_Id. Slots not matched are left zeroed.
+get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[lib.MAX_REGS]lib.Reg_Entry) -> (count: u8) {
+    regs^ = {}
     count = 0
-    for bit in filter & lib.CMD_GET_FILTER_CLIPBOARD {
+    for bit in filter & lib.CMD_GET_FILTER_NUMBERED {
         entry := get_recency_reg(.CLIPBOARD, u8(bit))
         if entry == nil {continue}
-        regs[count] = lib.Reg {
-            id    = lib.Reg_Id(bit),
-            entry = entry^,
-        }
+        regs[bit] = entry^
         count += 1
     }
 
     for bit in filter & lib.CMD_GET_FILTER_NAMED {
         entry := get_named_reg(u8(bit) - u8(lib.NAMED_START))
         if entry == nil {continue}
-        regs[count] = lib.Reg {
-            id    = lib.Reg_Id(bit),
-            entry = entry^,
-        }
+        regs[bit] = entry^
         count += 1
     }
 
-    for bit in filter & lib.CMD_GET_FILTER_PRIMARY {
+    for bit in filter & lib.CMD_GET_FILTER_PRIMARY_NUMBERED {
         entry := get_recency_reg(.PRIMARY, u8(bit) - u8(lib.PRIMARY_START))
         if entry == nil {continue}
-        regs[count] = lib.Reg {
-            id    = lib.Reg_Id(bit),
-            entry = entry^,
-        }
+        regs[bit] = entry^
+        count += 1
+    }
+
+    // Live selections
+    if filter & lib.CMD_GET_FILTER_SELECTION != {} && clipboard_selection.data != nil {
+        regs[lib.SELECTION_CLIPBOARD] = clipboard_selection
+        count += 1
+    }
+    if filter & lib.CMD_GET_FILTER_PRIMARY_SELECTION != {} && primary_selection.data != nil {
+        regs[lib.SELECTION_PRIMARY] = primary_selection
         count += 1
     }
 
