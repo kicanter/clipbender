@@ -327,25 +327,21 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
     //
     // If we didn't have this check, we would try to read the data offer and timeout because we would also have to be
     // the one sending it (in `wayland_read_offer_data()` the pipe read would time out waiting for us to write).
-    self_source_str := ""
+    self_source := false
     if selection.source != nil {
-        // Check for duplicate before allocating
-        head_reg := get_recency_reg(type, 0)
-        if head_reg != nil && head_reg.mime_type == mime && slice.equal(head_reg.data, data) {
-            log.debugf("Got duplicate %v copy (self-source), suppressing register push", type)
-            return
-        }
-        // Copy the data from our own cache to give to the register
-        data = slice.clone(selection.source_data)
-        mime = strings.clone(selection.source_mime)
-        self_source_str = " (self-source)"
+        // Reuse the data from our own cache to give to the register
+        data = selection.source_data
+        mime = selection.source_mime
+        self_source = true
     } else {
+        // Allocates mime
         mime = pick_best_mime(selection.mimes)
         if mime == "" {
             log.errorf("No mime found for debounced %v selection, canceling push to recency register", type)
             return
         }
 
+        // Allocates data
         data = wayland_read_offer_data(offer, wl_state.display, mime)
         if data == nil {
             log.errorf("Couldn't read data from debounced %v offer", type)
@@ -354,14 +350,31 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
         }
     }
 
-    // Deduplicate: don't push if identical to the most recent entry
+    // Update only timestamp of cached live selection if duplicate, otherwise update the cached live selection.
+    live_selection := get_live_selection(type)
+    if live_selection != nil && live_selection.mime_type == mime && slice.equal(live_selection.data, data) {
+        bump_live_selection(type)
+    } else {
+        // Clone data and mime since recency reg push takes ownership.
+        set_live_selection(type, slice.clone(data), strings.clone(mime))
+    }
+
+    // Deduplicate: don't push if identical to the most recent entry, but bump the live selection's timestamp
     head_reg := get_recency_reg(type, 0)
     if head_reg != nil && head_reg.mime_type == mime && slice.equal(head_reg.data, data) {
         log.debugf("Got duplicate %v copy, suppressing register push", type)
-        delete(data)
-        delete(mime)
+        if !self_source {
+            delete(data)
+            delete(mime)
+        }
     } else {
-        // ownership of data and mime transferred
+        // Clone the data if it's pointing at our owned selection.
+        self_source_str := ""
+        if self_source {
+            data, mime = slice.clone(data), strings.clone(mime)
+            self_source_str = " (self-source)"
+        }
+        // Ownership of data and mime transferred
         push_recency_reg(type, data, mime)
         data, mime = {}, {}
         log.infof("Pushed to %v recency register%s", type, self_source_str)

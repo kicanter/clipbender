@@ -21,8 +21,56 @@ primary_registers: Recency_Ring
 
 // Live system selections: the actual current clipboard/primary selection, distinct from the recency rings.
 // Maintained by the Wayland layer on each selection event, seeded at startup, and never persisted.
+// NOTE: these are currently _almost_ equivalent to numbered reg 0 for the respective ring buffer, however on duplicate
+// entries, the timestamp is updated, whereas nothing is pushed or modified wrt the numbered registers.
 clipboard_selection: lib.Reg_Entry
 primary_selection: lib.Reg_Entry
+
+// Overwrite the live selection cache for `type`, taking ownership of `data` and `mime` (frees the previous value).
+set_live_selection :: proc(type: lib.Selection_Type, data: []byte, mime: string) {
+    selection: ^lib.Reg_Entry
+    switch type {
+    case .CLIPBOARD:
+        selection = &clipboard_selection
+    case .PRIMARY:
+        selection = &primary_selection
+    }
+    lib.free_reg_entry(selection)
+    selection^ = lib.Reg_Entry {
+        data      = data,
+        mime_type = mime,
+        timestamp = time.time_to_unix(time.now()),
+    }
+}
+
+// Retrieve the live selection cache for `type`.
+get_live_selection :: proc(type: lib.Selection_Type) -> ^lib.Reg_Entry {
+    switch type {
+    case .CLIPBOARD:
+        return &clipboard_selection
+    case .PRIMARY:
+        return &primary_selection
+    }
+    unreachable()
+}
+
+// Bump the live selection cache's timestamp for `type`, updating the existing value.
+bump_live_selection :: proc(type: lib.Selection_Type) {
+    selection: ^lib.Reg_Entry
+    switch type {
+    case .CLIPBOARD:
+        selection = &clipboard_selection
+    case .PRIMARY:
+        selection = &primary_selection
+    }
+
+    selection.timestamp = time.time_to_unix(time.now())
+}
+
+free_live_selections :: proc() {
+    lib.free_reg_entry(&clipboard_selection)
+    lib.free_reg_entry(&primary_selection)
+}
 
 load_registers :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     // `regs` is indexed by Reg_Id. Recency rings are serialized most-recent-first, so within each ring we push in
@@ -133,12 +181,11 @@ get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
         recency := lib.reg_id_to_primary_index(reg_id)
         return get_recency_reg(.PRIMARY, recency)
     } else if reg_id == lib.SELECTION_CLIPBOARD {
-        // TODO: get the selection through cached data_offer in wayland layer. For now, just return the most recent
-        // register (should be identical for now, but maybe offer filtering/only writing certain stuff to recency
-        // registers in the future)
-        return get_recency_reg(.CLIPBOARD, 0)
+        if clipboard_selection.data == nil {return nil}
+        return &clipboard_selection
     } else if reg_id == lib.SELECTION_PRIMARY {
-        return get_recency_reg(.PRIMARY, 0)
+        if primary_selection.data == nil {return nil}
+        return &primary_selection
     }
     return nil
 }
@@ -255,6 +302,7 @@ cleanup_registers :: proc() {
     for &entry in clipboard_registers.entries {lib.free_reg_entry(&entry)}
     for &entry in primary_registers.entries {lib.free_reg_entry(&entry)}
     for &entry in named_registers {lib.free_reg_entry(&entry)}
+    free_live_selections()
 }
 
 // Convenience clone functions
