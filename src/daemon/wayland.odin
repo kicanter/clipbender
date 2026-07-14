@@ -9,6 +9,12 @@ import "core:sys/linux"
 import lib "src:libclipbender"
 import ext_dc "wayland:ext-data-control"
 import wl "wayland:odin-wayland"
+import wlr_dc "wayland:wlr-data-control"
+
+// ============================== Constants ==============================
+
+EXT_STR :: "ext_data_control"
+WLR_STR :: "wlr_data_control"
 
 // Preferred mime types in order of priority
 PREFERRED_MIMES :: [?]string {
@@ -31,13 +37,39 @@ PREFERRED_MIMES :: [?]string {
     "text/calendar",
 }
 
+// ============================== Types ==============================
+
+// The data-control protocol objects are represented as tagged unions over the ext and wlr pointer variants. The
+// compositor advertises one protocol or the other (ext preferred); the active variant is set once at bind time and
+// stays constant for the connection. Protocol-specific requests are dispatched through the wrappers at the bottom.
+
+Data_Control_Manager :: union {
+    ^ext_dc.data_control_manager_v1,
+    ^wlr_dc.data_control_manager_v1,
+}
+
+Data_Control_Device :: union {
+    ^ext_dc.data_control_device_v1,
+    ^wlr_dc.data_control_device_v1,
+}
+
+Data_Control_Offer :: union {
+    ^ext_dc.data_control_offer_v1,
+    ^wlr_dc.data_control_offer_v1,
+}
+
+Data_Control_Source :: union {
+    ^ext_dc.data_control_source_v1,
+    ^wlr_dc.data_control_source_v1,
+}
+
 Selection_State :: struct {
     // Copy: selection monitoring (push to recency registers)
-    offer:       ^ext_dc.data_control_offer_v1,
+    offer:       Data_Control_Offer,
     mimes:       map[string]struct{}, // Transferred from `advertised_mimes` upon selection event
     staged:      bool, // Check whether we are in a debounce window
     // Paste: selection writing (setting clipboard/primary for paste)
-    source:      ^ext_dc.data_control_source_v1,
+    source:      Data_Control_Source,
     source_data: []byte,
     source_mime: string,
 }
@@ -48,9 +80,9 @@ Wayland_State :: struct {
     registry:                  ^wl.registry,
     seat:                      ^wl.seat,
     seat_name:                 uint,
-    data_control_manager:      ^ext_dc.data_control_manager_v1,
+    data_control_manager:      Data_Control_Manager,
     data_control_manager_name: uint,
-    data_control_device:       ^ext_dc.data_control_device_v1,
+    data_control_device:       Data_Control_Device,
     disabled:                  bool,
     // Selection state
     clipboard_state:           Selection_State,
@@ -58,6 +90,8 @@ Wayland_State :: struct {
     // Temporary set used to accumulate mimes from an offer and pass to selection/primary_selection event
     advertised_mimes:          map[string]struct{}, // map with zero-size value = hashset
 }
+
+// ============================== Connection Lifecycle ==============================
 
 wayland_init :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
     // Get display
@@ -78,12 +112,12 @@ wayland_init :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
         return false
     }
     if wl_state.data_control_manager == nil {
-        log.error("Failed to bind Wayland data_control_manager")
+        log.error("Failed to bind Wayland data_control_manager, didn't find ext_data_control nor wlr_data_control")
         return false
     }
 
     // Get data_control_device
-    wl_state.data_control_device = ext_dc.data_control_manager_v1_get_data_device(
+    wl_state.data_control_device = data_control_manager_v1_get_data_device_wrapper(
         wl_state.data_control_manager,
         wl_state.seat,
     )
@@ -91,7 +125,7 @@ wayland_init :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
         log.error("Failed to get Wayland data_control_device, ran out of memory?")
         return false
     }
-    ext_dc.data_control_device_v1_add_listener(wl_state.data_control_device, &device_listener, wl_state)
+    data_control_device_v1_add_listener_wrapper(wl_state.data_control_device, wl_state)
 
     // Roundtrip to receive initial selection state
     wl.display_roundtrip(wl_state.display)
@@ -100,7 +134,7 @@ wayland_init :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
 }
 
 wayland_cleanup_source :: proc(selection: ^Selection_State) {
-    if selection.source != nil {ext_dc.data_control_source_v1_destroy(selection.source)}
+    if selection.source != nil {data_control_source_v1_destroy_wrapper(selection.source)}
     selection.source = nil
     delete(selection.source_data)
     selection.source_data = nil
@@ -109,7 +143,7 @@ wayland_cleanup_source :: proc(selection: ^Selection_State) {
 }
 
 wayland_cleanup_selection :: proc(selection: ^Selection_State) {
-    if selection.offer != nil {ext_dc.data_control_offer_v1_destroy(selection.offer)}
+    if selection.offer != nil {data_control_offer_v1_destroy_wrapper(selection.offer)}
     selection.offer = nil
     wayland_cleanup_source(selection)
     for mime in selection.mimes {delete(mime)}
@@ -124,8 +158,8 @@ wayland_cleanup :: proc(wl_state: ^Wayland_State) {
     delete(wl_state.advertised_mimes)
 
     // Cleanup connection state
-    if wl_state.data_control_device != nil {ext_dc.data_control_device_v1_destroy(wl_state.data_control_device)}
-    if wl_state.data_control_manager != nil {ext_dc.data_control_manager_v1_destroy(wl_state.data_control_manager)}
+    if wl_state.data_control_device != nil {data_control_device_v1_destroy_wrapper(wl_state.data_control_device)}
+    if wl_state.data_control_manager != nil {data_control_manager_v1_destroy_wrapper(wl_state.data_control_manager)}
     if wl_state.seat != nil {wl.seat_release(wl_state.seat)}
     wl.registry_destroy(wl_state.registry)
     wl.display_disconnect(wl_state.display)
@@ -141,6 +175,8 @@ wayland_dispatch :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
     wl.display_dispatch(wl_state.display)
     return !wl_state.disabled
 }
+
+// ============================== Registry Listener ==============================
 
 registry_listener := wl.registry_listener {
     global = proc "c" (data: rawptr, registry: ^wl.registry, name_: uint, interface_: cstring, version_: uint) {
@@ -158,6 +194,19 @@ registry_listener := wl.registry_listener {
                 registry,
                 name_,
                 &ext_dc.data_control_manager_v1_interface,
+                1,
+            )
+            wl_state.data_control_manager_name = name_
+        case "zwlr_data_control_manager_v1":
+            // If we already assigned ext_data_control, don't replace it with wlr_data_control
+            if wl_state.data_control_manager != nil {
+                log.debugf("Wayland interface `%s` was found but ext_data_control is in-use and preferred", interface_)
+                return
+            }
+            wl_state.data_control_manager = cast(^wlr_dc.data_control_manager_v1)wl.registry_bind(
+                registry,
+                name_,
+                &wlr_dc.data_control_manager_v1_interface,
                 1,
             )
             wl_state.data_control_manager_name = name_
@@ -185,112 +234,251 @@ registry_listener := wl.registry_listener {
     },
 }
 
-device_listener := ext_dc.data_control_device_v1_listener {
+// ============================== Device Listener ==============================
+// Shared handlers take the union types; the per-protocol ext/wlr listener structs are thin adapters that forward the
+// concrete pointers into them.
+
+device_listener_data_offer :: proc "c" (
+    data: rawptr,
+    data_control_device_v1: Data_Control_Device,
+    id_: Data_Control_Offer,
+) {
+    context = runtime.default_context()
+    context.logger = _logger
+    wl_state := cast(^Wayland_State)data
+
+    logstr := "Received %s_device::data_offer event"
+    // Attach offer listener to collect MIME types
+    switch device in data_control_device_v1 {
+    case ^ext_dc.data_control_device_v1:
+        log.debugf(logstr, EXT_STR)
+        ext_dc.data_control_offer_v1_add_listener(id_.(^ext_dc.data_control_offer_v1), &ext_offer_listener, wl_state)
+    case ^wlr_dc.data_control_device_v1:
+        log.debugf(logstr, WLR_STR)
+        wlr_dc.data_control_offer_v1_add_listener(id_.(^wlr_dc.data_control_offer_v1), &wlr_offer_listener, wl_state)
+    }
+}
+
+device_listener_selection :: proc "c" (
+    data: rawptr,
+    data_control_device_v1: Data_Control_Device,
+    id_: Data_Control_Offer,
+) {
+    context = runtime.default_context()
+    context.logger = _logger
+    wl_state := cast(^Wayland_State)data
+
+    logstr := "Received %s_device::selection event"
+    switch device in data_control_device_v1 {
+    case ^ext_dc.data_control_device_v1:
+        log.debugf(logstr, EXT_STR)
+    case ^wlr_dc.data_control_device_v1:
+        log.debugf(logstr, WLR_STR)
+    }
+    wayland_stage_selection(wl_state, &wl_state.clipboard_state, id_)
+}
+
+device_listener_finished :: proc "c" (data: rawptr, data_control_device_v1: Data_Control_Device) {
+    context = runtime.default_context()
+    context.logger = _logger
+    wl_state := cast(^Wayland_State)data
+
+    logstr := "Received %s_device::finished event, disabling clipboard monitoring"
+    switch device in data_control_device_v1 {
+    case ^ext_dc.data_control_device_v1:
+        log.debugf(logstr, EXT_STR)
+    case ^wlr_dc.data_control_device_v1:
+        log.debugf(logstr, WLR_STR)
+    }
+    wl_state.disabled = true
+}
+
+device_listener_primary_selection :: proc "c" (
+    data: rawptr,
+    data_control_device_v1: Data_Control_Device,
+    id_: Data_Control_Offer,
+) {
+    context = runtime.default_context()
+    context.logger = _logger
+    wl_state := cast(^Wayland_State)data
+
+    logstr := "Received %s_device::primary_selection event"
+    switch device in data_control_device_v1 {
+    case ^ext_dc.data_control_device_v1:
+        log.debugf(logstr, EXT_STR)
+    case ^wlr_dc.data_control_device_v1:
+        log.debugf(logstr, WLR_STR)
+    }
+    wayland_stage_selection(wl_state, &wl_state.primary_state, id_)
+}
+
+ext_device_listener := ext_dc.data_control_device_v1_listener {
     data_offer = proc "c" (
         data: rawptr,
         data_control_device_v1: ^ext_dc.data_control_device_v1,
         id_: ^ext_dc.data_control_offer_v1,
     ) {
-        context = runtime.default_context()
-        context.logger = _logger
-        wl_state := cast(^Wayland_State)data
-        log.debug("Received ext_data_control_device_v1::data_offer event")
-        // Attach offer listener to collect MIME types
-        ext_dc.data_control_offer_v1_add_listener(id_, &offer_listener, wl_state)
+        device_listener_data_offer(data, data_control_device_v1, id_)
     },
     selection = proc "c" (
         data: rawptr,
         data_control_device_v1: ^ext_dc.data_control_device_v1,
         id_: ^ext_dc.data_control_offer_v1,
     ) {
-        context = runtime.default_context()
-        context.logger = _logger
-        wl_state := cast(^Wayland_State)data
-        log.debug("Received ext_data_control_device_v1::selection event")
-        wayland_stage_selection(wl_state, &wl_state.clipboard_state, id_)
+        device_listener_selection(data, data_control_device_v1, id_)
     },
     finished = proc "c" (data: rawptr, data_control_device_v1: ^ext_dc.data_control_device_v1) {
-        context = runtime.default_context()
-        context.logger = _logger
-        wl_state := cast(^Wayland_State)data
-        log.debug("Received ext_data_control_device_v1::finished event, disabling clipboard monitoring")
-        wl_state.disabled = true
+        device_listener_finished(data, data_control_device_v1)
     },
     primary_selection = proc "c" (
         data: rawptr,
         data_control_device_v1: ^ext_dc.data_control_device_v1,
         id_: ^ext_dc.data_control_offer_v1,
     ) {
-        context = runtime.default_context()
-        context.logger = _logger
-        wl_state := cast(^Wayland_State)data
-        log.debug("Received ext_data_control_device_v1::primary_selection event")
-        wayland_stage_selection(wl_state, &wl_state.primary_state, id_)
+        device_listener_primary_selection(data, data_control_device_v1, id_)
     },
 }
 
-// Copy events
-offer_listener := ext_dc.data_control_offer_v1_listener {
+wlr_device_listener := wlr_dc.data_control_device_v1_listener {
+    data_offer = proc "c" (
+        data: rawptr,
+        data_control_device_v1: ^wlr_dc.data_control_device_v1,
+        id_: ^wlr_dc.data_control_offer_v1,
+    ) {
+        device_listener_data_offer(data, data_control_device_v1, id_)
+    },
+    selection = proc "c" (
+        data: rawptr,
+        data_control_device_v1: ^wlr_dc.data_control_device_v1,
+        id_: ^wlr_dc.data_control_offer_v1,
+    ) {
+        device_listener_selection(data, data_control_device_v1, id_)
+    },
+    finished = proc "c" (data: rawptr, data_control_device_v1: ^wlr_dc.data_control_device_v1) {
+        device_listener_finished(data, data_control_device_v1)
+    },
+    primary_selection = proc "c" (
+        data: rawptr,
+        data_control_device_v1: ^wlr_dc.data_control_device_v1,
+        id_: ^wlr_dc.data_control_offer_v1,
+    ) {
+        device_listener_primary_selection(data, data_control_device_v1, id_)
+    },
+}
+
+// ============================== Offer Listener (Copy events) ==============================
+
+offer_listener_offer :: proc "c" (data: rawptr, data_control_offer_v1: Data_Control_Offer, mime_type_: cstring) {
+    context = runtime.default_context()
+    context.logger = _logger
+    wl_state := cast(^Wayland_State)data
+
+    logstr := "Received %s_offer::offer event (mime: %s)"
+    switch offer in data_control_offer_v1 {
+    case ^ext_dc.data_control_offer_v1:
+        log.debugf(logstr, EXT_STR, mime_type_)
+    case ^wlr_dc.data_control_offer_v1:
+        log.debugf(logstr, WLR_STR, mime_type_)
+    }
+    wl_state.advertised_mimes[strings.clone_from_cstring(mime_type_, context.temp_allocator)] = {}
+}
+
+ext_offer_listener := ext_dc.data_control_offer_v1_listener {
     offer = proc "c" (data: rawptr, data_control_offer_v1: ^ext_dc.data_control_offer_v1, mime_type_: cstring) {
-        context = runtime.default_context()
-        context.logger = _logger
-        wl_state := cast(^Wayland_State)data
-        log.debugf("Received ext_data_control_offer_v1::offer event (mime: %s)", mime_type_)
-
-        wl_state.advertised_mimes[strings.clone_from_cstring(mime_type_, context.temp_allocator)] = {}
+        offer_listener_offer(data, data_control_offer_v1, mime_type_)
     },
 }
 
-// Paste events
-source_listener := ext_dc.data_control_source_v1_listener {
+wlr_offer_listener := wlr_dc.data_control_offer_v1_listener {
+    offer = proc "c" (data: rawptr, data_control_offer_v1: ^wlr_dc.data_control_offer_v1, mime_type_: cstring) {
+        offer_listener_offer(data, data_control_offer_v1, mime_type_)
+    },
+}
+
+// ============================== Source Listener (Paste events) ==============================
+
+source_listener_send :: proc "c" (
+    data: rawptr,
+    data_control_source_v1: Data_Control_Source,
+    mime_type_: cstring,
+    fd_: int,
+) {
+    context = runtime.default_context()
+    context.logger = _logger
+    wl_state := cast(^Wayland_State)data
+
+    logstr := "Received %s_source::send event (%s)"
+    protostr := EXT_STR
+    if _, is_wlr := data_control_source_v1.(^wlr_dc.data_control_source_v1); is_wlr {protostr = WLR_STR}
+    switch data_control_source_v1 {
+    case wl_state.clipboard_state.source:
+        log.debugf(logstr, protostr, "clipboard")
+        wayland_send_source(&wl_state.clipboard_state, string(mime_type_), cast(linux.Fd)fd_)
+    case wl_state.primary_state.source:
+        log.debugf(logstr, protostr, "primary")
+        wayland_send_source(&wl_state.primary_state, string(mime_type_), cast(linux.Fd)fd_)
+    }
+}
+
+source_listener_cancelled :: proc "c" (data: rawptr, data_control_source_v1: Data_Control_Source) {
+    context = runtime.default_context()
+    context.logger = _logger
+    wl_state := cast(^Wayland_State)data
+
+    logstr := "Received %s_source::cancelled event (%s)"
+    protostr := EXT_STR
+    if _, is_wlr := data_control_source_v1.(^wlr_dc.data_control_source_v1); is_wlr {protostr = WLR_STR}
+    switch data_control_source_v1 {
+    case wl_state.clipboard_state.source:
+        log.debugf(logstr, protostr, "clipboard")
+        wayland_cleanup_source(&wl_state.clipboard_state)
+    case wl_state.primary_state.source:
+        log.debugf(logstr, protostr, "primary")
+        wayland_cleanup_source(&wl_state.primary_state)
+    }
+}
+
+ext_source_listener := ext_dc.data_control_source_v1_listener {
     send = proc "c" (
         data: rawptr,
         data_control_source_v1: ^ext_dc.data_control_source_v1,
         mime_type_: cstring,
         fd_: int,
     ) {
-        context = runtime.default_context()
-        context.logger = _logger
-        wl_state := cast(^Wayland_State)data
-
-        switch data_control_source_v1 {
-        case wl_state.clipboard_state.source:
-            log.debugf("Received ext_data_control_source_v1::send event (clipboard)")
-            wayland_send_source(&wl_state.clipboard_state, string(mime_type_), cast(linux.Fd)fd_)
-        case wl_state.primary_state.source:
-            log.debugf("Received ext_data_control_source_v1::send event (primary)")
-            wayland_send_source(&wl_state.primary_state, string(mime_type_), cast(linux.Fd)fd_)
-        }
+        source_listener_send(data, data_control_source_v1, mime_type_, fd_)
     },
     cancelled = proc "c" (data: rawptr, data_control_source_v1: ^ext_dc.data_control_source_v1) {
-        context = runtime.default_context()
-        context.logger = _logger
-        wl_state := cast(^Wayland_State)data
-
-        switch data_control_source_v1 {
-        case wl_state.clipboard_state.source:
-            log.debugf("Received ext_data_control_source_v1::cancelled event (clipboard)")
-            wayland_cleanup_source(&wl_state.clipboard_state)
-        case wl_state.primary_state.source:
-            log.debugf("Received ext_data_control_source_v1::cancelled event (primary)")
-            wayland_cleanup_source(&wl_state.primary_state)
-        }
+        source_listener_cancelled(data, data_control_source_v1)
     },
 }
 
+wlr_source_listener := wlr_dc.data_control_source_v1_listener {
+    send = proc "c" (
+        data: rawptr,
+        data_control_source_v1: ^wlr_dc.data_control_source_v1,
+        mime_type_: cstring,
+        fd_: int,
+    ) {
+        source_listener_send(data, data_control_source_v1, mime_type_, fd_)
+    },
+    cancelled = proc "c" (data: rawptr, data_control_source_v1: ^wlr_dc.data_control_source_v1) {
+        source_listener_cancelled(data, data_control_source_v1)
+    },
+}
+
+// ============================== Selection Monitoring (Copy) ==============================
+
 // Stage a selection event for debounced processing. Stores the offer and mimes, sets the pending flag.
-wayland_stage_selection :: proc(
-    wl_state: ^Wayland_State,
-    selection: ^Selection_State,
-    id_: ^ext_dc.data_control_offer_v1,
-) {
+wayland_stage_selection :: proc(wl_state: ^Wayland_State, selection: ^Selection_State, id_: Data_Control_Offer) {
     if id_ == nil {
         log.debug("Received offer is nil (selection was cleared)")
         return
     }
 
     // Destroy previous pending offer if replacing (debounce reset)
-    if selection.offer != nil {ext_dc.data_control_offer_v1_destroy(selection.offer)}
+    if selection.offer != nil {
+        data_control_offer_v1_destroy_wrapper(selection.offer)
+    }
     selection.offer = id_
 
     // Snapshot advertised mimes into this selection's state
@@ -404,7 +592,7 @@ pick_best_mime :: proc(avail_mimes: map[string]struct{}) -> string {
 }
 
 // Caller is responsible for freeing returned data
-wayland_read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^wl.display, mime: string) -> []u8 {
+wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display, mime: string) -> []u8 {
     // Create pipe
     pipe_fds: [2]linux.Fd
     if linux.pipe2(&pipe_fds, {.CLOEXEC}) != nil {
@@ -416,7 +604,7 @@ wayland_read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^
     write_fd := pipe_fds[1]
 
     // Ask source to write data to our pipe
-    ext_dc.data_control_offer_v1_receive(offer, strings.clone_to_cstring(mime, context.temp_allocator), int(write_fd))
+    data_control_offer_v1_receive_wrapper(offer, strings.clone_to_cstring(mime, context.temp_allocator), int(write_fd))
     linux.close(write_fd)
     wl.display_flush(display)
 
@@ -448,6 +636,8 @@ wayland_read_offer_data :: proc(offer: ^ext_dc.data_control_offer_v1, display: ^
     return result[:]
 }
 
+// ============================== Selection Writing (Paste) ==============================
+
 wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: string, type: lib.Selection_Type) {
     selection: ^Selection_State
     switch type {
@@ -465,24 +655,24 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: stri
     selection.source_mime = mime
 
     // Create new data source to advertise
-    selection.source = ext_dc.data_control_manager_v1_create_data_source(wl_state.data_control_manager)
+    selection.source = data_control_manager_v1_create_data_source_wrapper(wl_state.data_control_manager)
     if selection.source == nil {
         log.error("Failed to create data control source")
         return
     }
 
     // Offer mime type
-    ext_dc.data_control_source_v1_offer(selection.source, strings.clone_to_cstring(mime, context.temp_allocator))
+    data_control_source_v1_offer_wrapper(selection.source, strings.clone_to_cstring(mime, context.temp_allocator))
 
     // Attach listener for send/cancelled events
-    ext_dc.data_control_source_v1_add_listener(selection.source, &source_listener, rawptr(wl_state))
+    data_control_source_v1_add_listener_wrapper(selection.source, rawptr(wl_state))
 
     // Set selection on device
     switch type {
     case .CLIPBOARD:
-        ext_dc.data_control_device_v1_set_selection(wl_state.data_control_device, selection.source)
+        data_control_device_v1_set_selection_wrapper(wl_state.data_control_device, selection.source)
     case .PRIMARY:
-        ext_dc.data_control_device_v1_set_primary_selection(wl_state.data_control_device, selection.source)
+        data_control_device_v1_set_primary_selection_wrapper(wl_state.data_control_device, selection.source)
     }
 
     // Flush display
@@ -503,3 +693,146 @@ wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, fd: 
     linux.close(fd)
 }
 
+// ============================== Protocol Wrappers ==============================
+// Each wrapper dispatches a union to the concrete ext/wlr request with identical arguments. The manager is guaranteed
+// non-nil past init (checked in wayland_init), so wrappers that need a return value use #partial switch + unreachable().
+
+data_control_manager_v1_get_data_device_wrapper :: proc "contextless" (
+    data_control_manager_v1_: Data_Control_Manager,
+    seat_: ^wl.seat,
+) -> Data_Control_Device {
+    #partial switch manager in data_control_manager_v1_ {
+    case ^ext_dc.data_control_manager_v1:
+        return ext_dc.data_control_manager_v1_get_data_device(manager, seat_)
+    case ^wlr_dc.data_control_manager_v1:
+        return wlr_dc.data_control_manager_v1_get_data_device(manager, seat_)
+    }
+    unreachable()
+}
+
+data_control_manager_v1_create_data_source_wrapper :: proc "contextless" (
+    data_control_manager_v1_: Data_Control_Manager,
+) -> Data_Control_Source {
+    #partial switch manager in data_control_manager_v1_ {
+    case ^ext_dc.data_control_manager_v1:
+        return ext_dc.data_control_manager_v1_create_data_source(manager)
+    case ^wlr_dc.data_control_manager_v1:
+        return wlr_dc.data_control_manager_v1_create_data_source(manager)
+    }
+    unreachable()
+}
+
+data_control_manager_v1_destroy_wrapper :: proc "contextless" (data_control_manager_v1_: Data_Control_Manager) {
+    switch manager in data_control_manager_v1_ {
+    case ^ext_dc.data_control_manager_v1:
+        ext_dc.data_control_manager_v1_destroy(manager)
+    case ^wlr_dc.data_control_manager_v1:
+        wlr_dc.data_control_manager_v1_destroy(manager)
+    }
+}
+
+data_control_device_v1_add_listener_wrapper :: proc "contextless" (
+    data_control_device_v1_: Data_Control_Device,
+    data: rawptr,
+) {
+    switch device in data_control_device_v1_ {
+    case ^ext_dc.data_control_device_v1:
+        ext_dc.data_control_device_v1_add_listener(device, &ext_device_listener, data)
+    case ^wlr_dc.data_control_device_v1:
+        wlr_dc.data_control_device_v1_add_listener(device, &wlr_device_listener, data)
+    }
+}
+
+// The device and source are always the same protocol (source was created from the same manager as the device),
+// so the two-value type assertion always succeeds; it just avoids the panic path of the single-value form.
+data_control_device_v1_set_selection_wrapper :: proc "contextless" (
+    data_control_device_v1_: Data_Control_Device,
+    data_control_source_v1_: Data_Control_Source,
+) {
+    switch device in data_control_device_v1_ {
+    case ^ext_dc.data_control_device_v1:
+        source, _ := data_control_source_v1_.(^ext_dc.data_control_source_v1)
+        ext_dc.data_control_device_v1_set_selection(device, source)
+    case ^wlr_dc.data_control_device_v1:
+        source, _ := data_control_source_v1_.(^wlr_dc.data_control_source_v1)
+        wlr_dc.data_control_device_v1_set_selection(device, source)
+    }
+}
+
+data_control_device_v1_set_primary_selection_wrapper :: proc "contextless" (
+    data_control_device_v1_: Data_Control_Device,
+    data_control_source_v1_: Data_Control_Source,
+) {
+    switch device in data_control_device_v1_ {
+    case ^ext_dc.data_control_device_v1:
+        source, _ := data_control_source_v1_.(^ext_dc.data_control_source_v1)
+        ext_dc.data_control_device_v1_set_primary_selection(device, source)
+    case ^wlr_dc.data_control_device_v1:
+        source, _ := data_control_source_v1_.(^wlr_dc.data_control_source_v1)
+        wlr_dc.data_control_device_v1_set_primary_selection(device, source)
+    }
+}
+
+data_control_device_v1_destroy_wrapper :: proc "contextless" (data_control_device_v1_: Data_Control_Device) {
+    switch device in data_control_device_v1_ {
+    case ^ext_dc.data_control_device_v1:
+        ext_dc.data_control_device_v1_destroy(device)
+    case ^wlr_dc.data_control_device_v1:
+        wlr_dc.data_control_device_v1_destroy(device)
+    }
+}
+
+data_control_offer_v1_receive_wrapper :: proc "contextless" (
+    data_control_offer_v1_: Data_Control_Offer,
+    mime_type_: cstring,
+    fd_: int,
+) {
+    switch offer in data_control_offer_v1_ {
+    case ^ext_dc.data_control_offer_v1:
+        ext_dc.data_control_offer_v1_receive(offer, mime_type_, fd_)
+    case ^wlr_dc.data_control_offer_v1:
+        wlr_dc.data_control_offer_v1_receive(offer, mime_type_, fd_)
+    }
+}
+
+data_control_offer_v1_destroy_wrapper :: proc "contextless" (data_control_offer_v1_: Data_Control_Offer) {
+    switch offer in data_control_offer_v1_ {
+    case ^ext_dc.data_control_offer_v1:
+        ext_dc.data_control_offer_v1_destroy(offer)
+    case ^wlr_dc.data_control_offer_v1:
+        wlr_dc.data_control_offer_v1_destroy(offer)
+    }
+}
+
+data_control_source_v1_offer_wrapper :: proc "contextless" (
+    data_control_source_v1_: Data_Control_Source,
+    mime_type_: cstring,
+) {
+    switch source in data_control_source_v1_ {
+    case ^ext_dc.data_control_source_v1:
+        ext_dc.data_control_source_v1_offer(source, mime_type_)
+    case ^wlr_dc.data_control_source_v1:
+        wlr_dc.data_control_source_v1_offer(source, mime_type_)
+    }
+}
+
+data_control_source_v1_add_listener_wrapper :: proc "contextless" (
+    data_control_source_v1_: Data_Control_Source,
+    data: rawptr,
+) {
+    switch source in data_control_source_v1_ {
+    case ^ext_dc.data_control_source_v1:
+        ext_dc.data_control_source_v1_add_listener(source, &ext_source_listener, data)
+    case ^wlr_dc.data_control_source_v1:
+        wlr_dc.data_control_source_v1_add_listener(source, &wlr_source_listener, data)
+    }
+}
+
+data_control_source_v1_destroy_wrapper :: proc "contextless" (data_control_source_v1_: Data_Control_Source) {
+    switch source in data_control_source_v1_ {
+    case ^ext_dc.data_control_source_v1:
+        ext_dc.data_control_source_v1_destroy(source)
+    case ^wlr_dc.data_control_source_v1:
+        wlr_dc.data_control_source_v1_destroy(source)
+    }
+}
