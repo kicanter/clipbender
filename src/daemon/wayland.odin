@@ -304,7 +304,8 @@ wayland_stage_selection :: proc(
 }
 
 // Called when a debounce timer successfully expires. Reads the pending offer and pushes to recency ring.
-wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_Type) {
+// Returns true if it pushed a new entry to the recency ring (a persistable mutation), false otherwise.
+wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_Type) -> (pushed: bool) {
     selection: ^Selection_State
     switch type {
     case .CLIPBOARD:
@@ -314,7 +315,7 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
     }
 
     offer := selection.offer
-    if offer == nil {return}
+    if offer == nil {return false}
 
     data: []u8
     mime: string
@@ -338,7 +339,7 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
         mime = pick_best_mime(selection.mimes)
         if mime == "" {
             log.errorf("No mime found for debounced %v selection, canceling push to recency register", type)
-            return
+            return false
         }
 
         // Allocates data
@@ -346,7 +347,7 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
         if data == nil {
             log.errorf("Couldn't read data from debounced %v offer", type)
             delete(mime)
-            return
+            return false
         }
     }
 
@@ -367,18 +368,20 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
             delete(data)
             delete(mime)
         }
-    } else {
-        // Clone the data if it's pointing at our owned selection.
-        self_source_str := ""
-        if self_source {
-            data, mime = slice.clone(data), strings.clone(mime)
-            self_source_str = " (self-source)"
-        }
-        // Ownership of data and mime transferred
-        push_recency_reg(type, data, mime)
-        data, mime = {}, {}
-        log.infof("Pushed to %v recency register%s", type, self_source_str)
+        return false
     }
+
+    // Clone the data if it's pointing at our owned selection.
+    self_source_str := ""
+    if self_source {
+        data, mime = slice.clone(data), strings.clone(mime)
+        self_source_str = " (self-source)"
+    }
+    // Ownership of data and mime transferred
+    push_recency_reg(type, data, mime)
+    data, mime = {}, {}
+    log.infof("Pushed to %v recency register%s", type, self_source_str)
+    return true
 }
 
 // Pick the highest-priority mime type, fall back to any available if none match.

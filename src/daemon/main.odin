@@ -62,7 +62,9 @@ main :: proc() {
     defer cleanup_registers()
 
     // Load the persisted state
-    state_path := clipbender_state_path()
+    // HACK: make a config option or maybe a flag or something?
+    persist_state := false
+    state_path := clipbender_state_path(persist_state)
     defer delete(state_path)
     {     // new block so we can release the pointers in `regs` after we load them
         regs: [lib.MAX_REGS]lib.Reg_Entry
@@ -79,6 +81,6 @@ main :: proc() {
     // Free any temp allocations made during initialization
     free_all(context.temp_allocator)
     // Run socket event loop
-    uds_serve(socket_path, &backend)
+    uds_serve(socket_path, &backend, state_path)
 }
 

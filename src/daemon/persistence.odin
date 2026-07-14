@@ -9,9 +9,7 @@ HOME_ENV_VAR :: "HOME"
 CLIPBENDER_STATE_DIR :: ".local/state/clipbender"
 REGISTERS_FILENAME :: "registers"
 // Caller is responsible for freeing returned string.
-clipbender_state_path :: proc() -> string {
-    // HACK: make a config option or maybe a flag or something?
-    persist_state := false
+clipbender_state_path :: proc(persist_state: bool) -> string {
     if persist_state {
         return lib.env_path_with_fallback(HOME_ENV_VAR, CLIPBENDER_STATE_DIR, REGISTERS_FILENAME, lib.TMP_DIR)
     }
