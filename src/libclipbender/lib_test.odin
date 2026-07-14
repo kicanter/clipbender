@@ -66,7 +66,7 @@ test_reg_id_clipboard_roundtrip :: proc(t: ^testing.T) {
 
 @(test)
 test_reg_id_named_roundtrip :: proc(t: ^testing.T) {
-    for i in u8(0) ..< 26 {
+    for i in u8(0) ..< NAMED_SIZE {
         id := reg_id_from_named_index(i)
         testing.expect_value(t, reg_id_to_named_index(id), i)
     }

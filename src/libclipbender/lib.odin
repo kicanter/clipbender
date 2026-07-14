@@ -18,6 +18,7 @@ Reg_Entry :: struct {
 // Pack into a single byte to reduce data sent across IPC
 Reg_Id :: distinct u8
 RECENCY_SIZE :: 10
+NAMED_SIZE :: 26
 
 CLIPBOARD_START :: Reg_Id(0)
 CLIPBOARD_END :: Reg_Id(9)

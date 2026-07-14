@@ -14,26 +14,29 @@ Recency_Ring :: struct {
     count:   u8,
 }
 
-// TODO: make these persistent in the future by writing state to binary
-clipboard_registers: Recency_Ring
-named_registers: [26]lib.Reg_Entry
-primary_registers: Recency_Ring
+Register_Store :: struct {
+    named_registers:     [lib.NAMED_SIZE]lib.Reg_Entry,
+    clipboard_registers: Recency_Ring,
+    primary_registers:   Recency_Ring,
 
-// Live system selections: the actual current clipboard/primary selection, distinct from the recency rings.
-// Maintained by the Wayland layer on each selection event, seeded at startup, and never persisted.
-// NOTE: these are currently _almost_ equivalent to numbered reg 0 for the respective ring buffer, however on duplicate
-// entries, the timestamp is updated, whereas nothing is pushed or modified wrt the numbered registers.
-clipboard_selection: lib.Reg_Entry
-primary_selection: lib.Reg_Entry
+    // Live system selections: the actual current clipboard/primary selection, distinct from the recency rings.
+    // Maintained by the Wayland layer on each selection event, seeded at startup, and never persisted.
+    // NOTE: these are currently _almost_ equivalent to numbered reg 0 for the respective ring buffer, however on duplicate
+    // entries, the timestamp is updated, whereas nothing is pushed or modified wrt the numbered registers.
+    clipboard_selection: lib.Reg_Entry,
+    primary_selection:   lib.Reg_Entry,
+}
+
+reg_store: Register_Store
 
 // Overwrite the live selection cache for `type`, taking ownership of `data` and `mime` (frees the previous value).
 set_live_selection :: proc(type: lib.Selection_Type, data: []byte, mime: string) {
     selection: ^lib.Reg_Entry
     switch type {
     case .CLIPBOARD:
-        selection = &clipboard_selection
+        selection = &reg_store.clipboard_selection
     case .PRIMARY:
-        selection = &primary_selection
+        selection = &reg_store.primary_selection
     }
     lib.free_reg_entry(selection)
     selection^ = lib.Reg_Entry {
@@ -47,9 +50,9 @@ set_live_selection :: proc(type: lib.Selection_Type, data: []byte, mime: string)
 get_live_selection :: proc(type: lib.Selection_Type) -> ^lib.Reg_Entry {
     switch type {
     case .CLIPBOARD:
-        return &clipboard_selection
+        return &reg_store.clipboard_selection
     case .PRIMARY:
-        return &primary_selection
+        return &reg_store.primary_selection
     }
     unreachable()
 }
@@ -59,17 +62,17 @@ bump_live_selection :: proc(type: lib.Selection_Type) {
     selection: ^lib.Reg_Entry
     switch type {
     case .CLIPBOARD:
-        selection = &clipboard_selection
+        selection = &reg_store.clipboard_selection
     case .PRIMARY:
-        selection = &primary_selection
+        selection = &reg_store.primary_selection
     }
 
     selection.timestamp = time.time_to_unix(time.now())
 }
 
 free_live_selections :: proc() {
-    lib.free_reg_entry(&clipboard_selection)
-    lib.free_reg_entry(&primary_selection)
+    lib.free_reg_entry(&reg_store.clipboard_selection)
+    lib.free_reg_entry(&reg_store.primary_selection)
 }
 
 load_registers :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
@@ -110,9 +113,9 @@ push_recency_reg :: proc(type: lib.Selection_Type, data: []u8, mime: string, tim
     ring: ^Recency_Ring
     switch type {
     case .CLIPBOARD:
-        ring = &clipboard_registers
+        ring = &reg_store.clipboard_registers
     case .PRIMARY:
-        ring = &primary_registers
+        ring = &reg_store.primary_registers
     }
 
     push_to_ring(ring, data, mime, timestamp)
@@ -138,9 +141,9 @@ move_ring_entry_to_front :: proc(ring: ^Recency_Ring, recency: u8) {
 move_recency_reg_to_front :: proc(type: lib.Selection_Type, recency: u8) {
     switch type {
     case .CLIPBOARD:
-        move_ring_entry_to_front(&clipboard_registers, recency)
+        move_ring_entry_to_front(&reg_store.clipboard_registers, recency)
     case .PRIMARY:
-        move_ring_entry_to_front(&primary_registers, recency)
+        move_ring_entry_to_front(&reg_store.primary_registers, recency)
     }
 }
 
@@ -155,18 +158,18 @@ get_ring_entry :: proc(ring: ^Recency_Ring, recency: u8) -> ^lib.Reg_Entry {
 get_recency_reg :: proc(type: lib.Selection_Type, recency: u8) -> ^lib.Reg_Entry {
     switch type {
     case .CLIPBOARD:
-        return get_ring_entry(&clipboard_registers, recency)
+        return get_ring_entry(&reg_store.clipboard_registers, recency)
     case .PRIMARY:
-        return get_ring_entry(&primary_registers, recency)
+        return get_ring_entry(&reg_store.primary_registers, recency)
     }
     return nil
 }
 
 // Get the `idx` index `Register_Entry` from named registers array
 get_named_reg :: proc(idx: u8) -> ^lib.Reg_Entry {
-    if idx >= len(named_registers) {return nil}
-    if named_registers[idx].data == nil {return nil}
-    return &named_registers[idx]
+    if idx >= len(reg_store.named_registers) {return nil}
+    if reg_store.named_registers[idx].data == nil {return nil}
+    return &reg_store.named_registers[idx]
 }
 
 // Look up by id, index into the right array
@@ -181,11 +184,11 @@ get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
         recency := lib.reg_id_to_primary_index(reg_id)
         return get_recency_reg(.PRIMARY, recency)
     } else if reg_id == lib.SELECTION_CLIPBOARD {
-        if clipboard_selection.data == nil {return nil}
-        return &clipboard_selection
+        if reg_store.clipboard_selection.data == nil {return nil}
+        return &reg_store.clipboard_selection
     } else if reg_id == lib.SELECTION_PRIMARY {
-        if primary_selection.data == nil {return nil}
-        return &primary_selection
+        if reg_store.primary_selection.data == nil {return nil}
+        return &reg_store.primary_selection
     }
     return nil
 }
@@ -216,12 +219,12 @@ get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[lib.MAX_REGS]lib.Reg_E
     }
 
     // Live selections
-    if filter & lib.CMD_GET_FILTER_SELECTION != {} && clipboard_selection.data != nil {
-        regs[lib.SELECTION_CLIPBOARD] = clipboard_selection
+    if filter & lib.CMD_GET_FILTER_SELECTION != {} && reg_store.clipboard_selection.data != nil {
+        regs[lib.SELECTION_CLIPBOARD] = reg_store.clipboard_selection
         count += 1
     }
-    if filter & lib.CMD_GET_FILTER_PRIMARY_SELECTION != {} && primary_selection.data != nil {
-        regs[lib.SELECTION_PRIMARY] = primary_selection
+    if filter & lib.CMD_GET_FILTER_PRIMARY_SELECTION != {} && reg_store.primary_selection.data != nil {
+        regs[lib.SELECTION_PRIMARY] = reg_store.primary_selection
         count += 1
     }
 
@@ -236,7 +239,7 @@ set_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: 
         overwrite_named_reg(idx, data, mime)
         return true
     case .APPEND:
-        reg_entry := &named_registers[idx]
+        reg_entry := &reg_store.named_registers[idx]
         if reg_entry.data == nil {
             // Nothing to append to, treat same as set
             overwrite_named_reg(idx, data, mime)
@@ -264,8 +267,8 @@ set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, d
 
 // Overwrite a named reg
 overwrite_named_reg :: proc(idx: u8, data: []byte, mime: string) {
-    lib.free_reg_entry(&named_registers[idx])
-    named_registers[idx] = lib.Reg_Entry {
+    lib.free_reg_entry(&reg_store.named_registers[idx])
+    reg_store.named_registers[idx] = lib.Reg_Entry {
         data      = data,
         mime_type = mime,
         timestamp = time.time_to_unix(time.now()),
@@ -295,13 +298,13 @@ append_named_reg :: proc(reg_entry: ^lib.Reg_Entry, data: []byte, mime: string) 
 // Zero out a named slot
 clear_named_reg :: proc(reg_id: lib.Reg_Id) {
     idx := lib.reg_id_to_named_index(reg_id)
-    lib.free_reg_entry(&named_registers[idx])
+    lib.free_reg_entry(&reg_store.named_registers[idx])
 }
 
 cleanup_registers :: proc() {
-    for &entry in clipboard_registers.entries {lib.free_reg_entry(&entry)}
-    for &entry in primary_registers.entries {lib.free_reg_entry(&entry)}
-    for &entry in named_registers {lib.free_reg_entry(&entry)}
+    for &entry in reg_store.clipboard_registers.entries {lib.free_reg_entry(&entry)}
+    for &entry in reg_store.primary_registers.entries {lib.free_reg_entry(&entry)}
+    for &entry in reg_store.named_registers {lib.free_reg_entry(&entry)}
     free_live_selections()
 }
 
