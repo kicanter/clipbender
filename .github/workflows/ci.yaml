@@ -23,19 +23,20 @@ jobs:
         with:
           submodules: recursive
 
-      # clipbender links libwayland-client (both binaries) and libxkbcommon (client).
+      # clang: Odin's linker/codegen backend (previously provided by setup-odin).
+      # libwayland-client (both binaries) and libxkbcommon (client) are linked by clipbender.
       # `sudo` may be absent on slim images; fall back to running apt directly.
       - name: Install system dependencies
         run: |
           SUDO="$(command -v sudo || true)"
           $SUDO apt-get update
-          $SUDO apt-get install -y libwayland-dev libxkbcommon-dev
+          $SUDO apt-get install -y clang libwayland-dev libxkbcommon-dev
 
       # Install prebuilt odin + odinfmt binaries (no building from source).
       - name: Set up Odin toolchain
         env:
           ODIN_RELEASE: dev-2026-04
-          OLS_RELEASE: dev-2026-05
+          OLS_RELEASE: dev-2026-04
         run: |
           set -euo pipefail
           case "$(uname -m)" in

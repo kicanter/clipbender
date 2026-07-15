@@ -26,11 +26,12 @@ jobs:
         with:
           submodules: recursive
 
+      # clang: Odin's linker/codegen backend. libwayland/libxkbcommon: linked by clipbender.
       - name: Install system dependencies
         run: |
           SUDO="$(command -v sudo || true)"
           $SUDO apt-get update
-          $SUDO apt-get install -y libwayland-dev libxkbcommon-dev
+          $SUDO apt-get install -y clang libwayland-dev libxkbcommon-dev
 
       # Install prebuilt odin binary (no building from source). odinfmt is not
       # needed here since the release workflow doesn't run the format gate.
