@@ -20,6 +20,8 @@ jobs:
     name: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       # clipbender links libwayland-client (both binaries) and libxkbcommon (client).
       # `sudo` may be absent on slim images; fall back to running apt directly.
