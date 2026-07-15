@@ -1,0 +1,42 @@
+#compdef clipbender
+# zsh completion for clipbender
+# Install: drop this file (named `_clipbender`) into a dir on your $fpath,
+# e.g. /usr/share/zsh/site-functions/
+
+_clipbender() {
+    local -a subcommands
+    subcommands=(
+        'set:Set a register or the system selection'
+        'get:Print register contents'
+        'clear:Clear a named register'
+        'shutdown:Stop the clipbenderd daemon'
+    )
+
+    _arguments -C \
+        '1: :->subcmd' \
+        '*:: :->args'
+
+    case $state in
+    subcmd)
+        _describe -t commands 'clipbender subcommand' subcommands
+        ;;
+    args)
+        case $words[1] in
+        set)
+            # set <destination> [source]
+            _values 'target' 'clipboard' 'primary'
+            ;;
+        get)
+            _values 'filter' \
+                '++all' '++named' '++numbered' '++selection' \
+                '++@numbered' '++@selection' 'fmt=json' 'fmt=table'
+            ;;
+        clear)
+            # clear <named register a-z>
+            ;;
+        esac
+        ;;
+    esac
+}
+
+_clipbender "$@"
