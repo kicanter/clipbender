@@ -197,48 +197,36 @@ get_reg :: proc(store: ^Register_Store, reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
     return nil
 }
 
-// Gather registers matching `filter` into `regs`, indexed by Reg_Id. Slots not matched are left zeroed.
-get_registers :: proc(
-    store: ^Register_Store,
-    filter: lib.Cmd_Get_Filter,
-    regs: ^[lib.MAX_REGS]lib.Reg_Entry,
-) -> (
-    count: u8,
-) {
-    regs^ = {}
-    count = 0
+// Gather registers matching `filter` into `regs`, indexed by Reg_Id. Slots not matched are left nil.
+get_registers :: proc(store: ^Register_Store, filter: lib.Cmd_Get_Filter) -> [lib.MAX_REGS]^lib.Reg_Entry {
+    regs: [lib.MAX_REGS]^lib.Reg_Entry
     for bit in filter & lib.CMD_GET_FILTER_NUMBERED {
         entry := get_recency_reg(store, .CLIPBOARD, u8(bit))
         if entry == nil {continue}
-        regs[bit] = entry^
-        count += 1
+        regs[bit] = entry
     }
 
     for bit in filter & lib.CMD_GET_FILTER_NAMED {
         entry := get_named_reg(store, u8(bit) - u8(lib.NAMED_START))
         if entry == nil {continue}
-        regs[bit] = entry^
-        count += 1
+        regs[bit] = entry
     }
 
     for bit in filter & lib.CMD_GET_FILTER_PRIMARY_NUMBERED {
         entry := get_recency_reg(store, .PRIMARY, u8(bit) - u8(lib.PRIMARY_START))
         if entry == nil {continue}
-        regs[bit] = entry^
-        count += 1
+        regs[bit] = entry
     }
 
     // Live selections
     if filter & lib.CMD_GET_FILTER_SELECTION != {} && store.clipboard_selection.data != nil {
-        regs[lib.SELECTION_CLIPBOARD] = store.clipboard_selection
-        count += 1
+        regs[lib.SELECTION_CLIPBOARD] = &store.clipboard_selection
     }
     if filter & lib.CMD_GET_FILTER_PRIMARY_SELECTION != {} && store.primary_selection.data != nil {
-        regs[lib.SELECTION_PRIMARY] = store.primary_selection
-        count += 1
+        regs[lib.SELECTION_PRIMARY] = &store.primary_selection
     }
 
-    return count
+    return regs
 }
 
 set_named_reg :: proc(
@@ -340,3 +328,4 @@ set_named_reg_clone :: proc(
 ) {
     set_named_reg(store, reg_id, slice.clone(data), strings.clone(mime), set_mode)
 }
+

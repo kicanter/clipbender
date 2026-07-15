@@ -164,7 +164,13 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
         timestamp = 3000,
     }
 
-    n := marshal_resp_registers(&regs, buf[:])
+    // marshal takes an array of pointers (borrows into the store); build one over `regs`.
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[clip0] = &regs[clip0]
+    reg_ptrs[named3] = &regs[named3]
+    reg_ptrs[primary2] = &regs[primary2]
+
+    n := marshal_resp_registers(reg_ptrs, buf[:])
     testing.expect(t, n > 0)
     testing.expect_value(t, Resp_Status(buf[0]), Resp_Status.REGISTERS)
     testing.expect_value(t, buf[1], u8(3))
