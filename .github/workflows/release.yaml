@@ -32,10 +32,23 @@ jobs:
           $SUDO apt-get update
           $SUDO apt-get install -y libwayland-dev libxkbcommon-dev
 
+      # Install prebuilt odin binary (no building from source). odinfmt is not
+      # needed here since the release workflow doesn't run the format gate.
       - name: Set up Odin
-        uses: laytan/setup-odin@v2
-        with:
-          release: dev-2026-04
+        env:
+          ODIN_RELEASE: dev-2026-04
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            aarch64|arm64) odin_arch=arm64 ;;
+            *)             odin_arch=amd64 ;;
+          esac
+          curl -fsSL -o /tmp/odin.tar.gz \
+            "https://github.com/odin-lang/Odin/releases/download/${ODIN_RELEASE}/odin-linux-${odin_arch}-${ODIN_RELEASE}.tar.gz"
+          mkdir -p "$HOME/odin" && tar -xzf /tmp/odin.tar.gz -C "$HOME/odin" --strip-components=1
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$HOME/odin/odin" "$HOME/.local/bin/odin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build
         run: ./build.sh release
