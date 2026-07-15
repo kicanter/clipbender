@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-slim, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # clipbender links libwayland-client (both binaries) and libxkbcommon (client).
+      # `sudo` may be absent on slim images; fall back to running apt directly.
+      - name: Install system dependencies
+        run: |
+          SUDO="$(command -v sudo || true)"
+          $SUDO apt-get update
+          $SUDO apt-get install -y libwayland-dev libxkbcommon-dev
+
+      - name: Set up Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-04
+
+      # Formatting is arch-independent; only check it once (on x86_64).
+      - name: Check formatting
+        if: matrix.arch == 'x86_64'
+        run: |
+          odinfmt -w src
+          git diff --exit-code -- src || {
+            echo "::error::Code is not formatted. Run 'odinfmt -w src' and commit the result.";
+            exit 1;
+          }
+
+      - name: Build
+        run: ./build.sh release
+
+      - name: Test
+        run: ./build.sh test

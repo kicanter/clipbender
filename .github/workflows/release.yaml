@@ -1,0 +1,60 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-slim, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+
+    runs-on: ${{ matrix.runner }}
+    name: package ${{ matrix.arch }}-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          SUDO="$(command -v sudo || true)"
+          $SUDO apt-get update
+          $SUDO apt-get install -y libwayland-dev libxkbcommon-dev
+
+      - name: Set up Odin
+        uses: laytan/setup-odin@v2
+        with:
+          release: dev-2026-04
+
+      - name: Build
+        run: ./build.sh release
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME}"
+          stage="clipbender-${version}-${{ matrix.arch }}-linux"
+          mkdir -p "$stage"
+          # Binaries
+          cp build/clipbenderd build/clipbender "$stage/"
+          # Packaging artifacts (systemd unit, shell completions)
+          cp -r packaging "$stage/"
+          # Docs
+          cp README.md LICENSE "$stage/" 2>/dev/null || true
+          tar -czf "${stage}.tar.gz" "$stage"
+          sha256sum "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+
+      - name: Upload
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            clipbender-*-${{ matrix.arch }}-linux.tar.gz
+            clipbender-*-${{ matrix.arch }}-linux.tar.gz.sha256

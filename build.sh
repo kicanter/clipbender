@@ -19,6 +19,15 @@ BUILD_DIR="build"
 COLLECTIONS=(-collection:src=src -collection:wayland=wayland -collection:bindings=bindings)
 FLAGS="${FLAGS:-}"
 
+# Odin build target. Defaults to the host arch; override for cross builds, e.g.
+# `TARGET=linux_arm64 ./build.sh release`. clipbender links system libs, so a
+# cross target only works with that arch's libwayland/libxkbcommon available.
+case "$(uname -m)" in
+    aarch64 | arm64) host_target="linux_arm64" ;;
+    *) host_target="linux_amd64" ;;
+esac
+TARGET="${TARGET:-$host_target}"
+
 # Install locations (override via environment, e.g. `PREFIX=~/.local ./build.sh install`)
 PREFIX="${PREFIX:-/usr/local}"
 DESTDIR="${DESTDIR:-}"
@@ -59,7 +68,7 @@ build_pkg() {
     esac
 
     # shellcheck disable=SC2086
-    odin build "src/$pkg" -out:"$BUILD_DIR/$out" -target=linux_amd64 \
+    odin build "src/$pkg" -out:"$BUILD_DIR/$out" -target="$TARGET" \
         "${mode_flags[@]}" "${COLLECTIONS[@]}" $FLAGS
 
     [[ "$mode" == "release" ]] && strip "$BUILD_DIR/$out"
