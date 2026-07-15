@@ -27,16 +27,14 @@ Register_Store :: struct {
     primary_selection:   lib.Reg_Entry,
 }
 
-reg_store: Register_Store
-
 // Overwrite the live selection cache for `type`, taking ownership of `data` and `mime` (frees the previous value).
-set_live_selection :: proc(type: lib.Selection_Type, data: []byte, mime: string) {
+set_live_selection :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []byte, mime: string) {
     selection: ^lib.Reg_Entry
     switch type {
     case .CLIPBOARD:
-        selection = &reg_store.clipboard_selection
+        selection = &store.clipboard_selection
     case .PRIMARY:
-        selection = &reg_store.primary_selection
+        selection = &store.primary_selection
     }
     lib.free_reg_entry(selection)
     selection^ = lib.Reg_Entry {
@@ -47,51 +45,51 @@ set_live_selection :: proc(type: lib.Selection_Type, data: []byte, mime: string)
 }
 
 // Retrieve the live selection cache for `type`.
-get_live_selection :: proc(type: lib.Selection_Type) -> ^lib.Reg_Entry {
+get_live_selection :: proc(store: ^Register_Store, type: lib.Selection_Type) -> ^lib.Reg_Entry {
     switch type {
     case .CLIPBOARD:
-        return &reg_store.clipboard_selection
+        return &store.clipboard_selection
     case .PRIMARY:
-        return &reg_store.primary_selection
+        return &store.primary_selection
     }
     unreachable()
 }
 
 // Bump the live selection cache's timestamp for `type`, updating the existing value.
-bump_live_selection :: proc(type: lib.Selection_Type) {
+bump_live_selection :: proc(store: ^Register_Store, type: lib.Selection_Type) {
     selection: ^lib.Reg_Entry
     switch type {
     case .CLIPBOARD:
-        selection = &reg_store.clipboard_selection
+        selection = &store.clipboard_selection
     case .PRIMARY:
-        selection = &reg_store.primary_selection
+        selection = &store.primary_selection
     }
 
     selection.timestamp = time.time_to_unix(time.now())
 }
 
-free_live_selections :: proc() {
-    lib.free_reg_entry(&reg_store.clipboard_selection)
-    lib.free_reg_entry(&reg_store.primary_selection)
+free_live_selections :: proc(store: ^Register_Store) {
+    lib.free_reg_entry(&store.clipboard_selection)
+    lib.free_reg_entry(&store.primary_selection)
 }
 
-load_registers :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
+load_registers :: proc(store: ^Register_Store, regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     // `regs` is indexed by Reg_Id. Recency rings are serialized most-recent-first, so within each ring we push in
     // reverse (highest recency index first) so the most recent entry ends up at the ring head.
     for i := int(lib.CLIPBOARD_END); i >= int(lib.CLIPBOARD_START); i -= 1 {
         entry := regs[i]
         if entry.data == nil {continue}
-        push_recency_reg(.CLIPBOARD, entry.data, entry.mime_type)
+        push_recency_reg(store, .CLIPBOARD, entry.data, entry.mime_type)
     }
     for i := int(lib.PRIMARY_END); i >= int(lib.PRIMARY_START); i -= 1 {
         entry := regs[i]
         if entry.data == nil {continue}
-        push_recency_reg(.PRIMARY, entry.data, entry.mime_type)
+        push_recency_reg(store, .PRIMARY, entry.data, entry.mime_type)
     }
     for i in int(lib.NAMED_START) ..= int(lib.NAMED_END) {
         entry := regs[i]
         if entry.data == nil {continue}
-        overwrite_named_reg(lib.reg_id_to_named_index(lib.Reg_Id(i)), entry.data, entry.mime_type)
+        overwrite_named_reg(store, lib.reg_id_to_named_index(lib.Reg_Id(i)), entry.data, entry.mime_type)
     }
 }
 
@@ -109,13 +107,19 @@ push_to_ring :: proc(ring: ^Recency_Ring, data: []u8, mime: string, timestamp: M
     ring.count = min(ring.count + 1, lib.RECENCY_SIZE)
 }
 
-push_recency_reg :: proc(type: lib.Selection_Type, data: []u8, mime: string, timestamp: Maybe(i64) = nil) {
+push_recency_reg :: proc(
+    store: ^Register_Store,
+    type: lib.Selection_Type,
+    data: []u8,
+    mime: string,
+    timestamp: Maybe(i64) = nil,
+) {
     ring: ^Recency_Ring
     switch type {
     case .CLIPBOARD:
-        ring = &reg_store.clipboard_registers
+        ring = &store.clipboard_registers
     case .PRIMARY:
-        ring = &reg_store.primary_registers
+        ring = &store.primary_registers
     }
 
     push_to_ring(ring, data, mime, timestamp)
@@ -138,12 +142,12 @@ move_ring_entry_to_front :: proc(ring: ^Recency_Ring, recency: u8) {
 }
 
 // Move the `recency` most recent `Register_Entry` to the front of the `type` selection ring
-move_recency_reg_to_front :: proc(type: lib.Selection_Type, recency: u8) {
+move_recency_reg_to_front :: proc(store: ^Register_Store, type: lib.Selection_Type, recency: u8) {
     switch type {
     case .CLIPBOARD:
-        move_ring_entry_to_front(&reg_store.clipboard_registers, recency)
+        move_ring_entry_to_front(&store.clipboard_registers, recency)
     case .PRIMARY:
-        move_ring_entry_to_front(&reg_store.primary_registers, recency)
+        move_ring_entry_to_front(&store.primary_registers, recency)
     }
 }
 
@@ -155,94 +159,100 @@ get_ring_entry :: proc(ring: ^Recency_Ring, recency: u8) -> ^lib.Reg_Entry {
 }
 
 // Get the `recency` most recent `Register_Entry` by selection type
-get_recency_reg :: proc(type: lib.Selection_Type, recency: u8) -> ^lib.Reg_Entry {
+get_recency_reg :: proc(store: ^Register_Store, type: lib.Selection_Type, recency: u8) -> ^lib.Reg_Entry {
     switch type {
     case .CLIPBOARD:
-        return get_ring_entry(&reg_store.clipboard_registers, recency)
+        return get_ring_entry(&store.clipboard_registers, recency)
     case .PRIMARY:
-        return get_ring_entry(&reg_store.primary_registers, recency)
+        return get_ring_entry(&store.primary_registers, recency)
     }
     return nil
 }
 
 // Get the `idx` index `Register_Entry` from named registers array
-get_named_reg :: proc(idx: u8) -> ^lib.Reg_Entry {
-    if idx >= len(reg_store.named_registers) {return nil}
-    if reg_store.named_registers[idx].data == nil {return nil}
-    return &reg_store.named_registers[idx]
+get_named_reg :: proc(store: ^Register_Store, idx: u8) -> ^lib.Reg_Entry {
+    if idx >= len(store.named_registers) {return nil}
+    if store.named_registers[idx].data == nil {return nil}
+    return &store.named_registers[idx]
 }
 
 // Look up by id, index into the right array
-get_reg :: proc(reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
+get_reg :: proc(store: ^Register_Store, reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
     if lib.reg_id_is_clipboard_num(reg_id) {
         recency := lib.reg_id_to_clipboard_index(reg_id)
-        return get_recency_reg(.CLIPBOARD, recency)
+        return get_recency_reg(store, .CLIPBOARD, recency)
     } else if lib.reg_id_is_named(reg_id) {
         idx := lib.reg_id_to_named_index(reg_id)
-        return get_named_reg(idx)
+        return get_named_reg(store, idx)
     } else if lib.reg_id_is_primary_num(reg_id) {
         recency := lib.reg_id_to_primary_index(reg_id)
-        return get_recency_reg(.PRIMARY, recency)
+        return get_recency_reg(store, .PRIMARY, recency)
     } else if reg_id == lib.SELECTION_CLIPBOARD {
-        if reg_store.clipboard_selection.data == nil {return nil}
-        return &reg_store.clipboard_selection
+        if store.clipboard_selection.data == nil {return nil}
+        return &store.clipboard_selection
     } else if reg_id == lib.SELECTION_PRIMARY {
-        if reg_store.primary_selection.data == nil {return nil}
-        return &reg_store.primary_selection
+        if store.primary_selection.data == nil {return nil}
+        return &store.primary_selection
     }
     return nil
 }
 
 // Gather registers matching `filter` into `regs`, indexed by Reg_Id. Slots not matched are left zeroed.
-get_registers :: proc(filter: lib.Cmd_Get_Filter, regs: ^[lib.MAX_REGS]lib.Reg_Entry) -> (count: u8) {
+get_registers :: proc(
+    store: ^Register_Store,
+    filter: lib.Cmd_Get_Filter,
+    regs: ^[lib.MAX_REGS]lib.Reg_Entry,
+) -> (
+    count: u8,
+) {
     regs^ = {}
     count = 0
     for bit in filter & lib.CMD_GET_FILTER_NUMBERED {
-        entry := get_recency_reg(.CLIPBOARD, u8(bit))
+        entry := get_recency_reg(store, .CLIPBOARD, u8(bit))
         if entry == nil {continue}
         regs[bit] = entry^
         count += 1
     }
 
     for bit in filter & lib.CMD_GET_FILTER_NAMED {
-        entry := get_named_reg(u8(bit) - u8(lib.NAMED_START))
+        entry := get_named_reg(store, u8(bit) - u8(lib.NAMED_START))
         if entry == nil {continue}
         regs[bit] = entry^
         count += 1
     }
 
     for bit in filter & lib.CMD_GET_FILTER_PRIMARY_NUMBERED {
-        entry := get_recency_reg(.PRIMARY, u8(bit) - u8(lib.PRIMARY_START))
+        entry := get_recency_reg(store, .PRIMARY, u8(bit) - u8(lib.PRIMARY_START))
         if entry == nil {continue}
         regs[bit] = entry^
         count += 1
     }
 
     // Live selections
-    if filter & lib.CMD_GET_FILTER_SELECTION != {} && reg_store.clipboard_selection.data != nil {
-        regs[lib.SELECTION_CLIPBOARD] = reg_store.clipboard_selection
+    if filter & lib.CMD_GET_FILTER_SELECTION != {} && store.clipboard_selection.data != nil {
+        regs[lib.SELECTION_CLIPBOARD] = store.clipboard_selection
         count += 1
     }
-    if filter & lib.CMD_GET_FILTER_PRIMARY_SELECTION != {} && reg_store.primary_selection.data != nil {
-        regs[lib.SELECTION_PRIMARY] = reg_store.primary_selection
+    if filter & lib.CMD_GET_FILTER_PRIMARY_SELECTION != {} && store.primary_selection.data != nil {
+        regs[lib.SELECTION_PRIMARY] = store.primary_selection
         count += 1
     }
 
     return count
 }
 
-set_named_reg :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) -> bool {
+set_named_reg :: proc(store: ^Register_Store, reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) -> bool {
     idx := lib.reg_id_to_named_index(reg_id)
 
     switch set_mode {
     case .OVERWRITE:
-        overwrite_named_reg(idx, data, mime)
+        overwrite_named_reg(store, idx, data, mime)
         return true
     case .APPEND:
-        reg_entry := &reg_store.named_registers[idx]
+        reg_entry := &store.named_registers[idx]
         if reg_entry.data == nil {
             // Nothing to append to, treat same as set
-            overwrite_named_reg(idx, data, mime)
+            overwrite_named_reg(store, idx, data, mime)
             return true
         }
         return append_named_reg(reg_entry, data, mime)
@@ -266,9 +276,9 @@ set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, d
 }
 
 // Overwrite a named reg
-overwrite_named_reg :: proc(idx: u8, data: []byte, mime: string) {
-    lib.free_reg_entry(&reg_store.named_registers[idx])
-    reg_store.named_registers[idx] = lib.Reg_Entry {
+overwrite_named_reg :: proc(store: ^Register_Store, idx: u8, data: []byte, mime: string) {
+    lib.free_reg_entry(&store.named_registers[idx])
+    store.named_registers[idx] = lib.Reg_Entry {
         data      = data,
         mime_type = mime,
         timestamp = time.time_to_unix(time.now()),
@@ -296,26 +306,25 @@ append_named_reg :: proc(reg_entry: ^lib.Reg_Entry, data: []byte, mime: string) 
 }
 
 // Zero out a named slot
-clear_named_reg :: proc(reg_id: lib.Reg_Id) {
+clear_named_reg :: proc(store: ^Register_Store, reg_id: lib.Reg_Id) {
     idx := lib.reg_id_to_named_index(reg_id)
-    lib.free_reg_entry(&reg_store.named_registers[idx])
+    lib.free_reg_entry(&store.named_registers[idx])
 }
 
-cleanup_registers :: proc() {
-    for &entry in reg_store.clipboard_registers.entries {lib.free_reg_entry(&entry)}
-    for &entry in reg_store.primary_registers.entries {lib.free_reg_entry(&entry)}
-    for &entry in reg_store.named_registers {lib.free_reg_entry(&entry)}
-    free_live_selections()
+cleanup_registers :: proc(store: ^Register_Store) {
+    for &entry in store.clipboard_registers.entries {lib.free_reg_entry(&entry)}
+    for &entry in store.primary_registers.entries {lib.free_reg_entry(&entry)}
+    for &entry in store.named_registers {lib.free_reg_entry(&entry)}
+    free_live_selections(store)
 }
 
 // Convenience clone functions
 push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
     push_to_ring(ring, slice.clone(data), strings.clone(mime))
 }
-push_recency_reg_clone :: proc(type: lib.Selection_Type, data: []u8, mime: string) {
-    push_recency_reg(type, slice.clone(data), strings.clone(mime))
+push_recency_reg_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
+    push_recency_reg(store, type, slice.clone(data), strings.clone(mime))
 }
-set_named_reg_clone :: proc(reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) {
-    set_named_reg(reg_id, slice.clone(data), strings.clone(mime), set_mode)
+set_named_reg_clone :: proc(store: ^Register_Store, reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) {
+    set_named_reg(store, reg_id, slice.clone(data), strings.clone(mime), set_mode)
 }
-

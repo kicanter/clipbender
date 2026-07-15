@@ -493,7 +493,13 @@ wayland_stage_selection :: proc(wl_state: ^Wayland_State, selection: ^Selection_
 
 // Called when a debounce timer successfully expires. Reads the pending offer and pushes to recency ring.
 // Returns true if it pushed a new entry to the recency ring (a persistable mutation), false otherwise.
-wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_Type) -> (pushed: bool) {
+wayland_commit_selection :: proc(
+    wl_state: ^Wayland_State,
+    store: ^Register_Store,
+    type: lib.Selection_Type,
+) -> (
+    pushed: bool,
+) {
     selection: ^Selection_State
     switch type {
     case .CLIPBOARD:
@@ -540,16 +546,16 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
     }
 
     // Update only timestamp of cached live selection if duplicate, otherwise update the cached live selection.
-    live_selection := get_live_selection(type)
+    live_selection := get_live_selection(store, type)
     if live_selection != nil && live_selection.mime_type == mime && slice.equal(live_selection.data, data) {
-        bump_live_selection(type)
+        bump_live_selection(store, type)
     } else {
         // Clone data and mime since recency reg push takes ownership.
-        set_live_selection(type, slice.clone(data), strings.clone(mime))
+        set_live_selection(store, type, slice.clone(data), strings.clone(mime))
     }
 
     // Deduplicate: don't push if identical to the most recent entry, but bump the live selection's timestamp
-    head_reg := get_recency_reg(type, 0)
+    head_reg := get_recency_reg(store, type, 0)
     if head_reg != nil && head_reg.mime_type == mime && slice.equal(head_reg.data, data) {
         log.debugf("Got duplicate %v copy, suppressing register push", type)
         if !self_source {
@@ -566,7 +572,7 @@ wayland_commit_selection :: proc(wl_state: ^Wayland_State, type: lib.Selection_T
         self_source_str = " (self-source)"
     }
     // Ownership of data and mime transferred
-    push_recency_reg(type, data, mime)
+    push_recency_reg(store, type, data, mime)
     data, mime = {}, {}
     log.infof("Pushed to %v recency register%s", type, self_source_str)
     return true

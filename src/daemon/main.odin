@@ -18,7 +18,9 @@ main :: proc() {
     defer delete(socket_path)
     log.debugf("Writing socket file to path %s", socket_path)
 
-    backend: lib.Clipboard_Backend
+    server: Server_State
+    init_debounces(&server)
+
     wl_state: Wayland_State
     //x11_state: X11_State TODO: implement X11 support
     session_type := lib.get_session_type()
@@ -34,7 +36,7 @@ main :: proc() {
         }
         wl_fd := wayland_get_fd(&wl_state)
 
-        backend = {
+        server.backend = {
             fd = wl_fd,
             dispatch = proc(state: rawptr) -> bool {return wayland_dispatch(cast(^Wayland_State)state)},
             cleanup = proc(state: rawptr) {wayland_cleanup(cast(^Wayland_State)state)},
@@ -52,27 +54,27 @@ main :: proc() {
         log.warn("Only Wayland and X11 are supported for clipboard monitoring, named registers are still functional")
     }
 
-    if backend.state != nil {
-        log.debugf("Clipboard backend initialized (fd=%d)", int(backend.fd))
+    if server.backend.state != nil {
+        log.debugf("Clipboard backend initialized (fd=%d)", int(server.backend.fd))
     } else {
         log.debug("No clipboard backend active, named registers are still functional")
     }
     // Cleanup backend if using supported backend
-    defer if backend.state != nil {backend.cleanup(backend.state)}
-    defer cleanup_registers()
+    defer if server.backend.state != nil {server.backend.cleanup(server.backend.state)}
+    defer cleanup_registers(&server.registers)
 
     // Load the persisted state
     // HACK: make a config option or maybe a flag or something?
     persist_state := false
-    state_path := clipbender_state_path(persist_state)
-    defer delete(state_path)
+    server.state_path = clipbender_state_path(persist_state)
+    defer delete(server.state_path)
     {     // new block so we can release the pointers in `regs` after we load them
         regs: [lib.MAX_REGS]lib.Reg_Entry
-        _, err := load_registers_state(state_path, &regs)
+        _, err := load_registers_state(server.state_path, &regs)
         if err != os.General_Error.None {
-            log.warnf("Failed to load registers state from path %s: errno %v", state_path, err)
+            log.warnf("Failed to load registers state from path %s: errno %v", server.state_path, err)
         } else {
-            load_registers(&regs)
+            load_registers(&server.registers, &regs)
         }
     }
 
@@ -81,6 +83,6 @@ main :: proc() {
     // Free any temp allocations made during initialization
     free_all(context.temp_allocator)
     // Run socket event loop
-    uds_serve(socket_path, &backend, state_path)
+    uds_serve(&server, socket_path)
 }
 

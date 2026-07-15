@@ -10,14 +10,12 @@ import "core:sys/linux/uring"
 
 import lib "src:libclipbender"
 
-// Buffer for receiving from socket client
+// Scratch buffer for receiving from socket client
 data_buf: [4096]u8
-// Buf for receiving signal (SIGINT/SIGTERM)
+// Scratch buffer for receiving signal (SIGINT/SIGTERM)
 sig_buf: [128]u8
 // Max data allowed to pass over IPC
 MAX_DATA_SIZE :: 65536 // 64 KiB
-// Path to save state to
-save_state_path: string
 
 Debounce_Event :: enum u8 {
     CLIPBOARD,
@@ -32,10 +30,21 @@ Debounce :: struct {
     generation: u64, // id-like field, bumped on each arm so only the timer matching the current generation commits
 }
 
-debounces: [Debounce_Event]Debounce = {
-    .CLIPBOARD = Debounce{ts = linux.Time_Spec{time_nsec = SELECTION_DEBOUNCE_MS * 1_000_000}},
-    .PRIMARY = Debounce{ts = linux.Time_Spec{time_nsec = SELECTION_DEBOUNCE_MS * 1_000_000}},
-    .SAVE_STATE = Debounce{ts = linux.Time_Spec{time_nsec = SAVE_STATE_DEBOUNCE_MS * 1_000_000}},
+// All otherwise-global daemon state, threaded explicitly through the event loop and its handlers.
+Server_State :: struct {
+    backend:    lib.Clipboard_Backend,
+    registers:  Register_Store,
+    debounces:  [Debounce_Event]Debounce,
+    state_path: string,
+}
+
+// Initialize the debounce timers with their configured durations.
+init_debounces :: proc(server: ^Server_State) {
+    server.debounces = {
+        .CLIPBOARD = Debounce{ts = linux.Time_Spec{time_nsec = SELECTION_DEBOUNCE_MS * 1_000_000}},
+        .PRIMARY = Debounce{ts = linux.Time_Spec{time_nsec = SELECTION_DEBOUNCE_MS * 1_000_000}},
+        .SAVE_STATE = Debounce{ts = linux.Time_Spec{time_nsec = SAVE_STATE_DEBOUNCE_MS * 1_000_000}},
+    }
 }
 
 Event :: enum u8 {
@@ -90,15 +99,9 @@ cleanup_socket :: proc(socket_path: string, socket_fd: linux.Fd) {
 
 // Returns `running` (false to shut down the daemon) and `dirty` (true if a register was mutated and state should be
 // persisted). The caller arms the save-state debounce when `dirty`.
-handle_recv :: proc(
-    bytes_read: int,
-    client_fd: linux.Fd,
-    backend: ^lib.Clipboard_Backend,
-) -> (
-    running: bool,
-    dirty: bool,
-) {
+handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd) -> (running: bool, dirty: bool) {
     running = true
+    store := &server.registers
     resp_buf: [MAX_DATA_SIZE]u8
     msg_type := cast(lib.Command_Type)data_buf[0]
 
@@ -115,7 +118,7 @@ handle_recv :: proc(
         switch (source_kind) {
         case .REGISTER:
             source_reg := lib.Reg_Id(data_buf[4])
-            source := get_reg(source_reg)
+            source := get_reg(store, source_reg)
             if source == nil {
                 errmsg := fmt.tprintf("source register `%s` is empty", lib.reg_id_to_string(source_reg))
                 resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
@@ -131,9 +134,9 @@ handle_recv :: proc(
             // existing data from source register, move that register to the front and update the timestamp.
             // Note: duplicating this entry is avoided by self-source check in wayland.odin::wayland_commit_selection()
             if dest_reg == lib.SELECTION_CLIPBOARD && lib.reg_id_is_clipboard_num(source_reg) {
-                move_recency_reg_to_front(.CLIPBOARD, lib.reg_id_to_clipboard_index(source_reg))
+                move_recency_reg_to_front(store, .CLIPBOARD, lib.reg_id_to_clipboard_index(source_reg))
             } else if dest_reg == lib.SELECTION_PRIMARY && lib.reg_id_is_primary_num(source_reg) {
-                move_recency_reg_to_front(.PRIMARY, lib.reg_id_to_primary_index(source_reg))
+                move_recency_reg_to_front(store, .PRIMARY, lib.reg_id_to_primary_index(source_reg))
             }
         case .INLINE:
             mime, data = lib.unmarshal_cmd_set_inline(data_buf[4:bytes_read])
@@ -152,11 +155,11 @@ handle_recv :: proc(
         errmsg := ""
         if lib.reg_id_is_named(dest_reg) {
             // ownership of data and mime transferred
-            set_named_reg(dest_reg, data, mime, set_mode)
+            set_named_reg(store, dest_reg, data, mime, set_mode)
             data, mime = {}, {}
         } else if lib.reg_id_is_selection(dest_reg) {
             // ownership of data and mime transferred
-            set_selection_reg(backend, dest_reg, data, mime)
+            set_selection_reg(&server.backend, dest_reg, data, mime)
             data, mime = {}, {}
         } else {
             errmsg = fmt.tprintf(
@@ -188,7 +191,7 @@ handle_recv :: proc(
         log.debugf("\tPrimary:   %010b", (raw >> 36) & 0x3FF)
 
         regs: [lib.MAX_REGS]lib.Reg_Entry
-        get_registers(filter, &regs)
+        get_registers(store, filter, &regs)
 
         // Send REGISTERS response back to client (marshal packs only non-empty slots)
         resp_written := lib.marshal_resp_registers(&regs, resp_buf[:])
@@ -208,7 +211,7 @@ handle_recv :: proc(
         } else {
             // Clear named reg
             log.debugf("Register: `%s`", lib.reg_id_to_string(reg))
-            clear_named_reg(reg)
+            clear_named_reg(store, reg)
             dirty = true
             resp_written = lib.marshal_resp_ok(resp_buf[:])
         }
@@ -226,10 +229,10 @@ handle_recv :: proc(
     return running, dirty
 }
 
-arm_debounce :: proc(ring: ^uring.Ring, debounce_event: Debounce_Event) {
+arm_debounce :: proc(server: ^Server_State, ring: ^uring.Ring, debounce_event: Debounce_Event) {
     // Bump generation so any previously-armed timers become stale. Encode it in the upper bits of user_data:
     // [byte 0: Event][byte 1: Debounce_Event][bytes 2-7: generation]
-    debounce := &debounces[debounce_event]
+    debounce := &server.debounces[debounce_event]
     debounce.generation += 1
     timeout_data := (debounce.generation << 16) | (u64(debounce_event) << 8) | u64(Event.DEBOUNCE)
 
@@ -240,24 +243,24 @@ arm_debounce :: proc(ring: ^uring.Ring, debounce_event: Debounce_Event) {
 }
 
 // Serialize the current register state (recency rings + named registers, excluding live selections) to the state file.
-save_state :: proc() {
+save_state :: proc(server: ^Server_State) {
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
     regs: [lib.MAX_REGS]lib.Reg_Entry
-    get_registers(filter, &regs)
+    get_registers(&server.registers, filter, &regs)
 
-    written, err := save_registers_state(save_state_path, &regs)
+    written, err := save_registers_state(server.state_path, &regs)
     if err != os.General_Error.None {
-        log.errorf("Failed to save register state to %s: errno %v", save_state_path, err)
+        log.errorf("Failed to save register state to %s: errno %v", server.state_path, err)
     } else {
-        log.debugf("Saved state, wrote %d bytes to %s", written, save_state_path)
+        log.debugf("Saved state, wrote %d bytes to %s", written, server.state_path)
     }
 }
 
 dispatch_cqe :: proc(
+    server: ^Server_State,
     cqe: linux.IO_Uring_CQE,
     ring: ^uring.Ring,
     server_fd: linux.Fd,
-    backend: ^lib.Clipboard_Backend,
 ) -> (
     running: bool,
 ) {
@@ -280,10 +283,10 @@ dispatch_cqe :: proc(
         bytes_read := int(cqe.res)
         if bytes_read > 0 {
             dirty: bool
-            running, dirty = handle_recv(bytes_read, client_fd, backend)
+            running, dirty = handle_recv(server, bytes_read, client_fd)
             // A mutating command (SET/CLEAR) occurred; (re)arm the debounced state save
             if dirty {
-                arm_debounce(ring, .SAVE_STATE)
+                arm_debounce(server, ring, .SAVE_STATE)
             }
             // Re-arm recv for this client so it can continue sending messages
             user_data := (u64(client_fd) << 8) | u64(Event.RECV)
@@ -300,52 +303,54 @@ dispatch_cqe :: proc(
     case .WAYLAND:
         log.debug("Wayland event received")
         // `dispatch` returns false if error occurs
-        if backend.dispatch(backend.state) {
+        if server.backend.dispatch(server.backend.state) {
             // Successful dispatch, re-arm the poll
-            uring.poll_add(ring, u64(Event.WAYLAND), backend.fd, {.IN}, {})
+            uring.poll_add(ring, u64(Event.WAYLAND), server.backend.fd, {.IN}, {})
 
             // Check if either selection needs a debounce timer (re)armed
-            wl_state := cast(^Wayland_State)backend.state
+            wl_state := cast(^Wayland_State)server.backend.state
             if wl_state.clipboard_state.staged {
                 wl_state.clipboard_state.staged = false
-                arm_debounce(ring, .CLIPBOARD)
+                arm_debounce(server, ring, .CLIPBOARD)
             }
             if wl_state.primary_state.staged {
                 wl_state.primary_state.staged = false
-                arm_debounce(ring, .PRIMARY)
+                arm_debounce(server, ring, .PRIMARY)
             }
         } else {
             log.warn(
                 "Clipboard backend disabled, dropping clipboard monitoring (named registers still functional). " +
                 "You'll probably want to restart `clipbenderd`.",
             )
-            backend.cleanup(backend.state)
-            backend.state = nil
+            server.backend.cleanup(server.backend.state)
+            server.backend.state = nil
         }
     case .DEBOUNCE:
         // A debounce timer fired. Only commit if it matches the current generation, otherwise a newer selection event
         // superseded it and this timer is stale (e.g. Chrome drag-select fires many events in a row).
         debounce_event := cast(Debounce_Event)((cqe.user_data >> 8) & 0xFF)
         generation := cqe.user_data >> 16
-        if generation != debounces[debounce_event].generation {return running}
+        if generation != server.debounces[debounce_event].generation {return running}
         log.debugf("%v debounce timer fired, processing event", debounce_event)
         switch debounce_event {
         case .CLIPBOARD:
-            if backend.state != nil && wayland_commit_selection(cast(^Wayland_State)backend.state, .CLIPBOARD) {
-                arm_debounce(ring, .SAVE_STATE)
+            if server.backend.state != nil &&
+               wayland_commit_selection(cast(^Wayland_State)server.backend.state, &server.registers, .CLIPBOARD) {
+                arm_debounce(server, ring, .SAVE_STATE)
             }
         case .PRIMARY:
-            if backend.state != nil && wayland_commit_selection(cast(^Wayland_State)backend.state, .PRIMARY) {
-                arm_debounce(ring, .SAVE_STATE)
+            if server.backend.state != nil &&
+               wayland_commit_selection(cast(^Wayland_State)server.backend.state, &server.registers, .PRIMARY) {
+                arm_debounce(server, ring, .SAVE_STATE)
             }
         case .SAVE_STATE:
-            save_state()
+            save_state(server)
         }
     }
     return running
 }
 
-uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend, state_path: string) {
+uds_serve :: proc(server: ^Server_State, socket_path: string) {
     server_fd, sockerr := linux.socket(.UNIX, .SEQPACKET, {.CLOEXEC}, {})
     fmt.assertf(sockerr == nil, "Failed to create server socket fd: err %d", sockerr)
 
@@ -386,8 +391,8 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend, state_pa
     fmt.assertf(ok, "Failed to submit original accept SQE, Submission queue for io_uring is full")
     _, ok = uring.read(&ring, u64(Event.SIGNAL), sig_fd, sig_buf[:], 0)
     fmt.assertf(ok, "Failed to submit original SIGNAL read SQE, submission queue for io_uring is full")
-    if backend.state != nil {
-        _, ok = uring.poll_add(&ring, u64(Event.WAYLAND), backend.fd, {.IN}, {})
+    if server.backend.state != nil {
+        _, ok = uring.poll_add(&ring, u64(Event.WAYLAND), server.backend.fd, {.IN}, {})
         fmt.assertf(ok, "Failed to submit original WAYLAND poll SQE, submission queue for io_uring is full")
     }
 
@@ -396,9 +401,6 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend, state_pa
     if (err != .NONE) {
         log.errorf("Error: could not submit SQEs in submission queue: errno %v", err)
     }
-
-    // Set state path so we can save registers to it.
-    save_state_path = state_path
 
     log.debug("Daemon ready, entering event loop")
     // Completion queue event loop
@@ -412,7 +414,7 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend, state_pa
         }
 
         for i in 0 ..< num_cqes {
-            running = dispatch_cqe(cqes[i], &ring, server_fd, backend)
+            running = dispatch_cqe(server, cqes[i], &ring, server_fd)
         }
 
         _, err = uring.submit(&ring)
@@ -425,5 +427,5 @@ uds_serve :: proc(socket_path: string, backend: ^lib.Clipboard_Backend, state_pa
     }
 
     // Flush any unsaved register state before exiting so a pending (debounced) save isn't lost on shutdown
-    save_state()
+    save_state(server)
 }
