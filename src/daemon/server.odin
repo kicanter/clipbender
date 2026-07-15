@@ -190,11 +190,10 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         log.debugf("\tNamed:     %026b", (raw >> 10) & 0x3FFFFFF)
         log.debugf("\tPrimary:   %010b", (raw >> 36) & 0x3FF)
 
-        regs: [lib.MAX_REGS]lib.Reg_Entry
-        get_registers(store, filter, &regs)
+        regs := get_registers(store, filter)
 
         // Send REGISTERS response back to client (marshal packs only non-empty slots)
-        resp_written := lib.marshal_resp_registers(&regs, resp_buf[:])
+        resp_written := lib.marshal_resp_registers(regs, resp_buf[:])
         linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.CLEAR:
         log.debugf("Got clear message: %v", data_buf[:bytes_read])
@@ -245,10 +244,9 @@ arm_debounce :: proc(server: ^Server_State, ring: ^uring.Ring, debounce_event: D
 // Serialize the current register state (recency rings + named registers, excluding live selections) to the state file.
 save_state :: proc(server: ^Server_State) {
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
-    regs: [lib.MAX_REGS]lib.Reg_Entry
-    get_registers(&server.registers, filter, &regs)
+    regs := get_registers(&server.registers, filter)
 
-    written, err := save_registers_state(server.state_path, &regs)
+    written, err := save_registers_state(server.state_path, regs)
     if err != os.General_Error.None {
         log.errorf("Failed to save register state to %s: errno %v", server.state_path, err)
     } else {

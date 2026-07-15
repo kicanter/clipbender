@@ -23,7 +23,7 @@ clipbender_state_path :: proc(persist_state: bool) -> string {
 // See `libclipbender.marshal_resp_registers()` and `libclipbender.unmarshal_resp_registers()` for binary serialization
 // of the response message for retrieving register data.
 
-save_registers_state :: proc(filename: string, regs: ^[lib.MAX_REGS]lib.Reg_Entry) -> (written: int, err: os.Error) {
+save_registers_state :: proc(filename: string, regs: [lib.MAX_REGS]^lib.Reg_Entry) -> (written: int, err: os.Error) {
     // Subtract one byte from the total because we don't write the Resp_Status byte to state file
     buf: [MAX_DATA_SIZE]u8
     written = lib.marshal_resp_registers(regs, buf[:]) - 1

@@ -354,30 +354,34 @@ marshal_resp_error :: proc(message: string, buf: []byte) -> int {
 
 // REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * Reg]`
 // `regs` is indexed by Reg_Id; only non-empty slots are packed onto the wire, each tagged with its Reg_Id.
-marshal_resp_registers :: proc(regs: ^[MAX_REGS]Reg_Entry, buf: []byte) -> int {
+marshal_resp_registers :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
     buf[0] = byte(Resp_Status.REGISTERS)
     // Reserve the count byte, fill it in after we know how many non-empty entries there are
     written := size_of(Resp_Status) + size_of(u8)
     count: u8 = 0
 
-    for entry, id in regs {
-        if entry.data == nil {continue}
+    for entry_ptr, id in regs {
+        if entry_ptr == nil {continue}
 
+        // Reg ID u8
         buf[written] = byte(id)
         written += size_of(Reg_Id)
 
-        time_bytes := transmute([size_of(i64)]byte)entry.timestamp
+        // Timestamp i64
+        time_bytes := transmute([size_of(i64)]byte)entry_ptr.timestamp
         copy(buf[written:][:size_of(i64)], time_bytes[:])
         written += size_of(i64)
 
-        mime := entry.mime_type
+        // Mime length u8 + mime string bytes
+        mime := entry_ptr.mime_type
         mime_len := u8(len(mime))
         buf[written] = byte(mime_len)
         written += size_of(mime_len)
         copy(buf[written:][:int(mime_len)], mime)
         written += int(mime_len)
 
-        data := entry.data
+        // Data length u32 + data blob bytes
+        data := entry_ptr.data
         data_len := u32(len(data))
         data_len_bytes := transmute([size_of(u32)]byte)data_len
         copy(buf[written:][:size_of(u32)], data_len_bytes[:])
@@ -388,6 +392,7 @@ marshal_resp_registers :: proc(regs: ^[MAX_REGS]Reg_Entry, buf: []byte) -> int {
         count += 1
     }
 
+    // Count
     buf[1] = byte(count)
     return written
 }
@@ -432,3 +437,4 @@ unmarshal_resp_ok :: proc(buf: []byte) -> Resp_Status {
 unmarshal_resp_error :: proc(buf: []byte) -> string {
     return string(buf)
 }
+
