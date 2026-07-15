@@ -105,7 +105,14 @@ test_marshal_unmarshal_cmd_set_inline :: proc(t: ^testing.T) {
     data := transmute([]byte)string("hello world")
 
     n := marshal_cmd_set_inline(dest, mode, mime, data, buf[:])
-    expected_size := size_of(Command_Type) + size_of(Reg_Id) + size_of(Set_Mode) + size_of(Source_Kind) + size_of(u8) + len(mime) + len(data)
+    expected_size :=
+        size_of(Command_Type) +
+        size_of(Reg_Id) +
+        size_of(Set_Mode) +
+        size_of(Source_Kind) +
+        size_of(u8) +
+        len(mime) +
+        len(data)
     testing.expect_value(t, n, expected_size)
     testing.expect_value(t, Set_Mode(buf[2]), mode)
     testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.INLINE)
@@ -141,9 +148,21 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
     primary2 := reg_id_from_primary_index(2)
 
     regs: [MAX_REGS]Reg_Entry
-    regs[clip0] = Reg_Entry{data = transmute([]byte)string("first"), mime_type = "text/plain", timestamp = 1000}
-    regs[named3] = Reg_Entry{data = transmute([]byte)string("second entry"), mime_type = "text/html", timestamp = 2000}
-    regs[primary2] = Reg_Entry{data = transmute([]byte)string("third"), mime_type = "text/plain", timestamp = 3000}
+    regs[clip0] = Reg_Entry {
+        data      = transmute([]byte)string("first"),
+        mime_type = "text/plain",
+        timestamp = 1000,
+    }
+    regs[named3] = Reg_Entry {
+        data      = transmute([]byte)string("second entry"),
+        mime_type = "text/html",
+        timestamp = 2000,
+    }
+    regs[primary2] = Reg_Entry {
+        data      = transmute([]byte)string("third"),
+        mime_type = "text/plain",
+        timestamp = 3000,
+    }
 
     n := marshal_resp_registers(&regs, buf[:])
     testing.expect(t, n > 0)

@@ -85,4 +85,3 @@ main :: proc() {
     // Run socket event loop
     uds_serve(&server, socket_path)
 }
-

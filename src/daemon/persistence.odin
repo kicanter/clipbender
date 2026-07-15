@@ -38,4 +38,3 @@ load_registers_state :: proc(filename: string, regs: ^[lib.MAX_REGS]lib.Reg_Entr
     count = lib.unmarshal_resp_registers(data, regs)
     return count, err
 }
-

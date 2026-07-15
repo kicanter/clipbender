@@ -241,7 +241,13 @@ get_registers :: proc(
     return count
 }
 
-set_named_reg :: proc(store: ^Register_Store, reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) -> bool {
+set_named_reg :: proc(
+    store: ^Register_Store,
+    reg_id: lib.Reg_Id,
+    data: []byte,
+    mime: string,
+    set_mode: lib.Set_Mode,
+) -> bool {
     idx := lib.reg_id_to_named_index(reg_id)
 
     switch set_mode {
@@ -325,6 +331,12 @@ push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
 push_recency_reg_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
     push_recency_reg(store, type, slice.clone(data), strings.clone(mime))
 }
-set_named_reg_clone :: proc(store: ^Register_Store, reg_id: lib.Reg_Id, data: []byte, mime: string, set_mode: lib.Set_Mode) {
+set_named_reg_clone :: proc(
+    store: ^Register_Store,
+    reg_id: lib.Reg_Id,
+    data: []byte,
+    mime: string,
+    set_mode: lib.Set_Mode,
+) {
     set_named_reg(store, reg_id, slice.clone(data), strings.clone(mime), set_mode)
 }

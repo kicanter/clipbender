@@ -119,7 +119,13 @@ test_append_named_reg :: proc(t: ^testing.T) {
 
     id := lib.reg_id_from_named_index(2)
     set_named_reg_clone(&store, id, transmute([]byte)string("hello"), "text/plain", .OVERWRITE)
-    ok := set_named_reg(&store, id, slice.clone(transmute([]byte)string(" world")), strings.clone("text/plain"), .APPEND)
+    ok := set_named_reg(
+        &store,
+        id,
+        slice.clone(transmute([]byte)string(" world")),
+        strings.clone("text/plain"),
+        .APPEND,
+    )
     testing.expect(t, ok, "append should succeed with matching mime")
 
     entry := get_reg(&store, id)
@@ -148,7 +154,13 @@ test_append_named_reg_empty :: proc(t: ^testing.T) {
     defer cleanup_registers(&store)
 
     id := lib.reg_id_from_named_index(4)
-    ok := set_named_reg(&store, id, slice.clone(transmute([]byte)string("first")), strings.clone("text/plain"), .APPEND)
+    ok := set_named_reg(
+        &store,
+        id,
+        slice.clone(transmute([]byte)string("first")),
+        strings.clone("text/plain"),
+        .APPEND,
+    )
     testing.expect(t, ok, "append to empty should behave like set")
 
     entry := get_reg(&store, id)
@@ -174,7 +186,13 @@ test_get_reg_dispatches_named :: proc(t: ^testing.T) {
     store: Register_Store
     defer cleanup_registers(&store)
 
-    set_named_reg_clone(&store, lib.reg_id_from_named_index(6), transmute([]byte)string("named"), "text/plain", .OVERWRITE)
+    set_named_reg_clone(
+        &store,
+        lib.reg_id_from_named_index(6),
+        transmute([]byte)string("named"),
+        "text/plain",
+        .OVERWRITE,
+    )
 
     named_entry := get_reg(&store, lib.reg_id_from_named_index(6))
     testing.expect(t, named_entry != nil)

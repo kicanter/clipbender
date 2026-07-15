@@ -878,4 +878,3 @@ run_gui :: proc(client_fd: linux.Fd) {
         wl.display_dispatch(gui_state.display)
     }
 }
-
