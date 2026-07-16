@@ -544,17 +544,18 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
         group_printed := false
         for id := group.start; id <= group.end; id += 1 {
             entry := regs[id]
-            if entry.data == nil {continue}
+            if len(entry.blobs) == 0 {continue}
             // Print a rule above each group that has at least one entry (also separates the header from the body)
             if !group_printed {
                 fmt.println(table_sep)
             }
+            // M1: single blob, single mime per entry.
             fmt.printfln(
                 CONTENT_FMT,
                 lib.reg_id_to_string(id),
                 format_unix_timestamp(entry.timestamp, &ts_buf),
-                entry.mime_type,
-                truncate_content(string(entry.data), CONTENT_COL_WIDTH),
+                entry.blobs[0].mimes[0],
+                truncate_content(string(entry.blobs[0].data), CONTENT_COL_WIDTH),
             )
             any_printed = true
             group_printed = true
@@ -600,12 +601,13 @@ json_escape_string :: proc(str: string) -> string {
 
 print_json_entry :: proc(entry: lib.Reg_Entry, id_str: string, printed: ^bool) {
     if printed^ {fmt.print(", ")}
+    // M1: single blob, single mime per entry.
     fmt.printf(
         `{{"reg": "%s", "time": "%d", "mime": "%s", "content": "%s"}}`,
         id_str,
         entry.timestamp,
-        json_escape_string(entry.mime_type),
-        json_escape_string(string(entry.data)),
+        json_escape_string(entry.blobs[0].mimes[0]),
+        json_escape_string(string(entry.blobs[0].data)),
     )
     printed^ = true
 }
@@ -617,7 +619,7 @@ cmd_get_format_json :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     for group in REG_GROUPS {
         for id := group.start; id <= group.end; id += 1 {
             entry := regs[id]
-            if entry.data == nil {continue}
+            if len(entry.blobs) == 0 {continue}
             print_json_entry(entry, lib.reg_id_to_string(id), &printed)
         }
     }
@@ -630,9 +632,9 @@ cmd_get_format_raw :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     for group in REG_GROUPS {
         for id := group.start; id <= group.end; id += 1 {
             entry := regs[id]
-            if entry.data == nil {continue}
+            if len(entry.blobs) == 0 {continue}
             if printed {fmt.print("\n")}
-            fmt.print(string(entry.data))
+            fmt.print(string(entry.blobs[0].data))
             printed = true
         }
     }

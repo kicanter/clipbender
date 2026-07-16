@@ -1,4 +1,4 @@
-package base
+package libclipbender
 
 import "core:fmt"
 import "core:log"
@@ -7,11 +7,16 @@ import "core:slice"
 import "core:strings"
 import "core:sys/linux"
 
+// Representation of a single unique data blob and a list of mimes it can represent
+Mime_Blob :: struct {
+    data:  []byte,
+    mimes: []string,
+}
+
 // Info related to a single register entry
 Reg_Entry :: struct {
-    data:      []byte,
-    mime_type: string,
-    timestamp: i64, // unix epoch time
+    blobs: []Mime_Blob,
+    timestamp:  i64, // unix epoch time
 }
 
 // Register IDs
@@ -234,13 +239,37 @@ Resp_Status :: enum u8 {
     REGISTERS,
 }
 
+// Construct a single-mime Mime_Blob, taking ownership of `data` and `mime` (both must be heap-allocated).
+mime_blob_single :: proc(data: []byte, mime: string) -> Mime_Blob {
+    mimes := make([]string, 1)
+    mimes[0] = mime
+    return Mime_Blob{data = data, mimes = mimes}
+}
+
+// Heap-allocate a single-element []Mime_Blob (a composite-literal slice would point at stack memory).
+mime_blob_slice :: proc(blob: Mime_Blob) -> []Mime_Blob {
+    blobs := make([]Mime_Blob, 1)
+    blobs[0] = blob
+    return blobs
+}
+
+free_mime_data :: proc(mime_data: Mime_Blob) {
+    delete(mime_data.data)
+    for mime in mime_data.mimes {
+        delete(mime)
+    }
+    delete(mime_data.mimes)
+}
+
 // Register data daemon returns to client for a GET operation. IPC wire format:
 //
 // `[1 byte Reg_Id][8 bytes i64 timestamp][1 byte mime type len][M bytes mime type][4 bytes data length][N bytes data]`
 
 free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
-    delete(reg_entry.data)
-    delete(reg_entry.mime_type)
+    for mime_data in reg_entry.blobs {
+        free_mime_data(mime_data)
+    }
+    delete(reg_entry.blobs)
     reg_entry^ = {}
 }
 
@@ -326,10 +355,11 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (co
         data := slice.clone(buf[offset:][:int(data_len)])
         offset += int(data_len)
 
-        // Index by Reg_Id: the array position implicitly encodes the register identity
+        // Index by Reg_Id: the array position implicitly encodes the register identity.
+        // M1: single blob, single mime per entry. Heap-allocate the blobs slice so it outlives
+        // this stack frame (a composite-literal slice would point at reused stack memory).
         regs[reg_id] = Reg_Entry {
-            data      = data,
-            mime_type = mime,
+            blobs     = mime_blob_slice(mime_blob_single(data, mime)),
             timestamp = time,
         }
     }
@@ -372,8 +402,11 @@ marshal_resp_registers :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
         copy(buf[written:][:size_of(i64)], time_bytes[:])
         written += size_of(i64)
 
+        // M1: single blob, single mime per entry
+        blob := entry_ptr.blobs[0]
+
         // Mime length u8 + mime string bytes
-        mime := entry_ptr.mime_type
+        mime := blob.mimes[0]
         mime_len := u8(len(mime))
         buf[written] = byte(mime_len)
         written += size_of(mime_len)
@@ -381,7 +414,7 @@ marshal_resp_registers :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
         written += int(mime_len)
 
         // Data length u32 + data blob bytes
-        data := entry_ptr.data
+        data := blob.data
         data_len := u32(len(data))
         data_len_bytes := transmute([size_of(u32)]byte)data_len
         copy(buf[written:][:size_of(u32)], data_len_bytes[:])

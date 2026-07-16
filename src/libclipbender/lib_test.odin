@@ -1,4 +1,4 @@
-package base
+package libclipbender
 
 import "core:slice"
 import "core:testing"
@@ -149,18 +149,15 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
 
     regs: [MAX_REGS]Reg_Entry
     regs[clip0] = Reg_Entry {
-        data      = transmute([]byte)string("first"),
-        mime_type = "text/plain",
+        blobs     = []Mime_Blob{{data = transmute([]byte)string("first"), mimes = []string{"text/plain"}}},
         timestamp = 1000,
     }
     regs[named3] = Reg_Entry {
-        data      = transmute([]byte)string("second entry"),
-        mime_type = "text/html",
+        blobs     = []Mime_Blob{{data = transmute([]byte)string("second entry"), mimes = []string{"text/html"}}},
         timestamp = 2000,
     }
     regs[primary2] = Reg_Entry {
-        data      = transmute([]byte)string("third"),
-        mime_type = "text/plain",
+        blobs     = []Mime_Blob{{data = transmute([]byte)string("third"), mimes = []string{"text/plain"}}},
         timestamp = 3000,
     }
 
@@ -179,11 +176,11 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
     count := unmarshal_resp_registers(buf[1:], &dec_regs)
     testing.expect_value(t, count, u8(3))
 
-    // Entries should land at their original Reg_Id slots
+    // Entries should land at their original Reg_Id slots (M1: single blob, single mime)
     for id in ([]Reg_Id{clip0, named3, primary2}) {
         testing.expect_value(t, dec_regs[id].timestamp, regs[id].timestamp)
-        testing.expect_value(t, dec_regs[id].mime_type, regs[id].mime_type)
-        testing.expect(t, slice.equal(dec_regs[id].data, regs[id].data))
+        testing.expect_value(t, dec_regs[id].blobs[0].mimes[0], regs[id].blobs[0].mimes[0])
+        testing.expect(t, slice.equal(dec_regs[id].blobs[0].data, regs[id].blobs[0].data))
     }
 
     for &entry in dec_regs {
