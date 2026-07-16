@@ -28,7 +28,7 @@ Register_Store :: struct {
 }
 
 // Overwrite the live selection cache for `type`, taking ownership of `data` and `mime` (frees the previous value).
-set_live_selection :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []byte, mime: string) {
+set_live_selection :: proc(store: ^Register_Store, type: lib.Selection_Type, mime_data: lib.Mime_Blob) {
     selection: ^lib.Reg_Entry
     switch type {
     case .CLIPBOARD:
@@ -38,8 +38,7 @@ set_live_selection :: proc(store: ^Register_Store, type: lib.Selection_Type, dat
     }
     lib.free_reg_entry(selection)
     selection^ = lib.Reg_Entry {
-        data      = data,
-        mime_type = mime,
+        blobs     = lib.mime_blob_slice(mime_data),
         timestamp = time.time_to_unix(time.now()),
     }
 }
@@ -73,35 +72,40 @@ free_live_selections :: proc(store: ^Register_Store) {
     lib.free_reg_entry(&store.primary_selection)
 }
 
-load_registers :: proc(store: ^Register_Store, regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
+load_registers :: proc(store: ^Register_Store, regs: [lib.MAX_REGS]lib.Reg_Entry) {
     // `regs` is indexed by Reg_Id. Recency rings are serialized most-recent-first, so within each ring we push in
     // reverse (highest recency index first) so the most recent entry ends up at the ring head.
+    // M1: single blob per entry; a populated entry has len(blobs) == 1.
+    // The blob's contents (data/mimes) transfer ownership into the store; free each source entry's `blobs`
+    // slice header afterward (unmarshal heap-allocated it), otherwise the backing array leaks.
     for i := int(lib.CLIPBOARD_END); i >= int(lib.CLIPBOARD_START); i -= 1 {
         entry := regs[i]
-        if entry.data == nil {continue}
-        push_recency_reg(store, .CLIPBOARD, entry.data, entry.mime_type)
+        if len(entry.blobs) == 0 {continue}
+        push_recency_reg(store, .CLIPBOARD, entry.blobs[0])
+        delete(entry.blobs)
     }
     for i := int(lib.PRIMARY_END); i >= int(lib.PRIMARY_START); i -= 1 {
         entry := regs[i]
-        if entry.data == nil {continue}
-        push_recency_reg(store, .PRIMARY, entry.data, entry.mime_type)
+        if len(entry.blobs) == 0 {continue}
+        push_recency_reg(store, .PRIMARY, entry.blobs[0])
+        delete(entry.blobs)
     }
     for i in int(lib.NAMED_START) ..= int(lib.NAMED_END) {
         entry := regs[i]
-        if entry.data == nil {continue}
-        overwrite_named_reg(store, lib.reg_id_to_named_index(lib.Reg_Id(i)), entry.data, entry.mime_type)
+        if len(entry.blobs) == 0 {continue}
+        overwrite_named_reg(store, lib.reg_id_to_named_index(lib.Reg_Id(i)), entry.blobs[0])
+        delete(entry.blobs)
     }
 }
 
 // Push to head, takes ownership of data and mime (caller must provide heap-allocated memory)
-push_to_ring :: proc(ring: ^Recency_Ring, data: []u8, mime: string, timestamp: Maybe(i64) = nil) {
+push_to_ring :: proc(ring: ^Recency_Ring, mime_data: lib.Mime_Blob, timestamp: Maybe(i64) = nil) {
     ring.head = (ring.head + 1) % lib.RECENCY_SIZE
     lib.free_reg_entry(&ring.entries[ring.head])
 
     ts := timestamp.? or_else time.time_to_unix(time.now())
     ring.entries[ring.head] = lib.Reg_Entry {
-        data      = data,
-        mime_type = mime,
+        blobs     = lib.mime_blob_slice(mime_data),
         timestamp = ts,
     }
     ring.count = min(ring.count + 1, lib.RECENCY_SIZE)
@@ -110,8 +114,7 @@ push_to_ring :: proc(ring: ^Recency_Ring, data: []u8, mime: string, timestamp: M
 push_recency_reg :: proc(
     store: ^Register_Store,
     type: lib.Selection_Type,
-    data: []u8,
-    mime: string,
+    mime_data: lib.Mime_Blob,
     timestamp: Maybe(i64) = nil,
 ) {
     ring: ^Recency_Ring
@@ -122,7 +125,7 @@ push_recency_reg :: proc(
         ring = &store.primary_registers
     }
 
-    push_to_ring(ring, data, mime, timestamp)
+    push_to_ring(ring, mime_data, timestamp)
 }
 
 // Move the entry at `recency` to the front (recency 0), shifting the entries in between back one slot. Refreshes the
@@ -172,7 +175,7 @@ get_recency_reg :: proc(store: ^Register_Store, type: lib.Selection_Type, recenc
 // Get the `idx` index `Register_Entry` from named registers array
 get_named_reg :: proc(store: ^Register_Store, idx: u8) -> ^lib.Reg_Entry {
     if idx >= len(store.named_registers) {return nil}
-    if store.named_registers[idx].data == nil {return nil}
+    if len(store.named_registers[idx].blobs) == 0 {return nil}
     return &store.named_registers[idx]
 }
 
@@ -188,10 +191,10 @@ get_reg :: proc(store: ^Register_Store, reg_id: lib.Reg_Id) -> ^lib.Reg_Entry {
         recency := lib.reg_id_to_primary_index(reg_id)
         return get_recency_reg(store, .PRIMARY, recency)
     } else if reg_id == lib.SELECTION_CLIPBOARD {
-        if store.clipboard_selection.data == nil {return nil}
+        if len(store.clipboard_selection.blobs) == 0 {return nil}
         return &store.clipboard_selection
     } else if reg_id == lib.SELECTION_PRIMARY {
-        if store.primary_selection.data == nil {return nil}
+        if len(store.primary_selection.blobs) == 0 {return nil}
         return &store.primary_selection
     }
     return nil
@@ -219,10 +222,10 @@ get_registers :: proc(store: ^Register_Store, filter: lib.Cmd_Get_Filter) -> [li
     }
 
     // Live selections
-    if filter & lib.CMD_GET_FILTER_SELECTION != {} && store.clipboard_selection.data != nil {
+    if filter & lib.CMD_GET_FILTER_SELECTION != {} && len(store.clipboard_selection.blobs) > 0 {
         regs[lib.SELECTION_CLIPBOARD] = &store.clipboard_selection
     }
-    if filter & lib.CMD_GET_FILTER_PRIMARY_SELECTION != {} && store.primary_selection.data != nil {
+    if filter & lib.CMD_GET_FILTER_PRIMARY_SELECTION != {} && len(store.primary_selection.blobs) > 0 {
         regs[lib.SELECTION_PRIMARY] = &store.primary_selection
     }
 
@@ -232,23 +235,28 @@ get_registers :: proc(store: ^Register_Store, filter: lib.Cmd_Get_Filter) -> [li
 set_named_reg :: proc(
     store: ^Register_Store,
     reg_id: lib.Reg_Id,
-    data: []byte,
-    mime: string,
+    mime_data: lib.Mime_Blob,
     set_mode: lib.Set_Mode,
 ) -> bool {
     idx := lib.reg_id_to_named_index(reg_id)
 
     switch set_mode {
     case .OVERWRITE:
-        overwrite_named_reg(store, idx, data, mime)
+        overwrite_named_reg(store, idx, mime_data)
         return true
     case .APPEND:
         reg_entry := &store.named_registers[idx]
-        if reg_entry.data == nil {
+        if len(reg_entry.blobs) == 0 {
             // Nothing to append to, treat same as set
-            overwrite_named_reg(store, idx, data, mime)
+            overwrite_named_reg(store, idx, mime_data)
             return true
         }
+        // M1: single blob, single mime. Append takes ownership of (data, mime).
+        // Free the mimes slice header here (append owns the mime string + data);
+        // deleting the []string frees the header array, not the string bytes.
+        data := mime_data.data
+        mime := mime_data.mimes[0]
+        delete(mime_data.mimes)
         return append_named_reg(reg_entry, data, mime)
     }
 
@@ -270,31 +278,57 @@ set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, d
 }
 
 // Overwrite a named reg
-overwrite_named_reg :: proc(store: ^Register_Store, idx: u8, data: []byte, mime: string) {
+overwrite_named_reg :: proc(store: ^Register_Store, idx: u8, mime_blob: lib.Mime_Blob) {
     lib.free_reg_entry(&store.named_registers[idx])
     store.named_registers[idx] = lib.Reg_Entry {
-        data      = data,
-        mime_type = mime,
+        blobs     = lib.mime_blob_slice(mime_blob),
         timestamp = time.time_to_unix(time.now()),
     }
 }
 
-// Append to a named reg
-append_named_reg :: proc(reg_entry: ^lib.Reg_Entry, data: []byte, mime: string) -> bool {
-    if reg_entry.mime_type != mime {
+PLAINTEXT_MIMES :: [?]string{"text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"}
+is_plaintext_mime :: proc(mime: string) -> bool {
+    for text_mime in PLAINTEXT_MIMES {
+        if text_mime == mime do return true
+    }
+    return false
+}
+
+find_plaintext_blob :: proc(reg_entry: ^lib.Reg_Entry) -> ^lib.Mime_Blob {
+    for &blob in reg_entry.blobs {
+        for mime in blob.mimes {
+            if is_plaintext_mime(mime) do return &blob
+        }
+    }
+    return nil
+}
+
+// Append `data` to a named reg's plaintext blob. Only plaintext is appendable (concatenating
+// structured formats like html/png would corrupt them). Takes ownership of `data` and `mime`,
+// both must be heap-allocated as they will be freed.
+// M1: single blob, single mime; the existing blob is already text, so its mimes are left as-is.
+append_named_reg :: proc(reg_entry: ^lib.Reg_Entry, data: []u8, mime: string) -> bool {
+    dest_blob := find_plaintext_blob(reg_entry) // nil if the entry has no text representation
+
+    // Both sides must be plaintext to concatenate.
+    if !is_plaintext_mime(mime) || dest_blob == nil {
         delete(data)
         delete(mime)
         return false
     }
 
-    // Concatenate
-    new_data := make([]byte, len(reg_entry.data) + len(data))
-    copy(new_data, reg_entry.data)
-    copy(new_data[len(reg_entry.data):], data)
-    delete(reg_entry.data)
-    delete(data) // free caller's data, already copied into new_data
-    delete(mime) // free caller's mime, register keeps its existing mime_type
-    reg_entry.data = new_data
+    // Concatenate incoming data onto the existing plaintext blob.
+    new_data, err := slice.concatenate([][]byte{dest_blob.data, data})
+    if err != nil {
+        log.errorf("allocator error when appending to named reg: errno %v", err)
+        delete(data)
+        delete(mime)
+        return false
+    }
+    delete(dest_blob.data)
+    delete(data) // caller's data, already copied into new_data
+    delete(mime) // caller's mime, register keeps its existing blob mimes
+    dest_blob.data = new_data
     reg_entry.timestamp = time.time_to_unix(time.now())
     return true
 }
@@ -312,12 +346,12 @@ cleanup_registers :: proc(store: ^Register_Store) {
     free_live_selections(store)
 }
 
-// Convenience clone functions
+// Convenience clone functions: build a single-mime blob from (data, mime), cloning both.
 push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
-    push_to_ring(ring, slice.clone(data), strings.clone(mime))
+    push_to_ring(ring, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
 }
 push_recency_reg_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
-    push_recency_reg(store, type, slice.clone(data), strings.clone(mime))
+    push_recency_reg(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
 }
 set_named_reg_clone :: proc(
     store: ^Register_Store,
@@ -325,7 +359,7 @@ set_named_reg_clone :: proc(
     data: []byte,
     mime: string,
     set_mode: lib.Set_Mode,
-) {
-    set_named_reg(store, reg_id, slice.clone(data), strings.clone(mime), set_mode)
+) -> bool {
+    return set_named_reg(store, reg_id, lib.mime_blob_single(slice.clone(data), strings.clone(mime)), set_mode)
 }
 

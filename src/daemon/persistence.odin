@@ -31,10 +31,11 @@ save_registers_state :: proc(filename: string, regs: [lib.MAX_REGS]^lib.Reg_Entr
     return written, err
 }
 
-load_registers_state :: proc(filename: string, regs: ^[lib.MAX_REGS]lib.Reg_Entry) -> (count: u8, err: os.Error) {
+load_registers_state :: proc(filename: string) -> (regs: [lib.MAX_REGS]lib.Reg_Entry, err: os.Error) {
     data: []u8
     data, err = os.read_entire_file(filename, context.temp_allocator)
-    if err != os.General_Error.None {return 0, err}
-    count = lib.unmarshal_resp_registers(data, regs)
-    return count, err
+    if err != os.General_Error.None {return regs, err}
+    _ = lib.unmarshal_resp_registers(data, &regs)
+    return regs, err
 }
+

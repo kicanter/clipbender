@@ -797,9 +797,10 @@ draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: uint, y: uin
     CONTENT_WIDTH :: 100
     reg_fmt := "% 8s  % -" + "100s"
 
-    // `regs` is indexed by Reg_Id; an empty slot (nil data) renders as a blank register line
+    // `regs` is indexed by Reg_Id; an empty slot (no blobs) renders as a blank register line.
+    // M1: single blob, single mime per entry.
     entry := gui_state.regs[reg_id]
-    content := "" if entry.data == nil else truncate_content(string(entry.data), CONTENT_WIDTH)
+    content := "" if len(entry.blobs) == 0 else truncate_content(string(entry.blobs[0].data), CONTENT_WIDTH)
     reg_str := fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), content)
 
     draw_string(&gui_state.frame_buf, x, y, reg_str, color, &gui_state.font)

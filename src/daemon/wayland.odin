@@ -546,17 +546,24 @@ wayland_commit_selection :: proc(
     }
 
     // Update only timestamp of cached live selection if duplicate, otherwise update the cached live selection.
+    // M1: single blob, single mime per entry.
     live_selection := get_live_selection(store, type)
-    if live_selection != nil && live_selection.mime_type == mime && slice.equal(live_selection.data, data) {
+    if live_selection != nil &&
+       len(live_selection.blobs) > 0 &&
+       live_selection.blobs[0].mimes[0] == mime &&
+       slice.equal(live_selection.blobs[0].data, data) {
         bump_live_selection(store, type)
     } else {
-        // Clone data and mime since recency reg push takes ownership.
-        set_live_selection(store, type, slice.clone(data), strings.clone(mime))
+        // Clone data and mime since the live selection takes ownership.
+        set_live_selection(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
     }
 
     // Deduplicate: don't push if identical to the most recent entry, but bump the live selection's timestamp
     head_reg := get_recency_reg(store, type, 0)
-    if head_reg != nil && head_reg.mime_type == mime && slice.equal(head_reg.data, data) {
+    if head_reg != nil &&
+       len(head_reg.blobs) > 0 &&
+       head_reg.blobs[0].mimes[0] == mime &&
+       slice.equal(head_reg.blobs[0].data, data) {
         log.debugf("Got duplicate %v copy, suppressing register push", type)
         if !self_source {
             delete(data)
@@ -572,7 +579,7 @@ wayland_commit_selection :: proc(
         self_source_str = " (self-source)"
     }
     // Ownership of data and mime transferred
-    push_recency_reg(store, type, data, mime)
+    push_recency_reg(store, type, lib.mime_blob_single(data, mime))
     data, mime = {}, {}
     log.infof("Pushed to %v recency register%s", type, self_source_str)
     return true
@@ -842,3 +849,4 @@ data_control_source_v1_destroy_wrapper :: proc "contextless" (data_control_sourc
         wlr_dc.data_control_source_v1_destroy(source)
     }
 }
+
