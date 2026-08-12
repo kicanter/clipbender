@@ -15,8 +15,8 @@ Mime_Blob :: struct {
 
 // Info related to a single register entry
 Reg_Entry :: struct {
-    blobs: []Mime_Blob,
-    timestamp:  i64, // unix epoch time
+    blobs:     []Mime_Blob,
+    timestamp: i64, // unix epoch time
 }
 
 // Register IDs
@@ -232,7 +232,13 @@ MAX_REGS :: 64
 //
 // OK:    `[1 byte Response_Status]`
 // ERROR: `[1 byte Response_Status][N bytes error message]`
-// REGISTERS:  `[1 byte Response_Status][1 byte u8 count][count * Reg]`
+// REGISTERS:  `[1 byte Response_Status][1 byte u8 count][count * entry]`
+//
+// where each GET response entry is:
+// `[1 byte Reg_Id][8 bytes i64 timestamp][1 byte mime len][M bytes mime][4 bytes u32 data len][N bytes data]`
+//
+// One mime + one data blob per entry: GET is a query, so it packs only the representation the client
+// asked for. The state file (see marshal_state) persists full fidelity instead.
 Resp_Status :: enum u8 {
     OK,
     ERROR,
@@ -261,10 +267,7 @@ free_mime_data :: proc(mime_data: Mime_Blob) {
     delete(mime_data.mimes)
 }
 
-// Register data daemon returns to client for a GET operation. IPC wire format:
-//
-// `[1 byte Reg_Id][8 bytes i64 timestamp][1 byte mime type len][M bytes mime type][4 bytes data length][N bytes data]`
-
+// Free every blob in the entry plus the blobs slice itself, then zero the entry.
 free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
     for mime_data in reg_entry.blobs {
         free_mime_data(mime_data)
@@ -322,6 +325,18 @@ marshal_cmd_clear :: proc(reg_id: Reg_Id, buf: []byte) -> int {
 marshal_cmd_shutdown :: proc(buf: []byte) -> int {
     buf[0] = byte(Command_Type.SHUTDOWN)
     return size_of(Command_Type)
+}
+
+// OK: `[1 byte Response_Status]`
+// No payload to unmarshal
+unmarshal_resp_ok :: proc(buf: []byte) -> Resp_Status {
+    return .OK
+}
+
+// ERROR: `[1 byte Response_Status][N bytes error message]`
+// buf starts after first Response_Status byte
+unmarshal_resp_error :: proc(buf: []byte) -> string {
+    return string(buf)
 }
 
 // ok/error responses handled inline
@@ -459,15 +474,115 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
     return Reg_Id(buf[0])
 }
 
-// OK: `[1 byte Response_Status]`
-// No payload to unmarshal
-unmarshal_resp_ok :: proc(buf: []byte) -> Resp_Status {
-    return .OK
+// State-file serialization. Distinct from the GET response format: state persists FULL fidelity (every blob and every
+// mime of every entry), whereas GET (marshal_resp_registers) is a query that packs a single mime/data per entry.
+// Keeping them separate lets the GET format change without touching persistence.
+//
+// Wire format:
+//   [1b count]
+//   for entry in count:
+//     [1b Reg_Id][8b i64 timestamp][1b blob_count]
+//     for blob in blob_count:
+//       [1b mime_count]
+//       for mime in mime_count: [1b mime_len][mime_len bytes]
+//       [4b u32 data_len][data_len bytes]
+marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
+    written := size_of(u8) // reserve count byte
+    count: u8 = 0
+
+    for entry_ptr, id in regs {
+        if entry_ptr == nil {continue}
+
+        // Reg ID u8
+        buf[written] = byte(id)
+        written += size_of(Reg_Id)
+
+        // Timestamp i64
+        time_bytes := transmute([size_of(i64)]byte)entry_ptr.timestamp
+        copy(buf[written:][:size_of(i64)], time_bytes[:])
+        written += size_of(i64)
+
+        // Blob count u8
+        buf[written] = u8(len(entry_ptr.blobs))
+        written += size_of(u8)
+
+        for blob in entry_ptr.blobs {
+            // Mime count u8, then each [mime_len u8][mime bytes]
+            buf[written] = u8(len(blob.mimes))
+            written += size_of(u8)
+            for mime in blob.mimes {
+                mime_len := u8(len(mime))
+                buf[written] = byte(mime_len)
+                written += size_of(mime_len)
+                copy(buf[written:][:int(mime_len)], mime)
+                written += int(mime_len)
+            }
+
+            // Data length u32 + data bytes
+            data_len := u32(len(blob.data))
+            data_len_bytes := transmute([size_of(u32)]byte)data_len
+            copy(buf[written:][:size_of(u32)], data_len_bytes[:])
+            written += size_of(u32)
+            copy(buf[written:][:int(data_len)], blob.data)
+            written += int(data_len)
+        }
+
+        count += 1
+    }
+
+    buf[0] = byte(count)
+    return written
 }
 
-// ERROR: `[1 byte Response_Status][N bytes error message]`
-// buf starts after first Response_Status byte
-unmarshal_resp_error :: proc(buf: []byte) -> string {
-    return string(buf)
-}
+// Deserialize state into owned entries indexed by Reg_Id. Slots not present are left zeroed.
+// NOTE: caller is responsible for freeing all entries in `regs`.
+unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8) {
+    regs^ = {}
+    count = u8(buf[0])
 
+    offset := 1
+    for _ in 0 ..< count {
+        reg_id := Reg_Id(buf[offset])
+        offset += size_of(Reg_Id)
+
+        time_bytes: [size_of(i64)]byte
+        copy(time_bytes[:], buf[offset:][:size_of(i64)])
+        time := transmute(i64)time_bytes
+        offset += size_of(i64)
+
+        blob_count := u8(buf[offset])
+        offset += size_of(u8)
+
+        blobs := make([]Mime_Blob, int(blob_count))
+        for b in 0 ..< int(blob_count) {
+            mime_count := u8(buf[offset])
+            offset += size_of(u8)
+            mimes := make([]string, int(mime_count))
+            for m in 0 ..< int(mime_count) {
+                mime_len := u8(buf[offset])
+                offset += size_of(mime_len)
+                mimes[m] = strings.clone(string(buf[offset:][:int(mime_len)]))
+                offset += int(mime_len)
+            }
+
+            data_len_bytes: [size_of(u32)]byte
+            copy(data_len_bytes[:], buf[offset:][:size_of(u32)])
+            data_len := transmute(u32)data_len_bytes
+            offset += size_of(u32)
+            data := slice.clone(buf[offset:][:int(data_len)])
+            offset += int(data_len)
+
+            blobs[b] = Mime_Blob {
+                data  = data,
+                mimes = mimes,
+            }
+        }
+
+        regs[reg_id] = Reg_Entry {
+            blobs     = blobs,
+            timestamp = time,
+        }
+    }
+
+    return count
+}

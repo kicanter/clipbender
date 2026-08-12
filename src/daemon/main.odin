@@ -69,11 +69,12 @@ main :: proc() {
     server.state_path = clipbender_state_path(persist_state)
     defer delete(server.state_path)
     {     // new block so we can release the pointers in `regs` after we load them
-        regs, err := load_registers_state(server.state_path)
+        regs: [lib.MAX_REGS]lib.Reg_Entry
+        err := load_registers_state(server.state_path, &regs)
         if err != os.General_Error.None {
             log.warnf("Failed to load registers state from path %s: errno %v", server.state_path, err)
         } else {
-            load_registers(&server.registers, regs)
+            load_registers(&server.registers, &regs)
         }
     }
 
@@ -84,4 +85,3 @@ main :: proc() {
     // Run socket event loop
     uds_serve(&server, socket_path)
 }
-
