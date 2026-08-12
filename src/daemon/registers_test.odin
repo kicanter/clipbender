@@ -13,6 +13,27 @@ free_ring :: proc(ring: ^Recency_Ring) {
     ring^ = {}
 }
 
+// Convenience clone wrappers around the owning setters: build a single-mime blob from (data, mime),
+// cloning both. Test-only, so tests can pass string literals to procs that take ownership and free.
+push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
+    push_to_ring(ring, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
+}
+push_recency_reg_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
+    push_recency_reg(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
+}
+set_named_reg_clone :: proc(
+    store: ^Register_Store,
+    reg_id: lib.Reg_Id,
+    data: []byte,
+    mime: string,
+    set_mode: lib.Set_Mode,
+) -> bool {
+    return set_named_reg(store, reg_id, lib.mime_blob_single(slice.clone(data), strings.clone(mime)), set_mode)
+}
+set_live_selection_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
+    set_live_selection(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
+}
+
 // M1 test helpers: entries hold a single blob with a single mime.
 entry_data :: proc(entry: ^lib.Reg_Entry) -> []byte {
     return entry.blobs[0].data

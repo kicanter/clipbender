@@ -2,7 +2,6 @@ package main
 
 import "core:log"
 import "core:slice"
-import "core:strings"
 import "core:time"
 
 import lib "src:libclipbender"
@@ -344,24 +343,4 @@ cleanup_registers :: proc(store: ^Register_Store) {
     for &entry in store.primary_registers.entries {lib.free_reg_entry(&entry)}
     for &entry in store.named_registers {lib.free_reg_entry(&entry)}
     free_live_selections(store)
-}
-
-// Convenience clone functions: build a single-mime blob from (data, mime), cloning both.
-push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
-    push_to_ring(ring, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
-}
-push_recency_reg_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
-    push_recency_reg(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
-}
-set_named_reg_clone :: proc(
-    store: ^Register_Store,
-    reg_id: lib.Reg_Id,
-    data: []byte,
-    mime: string,
-    set_mode: lib.Set_Mode,
-) -> bool {
-    return set_named_reg(store, reg_id, lib.mime_blob_single(slice.clone(data), strings.clone(mime)), set_mode)
-}
-set_live_selection_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
-    set_live_selection(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
 }
