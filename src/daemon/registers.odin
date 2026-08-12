@@ -72,7 +72,7 @@ free_live_selections :: proc(store: ^Register_Store) {
     lib.free_reg_entry(&store.primary_selection)
 }
 
-load_registers :: proc(store: ^Register_Store, regs: [lib.MAX_REGS]lib.Reg_Entry) {
+load_registers :: proc(store: ^Register_Store, regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     // `regs` is indexed by Reg_Id. Recency rings are serialized most-recent-first, so within each ring we push in
     // reverse (highest recency index first) so the most recent entry ends up at the ring head.
     // M1: single blob per entry; a populated entry has len(blobs) == 1.
@@ -362,4 +362,6 @@ set_named_reg_clone :: proc(
 ) -> bool {
     return set_named_reg(store, reg_id, lib.mime_blob_single(slice.clone(data), strings.clone(mime)), set_mode)
 }
-
+set_live_selection_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
+    set_live_selection(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
+}

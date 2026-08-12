@@ -849,4 +849,3 @@ data_control_source_v1_destroy_wrapper :: proc "contextless" (data_control_sourc
         wlr_dc.data_control_source_v1_destroy(source)
     }
 }
-

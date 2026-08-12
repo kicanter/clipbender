@@ -1,5 +1,7 @@
 package main
 
+import "core:slice"
+import "core:strings"
 import "core:testing"
 
 import lib "src:libclipbender"
@@ -286,14 +288,24 @@ test_get_registers_selects_by_filter :: proc(t: ^testing.T) {
 
     push_recency_reg_clone(&store, .CLIPBOARD, transmute([]byte)string("clip"), "text/plain")
     push_recency_reg_clone(&store, .PRIMARY, transmute([]byte)string("pri"), "text/plain")
-    set_named_reg_clone(&store, lib.reg_id_from_named_index(0), transmute([]byte)string("named"), "text/plain", .OVERWRITE)
+    set_named_reg_clone(
+        &store,
+        lib.reg_id_from_named_index(0),
+        transmute([]byte)string("named"),
+        "text/plain",
+        .OVERWRITE,
+    )
 
     // Named-only filter: named slot populated, clipboard/primary slots nil.
     regs := get_registers(&store, lib.CMD_GET_FILTER_NAMED)
     named := regs[lib.reg_id_from_named_index(0)]
     testing.expect(t, named != nil, "named slot should be populated by NAMED filter")
     testing.expect_value(t, string(entry_data(named)), "named")
-    testing.expect(t, regs[lib.reg_id_from_clipboard_index(0)] == nil, "clipboard slot should be nil under NAMED filter")
+    testing.expect(
+        t,
+        regs[lib.reg_id_from_clipboard_index(0)] == nil,
+        "clipboard slot should be nil under NAMED filter",
+    )
     testing.expect(t, regs[lib.reg_id_from_primary_index(0)] == nil, "primary slot should be nil under NAMED filter")
 
     // Clipboard-only filter: clipboard populated, named nil.
@@ -308,8 +320,8 @@ test_get_registers_live_selections :: proc(t: ^testing.T) {
     store: Register_Store
     defer cleanup_registers(&store)
 
-    set_live_selection(&store, .CLIPBOARD, lib.mime_blob_single(transmute([]byte)string("live-clip"), "text/plain"))
-    set_live_selection(&store, .PRIMARY, lib.mime_blob_single(transmute([]byte)string("live-pri"), "text/plain"))
+    set_live_selection_clone(&store, .CLIPBOARD, transmute([]byte)string("live-clip"), "text/plain")
+    set_live_selection_clone(&store, .PRIMARY, transmute([]byte)string("live-pri"), "text/plain")
 
     regs := get_registers(&store, lib.CMD_GET_FILTER_SELECTION + lib.CMD_GET_FILTER_PRIMARY_SELECTION)
     clip := regs[lib.SELECTION_CLIPBOARD]
@@ -321,7 +333,11 @@ test_get_registers_live_selections :: proc(t: ^testing.T) {
 
     // Without the selection bits, live selections are excluded.
     regs2 := get_registers(&store, lib.CMD_GET_FILTER_NUMBERED)
-    testing.expect(t, regs2[lib.SELECTION_CLIPBOARD] == nil, "live clipboard should be excluded without its filter bit")
+    testing.expect(
+        t,
+        regs2[lib.SELECTION_CLIPBOARD] == nil,
+        "live clipboard should be excluded without its filter bit",
+    )
     testing.expect(t, regs2[lib.SELECTION_PRIMARY] == nil, "live primary should be excluded without its filter bit")
 }
 
@@ -331,14 +347,14 @@ test_live_selection_set_and_bump :: proc(t: ^testing.T) {
     store: Register_Store
     defer cleanup_registers(&store)
 
-    set_live_selection(&store, .CLIPBOARD, lib.mime_blob_single(transmute([]byte)string("one"), "text/plain"))
+    set_live_selection_clone(&store, .CLIPBOARD, transmute([]byte)string("one"), "text/plain")
     sel := get_live_selection(&store, .CLIPBOARD)
     testing.expect(t, sel != nil)
     testing.expect_value(t, string(entry_data(sel)), "one")
     first_ts := sel.timestamp
 
     // Overwrite frees the previous value and stores the new one.
-    set_live_selection(&store, .CLIPBOARD, lib.mime_blob_single(transmute([]byte)string("two"), "text/plain"))
+    set_live_selection_clone(&store, .CLIPBOARD, transmute([]byte)string("two"), "text/plain")
     sel2 := get_live_selection(&store, .CLIPBOARD)
     testing.expect_value(t, string(entry_data(sel2)), "two")
 
@@ -371,33 +387,38 @@ test_move_recency_to_front :: proc(t: ^testing.T) {
     testing.expect_value(t, string(entry_data(r2)), "b")
 }
 
-// Full persistence cycle: marshal store -> unmarshal -> load_registers repopulates a fresh store.
-// This exercises the state-load path (load_registers) which frees the unmarshalled blobs slices.
+// Full persistence cycle: marshal_state -> unmarshal_state -> load_registers repopulates a fresh
+// store. Exercises the state-file format (M2) and the load path (which frees unmarshalled blobs).
 @(test)
-test_marshal_unmarshal_load_roundtrip :: proc(t: ^testing.T) {
+test_state_roundtrip :: proc(t: ^testing.T) {
     src: Register_Store
     defer cleanup_registers(&src)
 
     push_recency_reg_clone(&src, .CLIPBOARD, transmute([]byte)string("clip0"), "text/plain")
     push_recency_reg_clone(&src, .PRIMARY, transmute([]byte)string("pri0"), "text/plain")
-    set_named_reg_clone(&src, lib.reg_id_from_named_index(1), transmute([]byte)string("named-b"), "text/plain", .OVERWRITE)
+    set_named_reg_clone(
+        &src,
+        lib.reg_id_from_named_index(1),
+        transmute([]byte)string("named-b"),
+        "text/plain",
+        .OVERWRITE,
+    )
 
-    // Marshal the numbered + named + primary registers (the persisted set).
+    // Persist the numbered + named + primary registers.
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
     regs := get_registers(&src, filter)
     buf: [4096]byte
-    n := lib.marshal_resp_registers(regs, buf[:])
+    n := lib.marshal_state(regs, buf[:])
     testing.expect(t, n > 0)
 
-    // Unmarshal into owned entries, then load into a fresh store (buf[1:] skips the Resp_Status byte).
+    // Deserialize into owned entries, then load into a fresh store.
     dec: [lib.MAX_REGS]lib.Reg_Entry
-    lib.unmarshal_resp_registers(buf[1:], &dec)
+    lib.unmarshal_state(buf[:n], &dec)
 
     dst: Register_Store
     defer cleanup_registers(&dst)
-    load_registers(&dst, dec)
+    load_registers(&dst, &dec)
 
-    // Fresh store should have the same contents.
     clip := get_recency_reg(&dst, .CLIPBOARD, 0)
     pri := get_recency_reg(&dst, .PRIMARY, 0)
     named := get_reg(&dst, lib.reg_id_from_named_index(1))
@@ -405,6 +426,54 @@ test_marshal_unmarshal_load_roundtrip :: proc(t: ^testing.T) {
     testing.expect_value(t, string(entry_data(clip)), "clip0")
     testing.expect_value(t, string(entry_data(pri)), "pri0")
     testing.expect_value(t, string(entry_data(named)), "named-b")
+}
+
+// The state format is full-fidelity: multiple blobs per entry, multiple mimes per blob, survive a
+// marshal/unmarshal roundtrip. (M1 stores single-blob entries, but the format must be M4-ready.)
+@(test)
+test_state_roundtrip_multi_blob :: proc(t: ^testing.T) {
+    // Build an entry with two blobs, one of which coalesces two mimes.
+    src: lib.Reg_Entry
+    src.timestamp = 4242
+    src.blobs = make([]lib.Mime_Blob, 2)
+    {
+        m0 := make([]string, 2)
+        m0[0] = strings.clone("text/plain")
+        m0[1] = strings.clone("STRING")
+        src.blobs[0] = lib.Mime_Blob {
+            data  = slice.clone(transmute([]byte)string("hello")),
+            mimes = m0,
+        }
+
+        m1 := make([]string, 1)
+        m1[0] = strings.clone("text/html")
+        src.blobs[1] = lib.Mime_Blob {
+            data  = slice.clone(transmute([]byte)string("<p>hello</p>")),
+            mimes = m1,
+        }
+    }
+    defer lib.free_reg_entry(&src)
+
+    ptrs: [lib.MAX_REGS]^lib.Reg_Entry
+    ptrs[lib.reg_id_from_named_index(0)] = &src
+
+    buf: [4096]byte
+    n := lib.marshal_state(ptrs, buf[:])
+
+    dec: [lib.MAX_REGS]lib.Reg_Entry
+    lib.unmarshal_state(buf[:n], &dec)
+    defer for &e in dec do lib.free_reg_entry(&e)
+
+    got := dec[lib.reg_id_from_named_index(0)]
+    testing.expect_value(t, got.timestamp, i64(4242))
+    testing.expect_value(t, len(got.blobs), 2)
+    testing.expect_value(t, len(got.blobs[0].mimes), 2)
+    testing.expect_value(t, got.blobs[0].mimes[0], "text/plain")
+    testing.expect_value(t, got.blobs[0].mimes[1], "STRING")
+    testing.expect_value(t, string(got.blobs[0].data), "hello")
+    testing.expect_value(t, len(got.blobs[1].mimes), 1)
+    testing.expect_value(t, got.blobs[1].mimes[0], "text/html")
+    testing.expect_value(t, string(got.blobs[1].data), "<p>hello</p>")
 }
 
 @(test)
