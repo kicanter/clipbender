@@ -127,15 +127,117 @@ test_marshal_unmarshal_cmd_set_inline :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_marshal_unmarshal_cmd_get :: proc(t: ^testing.T) {
-    buf: [16]byte
+test_marshal_unmarshal_cmd_get_ranked :: proc(t: ^testing.T) {
+    buf: [MAX_MSG_SIZE]byte
     filter := CMD_GET_FILTER_NUMBERED + CMD_GET_FILTER_NAMED
+    groups := [?]Cmd_Get_Group{{filter = filter, pref = Ranked_Mime.SIMPLEST}}
 
-    n := marshal_cmd_get(filter, buf[:])
-    testing.expect(t, n == size_of(Command_Type) + size_of(Cmd_Get_Filter))
+    // A ranked group carries no mime, so it is 9 bytes: [1b type][1b count][8b filter][1b tag]
+    n := marshal_cmd_get(groups[:], buf[:])
+    testing.expect_value(t, n, 11)
+    testing.expect_value(t, Command_Type(buf[0]), Command_Type.GET)
+    testing.expect_value(t, buf[1], u8(1))
 
-    dec_filter := unmarshal_cmd_get(buf[1:])
-    testing.expect_value(t, dec_filter, filter)
+    dec: [MAX_REGS]Cmd_Get_Group
+    count, err := unmarshal_cmd_get(buf[1:n], &dec)
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, count, 1)
+    testing.expect_value(t, dec[0].filter, filter)
+    testing.expect_value(t, dec[0].pref, Mime_Pref(Ranked_Mime.SIMPLEST))
+}
+
+@(test)
+test_marshal_unmarshal_cmd_get_mixed_groups :: proc(t: ^testing.T) {
+    buf: [MAX_MSG_SIZE]byte
+    a := reg_id_from_named_index(0)
+    b := reg_id_from_named_index(1)
+    groups := [?]Cmd_Get_Group {
+        {filter = transmute(Cmd_Get_Filter)(u64(1) << u64(a)), pref = Exact_Mime("image/png")},
+        {filter = transmute(Cmd_Get_Filter)(u64(1) << u64(b)), pref = Ranked_Mime.RICHEST},
+    }
+
+    // 2 header + (8+1+1+9) exact + (8+1) ranked
+    n := marshal_cmd_get(groups[:], buf[:])
+    testing.expect_value(t, n, 30)
+
+    dec: [MAX_REGS]Cmd_Get_Group
+    count, err := unmarshal_cmd_get(buf[1:n], &dec)
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, count, 2)
+    testing.expect_value(t, dec[0].pref, Mime_Pref(Exact_Mime("image/png")))
+    testing.expect_value(t, dec[1].pref, Mime_Pref(Ranked_Mime.RICHEST))
+    testing.expect_value(t, dec[0].filter, groups[0].filter)
+    testing.expect_value(t, dec[1].filter, groups[1].filter)
+}
+
+@(test)
+test_unmarshal_cmd_get_max_mime :: proc(t: ^testing.T) {
+    buf: [MAX_MSG_SIZE]byte
+    long: [MAX_MIME_LEN]byte
+    for &c in long {c = 'x'}
+    groups := [?]Cmd_Get_Group{{filter = CMD_GET_FILTER_ALL, pref = Exact_Mime(string(long[:]))}}
+
+    n := marshal_cmd_get(groups[:], buf[:])
+    dec: [MAX_REGS]Cmd_Get_Group
+    count, err := unmarshal_cmd_get(buf[1:n], &dec)
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, count, 1)
+    testing.expect_value(t, dec[0].pref, Mime_Pref(Exact_Mime(string(long[:]))))
+}
+
+@(test)
+test_unmarshal_cmd_get_rejects_bad_group_count :: proc(t: ^testing.T) {
+    dec: [MAX_REGS]Cmd_Get_Group
+
+    // Zero groups is meaningless; a count above MAX_REGS cannot be satisfied since each group needs a register bit.
+    _, err_zero := unmarshal_cmd_get([]byte{0}, &dec)
+    testing.expect(t, err_zero != nil, "group count 0 should be rejected")
+
+    _, err_over := unmarshal_cmd_get([]byte{MAX_REGS + 1}, &dec)
+    testing.expect(t, err_over != nil, "group count above MAX_REGS should be rejected")
+
+    _, err_empty := unmarshal_cmd_get([]byte{}, &dec)
+    testing.expect(t, err_empty != nil, "empty buffer should be rejected")
+}
+
+@(test)
+test_unmarshal_cmd_get_rejects_unknown_pref :: proc(t: ^testing.T) {
+    // One group whose pref tag is above EXACT_MIME_TAG. Group size depends on this byte, so it must be rejected
+    // rather than defaulted -- otherwise the next group's filter is read as a mime length.
+    msg: [10]byte
+    msg[0] = 1 // group_count
+    msg[9] = 99 // bogus pref tag
+    dec: [MAX_REGS]Cmd_Get_Group
+    _, err := unmarshal_cmd_get(msg[:], &dec)
+    testing.expect(t, err != nil, "unknown pref tag should be rejected")
+}
+
+@(test)
+test_unmarshal_cmd_get_rejects_truncated :: proc(t: ^testing.T) {
+    buf: [MAX_MSG_SIZE]byte
+    groups := [?]Cmd_Get_Group{{filter = CMD_GET_FILTER_ALL, pref = Exact_Mime("text/plain")}}
+    n := marshal_cmd_get(groups[:], buf[:])
+    dec: [MAX_REGS]Cmd_Get_Group
+
+    // Chop the mime bytes: the declared length now exceeds what remains.
+    _, err_mime := unmarshal_cmd_get(buf[1:n - 4], &dec)
+    testing.expect(t, err_mime != nil, "truncated mime should be rejected")
+
+    // Chop mid-filter, before the pref byte is even reachable.
+    _, err_filter := unmarshal_cmd_get(buf[1:6], &dec)
+    testing.expect(t, err_filter != nil, "truncated filter should be rejected")
+}
+
+@(test)
+test_unmarshal_cmd_get_rejects_empty_exact_mime :: proc(t: ^testing.T) {
+    // EXACT with mime_len 0 would match nothing; reject it rather than return an unmatchable group.
+    msg: [11]byte
+    msg[0] = 1
+    msg[9] = EXACT_MIME_TAG
+    msg[10] = 0
+    dec: [MAX_REGS]Cmd_Get_Group
+    _, err := unmarshal_cmd_get(msg[:], &dec)
+    testing.expect(t, err != nil, "empty exact mime should be rejected")
 }
 
 @(test)

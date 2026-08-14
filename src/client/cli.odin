@@ -9,7 +9,6 @@ import "core:time"
 import lib "src:libclipbender"
 
 RESP_BUF_SMALL :: 256 // OK/ERROR responses
-RESP_BUF_LARGE :: 65536 // 64 KiB, REGISTERS responses (GET)
 
 print_usage_and_exit :: proc() {
     fmt.eprintln(
@@ -653,7 +652,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     }
 
     // Send GET message
-    msg: [9]byte
+    msg: [lib.MAX_MSG_SIZE]byte
     written := lib.marshal_cmd_get(filter, msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {
@@ -662,7 +661,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     }
 
     // Receive response from daemon
-    resp_buf: [RESP_BUF_LARGE]u8
+    resp_buf: [lib.MAX_MSG_SIZE]u8
     bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
     if recv_err != .NONE || bytes_read <= 0 {
         fmt.eprintfln("Error: no response from daemon for `get` command: errno %v", recv_err)
@@ -806,3 +805,4 @@ run_cli :: proc(client_fd: linux.Fd, args: []string) {
         print_usage_and_exit()
     }
 }
+

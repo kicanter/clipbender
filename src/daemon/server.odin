@@ -11,11 +11,9 @@ import "core:sys/linux/uring"
 import lib "src:libclipbender"
 
 // Scratch buffer for receiving from socket client
-data_buf: [4096]u8
+data_buf: [lib.MAX_MSG_SIZE]u8
 // Scratch buffer for receiving signal (SIGINT/SIGTERM)
 sig_buf: [128]u8
-// Max data allowed to pass over IPC
-MAX_DATA_SIZE :: 65536 // 64 KiB
 
 Debounce_Event :: enum u8 {
     CLIPBOARD,
@@ -102,7 +100,7 @@ cleanup_socket :: proc(socket_path: string, socket_fd: linux.Fd) {
 handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd) -> (running: bool, dirty: bool) {
     running = true
     store := &server.registers
-    resp_buf: [MAX_DATA_SIZE]u8
+    resp_buf: [lib.MAX_MSG_SIZE]u8
     msg_type := cast(lib.Command_Type)data_buf[0]
 
     switch msg_type {

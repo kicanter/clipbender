@@ -773,7 +773,7 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (err:
     }
 
     // Receive response from daemon
-    resp_buf: [RESP_BUF_LARGE]u8
+    resp_buf: [lib.MAX_MSG_SIZE]u8
     bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
     if recv_err != .NONE || bytes_read <= 0 {
         return fmt.tprintf("No response from daemon when fetching registers: errno %v", recv_err)
