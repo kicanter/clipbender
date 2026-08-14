@@ -182,7 +182,21 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.GET:
         log.debugf("Got get message: %v", data_buf[:bytes_read])
-        filter := lib.unmarshal_cmd_get(data_buf[1:bytes_read])
+        groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+        count, get_err := lib.unmarshal_cmd_get(data_buf[1:bytes_read], &groups)
+        if get_err != nil {
+            resp_written := lib.marshal_resp_error(get_err.?, resp_buf[:])
+            linux.send(client_fd, resp_buf[:resp_written], {})
+            return running, dirty
+        }
+
+        // TODO: Resolve each group's mime preference independently. Until the response format carries per-blob
+        // descriptors, collect every requested register and serve it as before.
+        filter: lib.Cmd_Get_Filter
+        for group in groups[:count] {
+            filter += group.filter
+        }
+
         raw := transmute(u64)filter
         log.debug("Filter:")
         log.debugf("\tClipboard: %010b", raw & 0x3FF)

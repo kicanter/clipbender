@@ -651,9 +651,12 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         print_cmd_usage_and_exit(.GET)
     }
 
-    // Send GET message
+    // Send GET message.
+    // TODO: Replace this with per-group mime preferences parsed from `args`; until then the whole request is one group
+    // asking for the simplest representation, matching pre-multi-mime behavior.
     msg: [lib.MAX_MSG_SIZE]byte
-    written := lib.marshal_cmd_get(filter, msg[:])
+    groups := [?]lib.Cmd_Get_Group{{filter = filter, pref = lib.Ranked_Mime.SIMPLEST}}
+    written := lib.marshal_cmd_get(groups[:], msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {
         fmt.eprintfln("Error: failed sending GET to daemon: errno %v", send_err)
