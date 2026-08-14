@@ -91,7 +91,10 @@ run_tests() {
     local pkg="${1:-}"
     local pkgs
     if [[ -n "$pkg" ]]; then
-        pkgs=("src/$pkg")
+        case "$pkg" in
+            "lib") pkgs=("src/libclipbender") ;;
+            *)     pkgs=("src/$pkg") ;;
+        esac
     else
         pkgs=(src/libclipbender src/daemon src/client)
     fi
