@@ -22,7 +22,7 @@ clipbender_state_path :: proc(persist_state: bool) -> string {
 // Registers are persisted using the dedicated state format (full fidelity: all blobs and mimes per entry), distinct
 // from the GET response format. See `libclipbender.marshal_state()` / `libclipbender.unmarshal_state()`.
 save_registers_state :: proc(filename: string, regs: [lib.MAX_REGS]^lib.Reg_Entry) -> (written: int, err: os.Error) {
-    buf: [MAX_DATA_SIZE]u8
+    buf: [lib.MAX_MSG_SIZE]u8
     written = lib.marshal_state(regs, buf[:])
     err = os.write_entire_file(filename, buf[:written])
     return written, err
@@ -36,3 +36,4 @@ load_registers_state :: proc(filename: string, regs: ^[lib.MAX_REGS]lib.Reg_Entr
     _ = lib.unmarshal_state(data, regs)
     return err
 }
+
