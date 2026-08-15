@@ -8,7 +8,7 @@ complete -c clipbender -n '__fish_use_subcommand' -a clear -d 'Clear a named reg
 complete -c clipbender -n '__fish_use_subcommand' -a shutdown -d 'Stop the clipbenderd daemon'
 
 # `set` destination/source keywords.
-complete -c clipbender -n '__fish_seen_subcommand_from set' -a 'clipboard primary' -d 'System selection'
+complete -c clipbender -n '__fish_seen_subcommand_from set' -a 'selection @selection' -d 'Live selection'
 
 # `get` filter tokens.
 complete -c clipbender -n '__fish_seen_subcommand_from get' \

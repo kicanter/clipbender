@@ -7,7 +7,7 @@ _clipbender() {
 
     local subcommands="set get clear shutdown"
     # Register keywords usable as set destinations/sources.
-    local keywords="clipboard primary"
+    local keywords="selection @selection"
 
     # First word after `clipbender` is the subcommand.
     if [[ $cword -eq 1 ]]; then
@@ -19,8 +19,8 @@ _clipbender() {
     case "$subcmd" in
     set)
         # set <destination> [source]
-        # destination (cword 2): a-z, A-Z, clipboard, primary
-        # source      (cword 3): 0-9, a-z, @0-@9, clipboard, primary
+        # destination (cword 2): a-z, A-Z, selection, @selection
+        # source      (cword 3): 0-9, a-z, @0-@9, selection, @selection
         COMPREPLY=($(compgen -W "$keywords" -- "$cur"))
         ;;
     clear)

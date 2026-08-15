@@ -94,9 +94,9 @@ reg_id_to_string :: proc(id: Reg_Id) -> string {
     } else if reg_id_is_named(id) {
         return fmt.tprintf("%c", rune(reg_id_to_named_index(id) + 'a'))
     } else if id == SELECTION_CLIPBOARD {
-        return "clipboard"
+        return "selection"
     } else if id == SELECTION_PRIMARY {
-        return "primary"
+        return "@selection"
     }
     return "unknown reg id"
 }

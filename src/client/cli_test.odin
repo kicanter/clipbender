@@ -208,16 +208,16 @@ test_parse_cmd_set_dest_reg_append :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_cmd_set_dest_reg_clipboard :: proc(t: ^testing.T) {
-    dest, mode, err := parse_cmd_set_dest_reg("clipboard")
+test_parse_cmd_set_dest_reg_selection :: proc(t: ^testing.T) {
+    dest, mode, err := parse_cmd_set_dest_reg("selection")
     testing.expect(t, err == nil)
     testing.expect_value(t, dest, lib.SELECTION_CLIPBOARD)
     testing.expect_value(t, mode, lib.Set_Mode.OVERWRITE)
 }
 
 @(test)
-test_parse_cmd_set_dest_reg_primary :: proc(t: ^testing.T) {
-    dest, mode, err := parse_cmd_set_dest_reg("primary")
+test_parse_cmd_set_dest_reg_primary_selection :: proc(t: ^testing.T) {
+    dest, mode, err := parse_cmd_set_dest_reg("@selection")
     testing.expect(t, err == nil)
     testing.expect_value(t, dest, lib.SELECTION_PRIMARY)
     testing.expect_value(t, mode, lib.Set_Mode.OVERWRITE)
@@ -253,15 +253,15 @@ test_parse_cmd_set_source_reg_named :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_parse_cmd_set_source_reg_clipboard_keyword :: proc(t: ^testing.T) {
-    source, err := parse_cmd_set_source_reg("clipboard")
+test_parse_cmd_set_source_reg_selection :: proc(t: ^testing.T) {
+    source, err := parse_cmd_set_source_reg("selection")
     testing.expect(t, err == nil)
     testing.expect_value(t, source, lib.SELECTION_CLIPBOARD)
 }
 
 @(test)
-test_parse_cmd_set_source_reg_primary_keyword :: proc(t: ^testing.T) {
-    source, err := parse_cmd_set_source_reg("primary")
+test_parse_cmd_set_source_reg_primary_selection :: proc(t: ^testing.T) {
+    source, err := parse_cmd_set_source_reg("@selection")
     testing.expect(t, err == nil)
     testing.expect_value(t, source, lib.SELECTION_PRIMARY)
 }

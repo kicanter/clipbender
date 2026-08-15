@@ -68,7 +68,11 @@ Start the daemon (`clipbenderd`), then use the `clipbender` client. Running bare
 - `@0`-`@9` — primary-selection numbered registers (read-only source)
 - `a`-`z` — named registers (user-managed)
 - `A`-`Z` — append to the corresponding lowercase named register
-- `clipboard` / `primary` — the live system selections (valid as set destination or source)
+- `selection` / `@selection` — the live system selections (valid as a `set` destination or source,
+  and retrievable with `get ++selection` / `get ++@selection`)
+
+A leading `@` always means "the primary-selection variant of this": `5` vs `@5`, `selection` vs
+`@selection`, `++numbered` vs `++@numbered`.
 
 ### CLI
 
@@ -77,19 +81,50 @@ clipbender                       # open the popup
 clipbenderd                      # start the daemon
 clipbender shutdown              # stop the daemon
 
-clipbender set a clipboard       # set register `a` from the system clipboard
-clipbender set clipboard 1       # set the system clipboard from clipboard register 1
-clipbender set a primary         # set register `a` from the primary selection
-clipbender set A clipboard       # append the system clipboard to register `a`
-clipbender set primary @5        # set the primary selection from primary register 5
-<cmd> | clipbender set a          # set register `a` from stdin
+clipbender set a selection       # set register `a` from the live clipboard selection
+clipbender set selection 1       # set the live clipboard selection from clipboard register 1
+clipbender set a @selection      # set register `a` from the live primary selection
+clipbender set A selection       # append the live clipboard selection to register `a`
+clipbender set @selection @5     # set the live primary selection from primary register 5
+<cmd> | clipbender set a         # set register `a` from stdin
+clipbender set a < file          # set register `a` from stdin redirection
 
 clipbender clear a               # clear named register `a`
+```
 
-clipbender get ++all             # print all registers
-clipbender get ++named -abc      # print named registers except a, b, c
-clipbender get +@012 +012        # first three primary and clipboard numbered registers
-clipbender get +0:5 +@0:3 fmt=json   # ranges, as structured JSON
+#### Filtering `get`
+
+Keywords take a double prefix (`++` to include, `--` to exclude); individual registers and ranges
+take a single prefix (`+` / `-`). Order doesn't matter — exclusions are applied after all inclusions,
+so `++all --@selection` and `--@selection ++all` are equivalent.
+
+| Token                          | Selects                                |
+| ------------------------------ | -------------------------------------- |
+| `++all`                        | every register                         |
+| `++numbered` / `++@numbered`   | clipboard / primary recency registers  |
+| `++named`                      | named registers (`a`-`z`)              |
+| `++selection` / `++@selection` | the live clipboard / primary selection |
+| `+adz`, `+038`, `+@038`        | specific registers                     |
+| `+0:5`, `+a:f`, `+@0:3`        | an inclusive range within one kind     |
+
+```sh
+clipbender get ++all                  # every register
+clipbender get ++all --@selection     # everything except the live primary selection
+clipbender get ++named -abc           # named registers except a, b, c
+clipbender get ++selection            # just the live clipboard selection
+clipbender get +@012 +012             # first three primary and clipboard numbered registers
+clipbender get +a:f +@0:3             # named range a-f plus primary range 0-3
+```
+
+#### `get` output formats
+
+`get` prints an aligned table by default. `fmt=json` emits structured JSON; `fmt=raw` emits only the
+register contents, newline-delimited, which is what makes `get` composable with other tools.
+
+```sh
+clipbender get ++numbered fmt=json    # structured JSON
+clipbender get +a fmt=raw | wl-copy   # pipe register `a` into wl-copy
+clipbender get +a fmt=raw > file      # redirect register `a` to a file
 ```
 
 ### Popup keymap
@@ -109,4 +144,4 @@ The popup always copies **to the clipboard** (never the primary selection).
 
 Phase 1 targets wlroots-based compositors, or more specifically, compositors implementing the `ext_data_control_v1` or
 `wlr_data_control_unstable_v1` protocols. GNOME/X11 support, a polished cairo/pangocairo-rendered popup, inline register
-editing, and multi-MIME clipboard entries are planned for v0.2. See `PLAN.md` for the full roadmap.
+editing, and multi-MIME clipboard entries are planned for v0.2.

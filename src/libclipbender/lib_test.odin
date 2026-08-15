@@ -298,8 +298,8 @@ test_reg_id_to_string :: proc(t: ^testing.T) {
     testing.expect_value(t, reg_id_to_string(reg_id_from_named_index(25)), "z")
     testing.expect_value(t, reg_id_to_string(reg_id_from_primary_index(0)), "@0")
     testing.expect_value(t, reg_id_to_string(reg_id_from_primary_index(9)), "@9")
-    testing.expect_value(t, reg_id_to_string(SELECTION_CLIPBOARD), "clipboard")
-    testing.expect_value(t, reg_id_to_string(SELECTION_PRIMARY), "primary")
+    testing.expect_value(t, reg_id_to_string(SELECTION_CLIPBOARD), "selection")
+    testing.expect_value(t, reg_id_to_string(SELECTION_PRIMARY), "@selection")
 }
 
 @(test)

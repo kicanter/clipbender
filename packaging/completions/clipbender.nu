@@ -11,7 +11,7 @@ def "nu-complete clipbender subcommands" [] {
 }
 
 def "nu-complete clipbender targets" [] {
-    ["clipboard" "primary"]
+    ["selection" "@selection"]
 }
 
 def "nu-complete clipbender get-filters" [] {
@@ -25,8 +25,8 @@ export extern "clipbender" [
 ]
 
 export extern "clipbender set" [
-    destination: string@"nu-complete clipbender targets"  # a-z, A-Z, clipboard, primary
-    source?: string@"nu-complete clipbender targets"       # 0-9, a-z, @0-@9, clipboard, primary
+    destination: string@"nu-complete clipbender targets"  # a-z, A-Z, selection, @selection
+    source?: string@"nu-complete clipbender targets"       # 0-9, a-z, @0-@9, selection, @selection
 ]
 
 export extern "clipbender get" [

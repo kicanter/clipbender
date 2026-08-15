@@ -24,7 +24,7 @@ _clipbender() {
         case $words[1] in
         set)
             # set <destination> [source]
-            _values 'target' 'clipboard' 'primary'
+            _values 'target' 'selection' '@selection'
             ;;
         get)
             _values 'filter' \
