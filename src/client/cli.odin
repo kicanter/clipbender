@@ -808,4 +808,3 @@ run_cli :: proc(client_fd: linux.Fd, args: []string) {
         print_usage_and_exit()
     }
 }
-
