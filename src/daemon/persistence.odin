@@ -24,7 +24,18 @@ clipbender_state_path :: proc(persist_state: bool) -> string {
 save_registers_state :: proc(filename: string, regs: [lib.MAX_REGS]^lib.Reg_Entry) -> (written: int, err: os.Error) {
     buf: [lib.MAX_MSG_SIZE]u8
     written = lib.marshal_state(regs, buf[:])
-    err = os.write_entire_file(filename, buf[:written])
+
+    // Write to a sibling temp file and rename over the target to ensure state save is an atomic operation.
+    tmp_path := fmt.tprintf("%s.tmp", filename)
+    err = os.write_entire_file(tmp_path, buf[:written])
+    if err != os.General_Error.None {
+        os.remove(tmp_path)
+        return written, err
+    }
+
+    err = os.rename(tmp_path, filename)
+    if err != os.General_Error.None {os.remove(tmp_path)}
+
     return written, err
 }
 
@@ -36,4 +47,3 @@ load_registers_state :: proc(filename: string, regs: ^[lib.MAX_REGS]lib.Reg_Entr
     _ = lib.unmarshal_state(data, regs)
     return err
 }
-
