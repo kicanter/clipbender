@@ -118,8 +118,15 @@ clipbender get +a:f +@0:3             # named range a-f plus primary range 0-3
 
 #### `get` output formats
 
-`get` prints an aligned table by default. `fmt=json` emits structured JSON; `fmt=raw` emits only the
-register contents, newline-delimited, which is what makes `get` composable with other tools.
+`get` prints an aligned table by default. `fmt=json` emits structured JSON; `fmt=raw` emits only the register contents,
+which is what makes `get` composable with other tools.
+
+Multiple registers under `fmt=raw` are separated by a **NUL byte**. The output is recoverable with `read -d ''`, `xargs
+-0`, `grep -z`, etc. A single register is emitted with no separator at all, byte-identical to its contents, so `> file`
+and `| wl-copy` stay exact.
+
+[!IMPORTANT] Binary contents *can* contain NUL, so a multi-register raw dump of binary blobs is a plain concatenation, similar
+to `cat a b c`. Use `fmt=json` when entries must be separable regardless of what they hold.
 
 ```sh
 clipbender get ++numbered fmt=json    # structured JSON

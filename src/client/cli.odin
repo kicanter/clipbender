@@ -69,8 +69,8 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
         fmt.eprintln(
             "Usage: clipbender get <filter...> [fmt=<json|raw>]\n\n" +
             "Retrieve the content, mime type, and timestamp of the registers matching `filter`. Use the `fmt=json` flag\n" +
-            "to output the data as structured JSON and the `fmt=raw` flag to output just the contents of the registers\n" +
-            "in newline-delimited byte arrays.\n\n" +
+            "to output the data as structured JSON and the `fmt=raw` flag to output just the contents of the registers,\n" +
+            "separated by NUL bytes (recoverable with `read -d ''`, `xargs -0`; use `fmt=json` for binary contents).\n\n" +
             "Keywords (double prefix `++`/`--`), `@` selects the primary-side variant:\n" +
             "\t++all, --all                                         All registers\n" +
             "\t++numbered, ++@numbered                              Clipboard / primary recency registers\n" +
@@ -631,14 +631,17 @@ cmd_get_format_json :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     fmt.print("]\n")
 }
 
-// Print just the raw content from `regs` register entries (newline-delimited).
+// Print just the raw content from `regs` register entries, NUL-separated.
+//
+// NOTE: separator, not terminator: a single-register dump must be byte-identical to the register, or `fmt=raw > file`
+// and `fmt=raw | wl-copy` would append a stray NUL to the file/clipboard.
 cmd_get_format_raw :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     printed := false
     for group in REG_GROUPS {
         for id := group.start; id <= group.end; id += 1 {
             entry := regs[id]
             if len(entry.blobs) == 0 {continue}
-            if printed {fmt.print("\n")}
+            if printed {fmt.print("\x00")}
             fmt.print(string(entry.blobs[0].data))
             printed = true
         }
