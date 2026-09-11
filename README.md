@@ -125,7 +125,8 @@ Multiple registers under `fmt=raw` are separated by a **NUL byte**. The output i
 -0`, `grep -z`, etc. A single register is emitted with no separator at all, byte-identical to its contents, so `> file`
 and `| wl-copy` stay exact.
 
-[!IMPORTANT] Binary contents *can* contain NUL, so a multi-register raw dump of binary blobs is a plain concatenation, similar
+> [!IMPORTANT]
+> Binary contents *can* contain NUL, so a multi-register raw dump of binary blobs is a plain concatenation, similar
 to `cat a b c`. Use `fmt=json` when entries must be separable regardless of what they hold.
 
 ```sh
