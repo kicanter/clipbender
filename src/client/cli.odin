@@ -661,8 +661,10 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     }
 
     // Send GET message.
-    // TODO: Replace this with per-group mime preferences parsed from `args`; until then the whole request is one group
-    // asking for the simplest representation, matching pre-multi-mime behavior.
+    // TODO: `parse_cmd_get` does not parse the `=mime` suffix yet, so every matched register collapses into one
+    // PRINTABLE group -- reproducing pre-multi-mime behavior, where there is no way to request a specific mime. Once it
+    // yields {register set, mime} per token, resolve those into groups (overlap resolution, then partition by mime) and
+    // marshal `groups[:count]`.
     msg: [lib.MAX_MSG_SIZE]byte
     groups := [?]lib.Cmd_Get_Group{{filter = filter, pref = lib.Ranked_Mime.PRINTABLE}}
     written := lib.marshal_cmd_get(groups[:], msg[:])

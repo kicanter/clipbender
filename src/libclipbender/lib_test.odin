@@ -424,6 +424,19 @@ mime_blob_of :: proc(data: string, mimes: []string) -> Mime_Blob {
     return Mime_Blob{data = transmute([]byte)data, mimes = mimes}
 }
 
+// resolve_blob returns (index, ok). These wrap the pair so each case reads as one assertion and a miss is checked as a
+// miss rather than as a sentinel index.
+expect_blob :: proc(t: ^testing.T, entry: ^Reg_Entry, pref: Mime_Pref, want: int, loc := #caller_location) {
+    i, ok := resolve_blob(entry, pref)
+    testing.expect(t, ok, "expected a blob to resolve", loc = loc)
+    testing.expect_value(t, i, want, loc)
+}
+
+expect_no_blob :: proc(t: ^testing.T, entry: ^Reg_Entry, pref: Mime_Pref, loc := #caller_location) {
+    _, ok := resolve_blob(entry, pref)
+    testing.expect(t, !ok, "expected no blob to resolve", loc = loc)
+}
+
 @(test)
 test_resolve_blob_ranked_beats_storage_order :: proc(t: ^testing.T) {
     // The ordering test: html is stored first, but RICHEST ranks images above markup. If the resolution loops were
@@ -438,9 +451,9 @@ test_resolve_blob_ranked_beats_storage_order :: proc(t: ^testing.T) {
         blobs = blobs[:],
     }
 
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.RICHEST), 1)
+    expect_blob(t, &entry, Ranked_Mime.RICHEST, 1)
     // PRINTABLE excludes images entirely, so it takes the markup it can print.
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.PRINTABLE), 0)
+    expect_blob(t, &entry, Ranked_Mime.PRINTABLE, 0)
 }
 
 @(test)
@@ -455,8 +468,8 @@ test_resolve_blob_printable_prefers_plain_over_markup :: proc(t: ^testing.T) {
         blobs = blobs[:],
     }
 
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.PRINTABLE), 1)
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.RICHEST), 0)
+    expect_blob(t, &entry, Ranked_Mime.PRINTABLE, 1)
+    expect_blob(t, &entry, Ranked_Mime.RICHEST, 0)
 }
 
 @(test)
@@ -469,8 +482,8 @@ test_resolve_blob_printable_empty_for_image_only :: proc(t: ^testing.T) {
         blobs = blobs[:],
     }
 
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.PRINTABLE), -1)
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.RICHEST), 0)
+    expect_no_blob(t, &entry, Ranked_Mime.PRINTABLE)
+    expect_blob(t, &entry, Ranked_Mime.RICHEST, 0)
 }
 
 @(test)
@@ -483,8 +496,8 @@ test_resolve_blob_structured_only :: proc(t: ^testing.T) {
         blobs = blobs[:],
     }
 
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.PRINTABLE), 0)
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.RICHEST), 0)
+    expect_blob(t, &entry, Ranked_Mime.PRINTABLE, 0)
+    expect_blob(t, &entry, Ranked_Mime.RICHEST, 0)
 }
 
 @(test)
@@ -500,11 +513,11 @@ test_resolve_blob_app_private_never_wins_ranked :: proc(t: ^testing.T) {
         blobs = blobs[:],
     }
 
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.PRINTABLE), -1)
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.RICHEST), -1)
+    expect_no_blob(t, &entry, Ranked_Mime.PRINTABLE)
+    expect_no_blob(t, &entry, Ranked_Mime.RICHEST)
 
     // ...but an explicit request names the full string, so there is no accident to prevent.
-    testing.expect_value(t, resolve_blob(&entry, Exact_Mime("chromium/x-web-custom-data")), 0)
+    expect_blob(t, &entry, Exact_Mime("chromium/x-web-custom-data"), 0)
 }
 
 @(test)
@@ -519,9 +532,9 @@ test_resolve_blob_exact :: proc(t: ^testing.T) {
         blobs = blobs[:],
     }
 
-    testing.expect_value(t, resolve_blob(&entry, Exact_Mime("image/png")), 1)
+    expect_blob(t, &entry, Exact_Mime("image/png"), 1)
     // An exact miss must not fall back: `'+a=image/gif' fmt=raw > out.gif` would otherwise write the wrong bytes.
-    testing.expect_value(t, resolve_blob(&entry, Exact_Mime("image/gif")), -1)
+    expect_no_blob(t, &entry, Exact_Mime("image/gif"))
 }
 
 @(test)
@@ -533,16 +546,16 @@ test_resolve_blob_matches_any_name_on_blob :: proc(t: ^testing.T) {
         blobs = blobs[:],
     }
 
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.PRINTABLE), 0)
-    testing.expect_value(t, resolve_blob(&entry, Exact_Mime("STRING")), 0)
+    expect_blob(t, &entry, Ranked_Mime.PRINTABLE, 0)
+    expect_blob(t, &entry, Exact_Mime("STRING"), 0)
 }
 
 @(test)
 test_resolve_blob_empty_entry :: proc(t: ^testing.T) {
     entry: Reg_Entry
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.PRINTABLE), -1)
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.RICHEST), -1)
-    testing.expect_value(t, resolve_blob(&entry, Exact_Mime("text/plain")), -1)
+    expect_no_blob(t, &entry, Ranked_Mime.PRINTABLE)
+    expect_no_blob(t, &entry, Ranked_Mime.RICHEST)
+    expect_no_blob(t, &entry, Exact_Mime("text/plain"))
 }
 
 @(test)
@@ -555,6 +568,6 @@ test_resolve_blob_svg_is_an_image_not_printable :: proc(t: ^testing.T) {
         blobs = blobs[:],
     }
 
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.PRINTABLE), -1)
-    testing.expect_value(t, resolve_blob(&entry, Ranked_Mime.RICHEST), 0)
+    expect_no_blob(t, &entry, Ranked_Mime.PRINTABLE)
+    expect_blob(t, &entry, Ranked_Mime.RICHEST, 0)
 }

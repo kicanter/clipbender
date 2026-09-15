@@ -190,8 +190,11 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             return running, dirty
         }
 
-        // TODO: Resolve each group's mime preference independently. Until the response format carries per-blob
-        // descriptors, collect every requested register and serve it as before.
+        // Every group's `pref` is discarded here: the union of their filters is collected and served as before.
+        // TODO: `lib.resolve_blob` exists now, so this is unblocked once the response format carries per-blob
+        // descriptors. Flatten into one `[lib.MAX_REGS]lib.Mime_Pref` (first group wins on overlap -- the client
+        // guarantees disjoint groups, but any local process can write to this socket, so be deterministic rather than
+        // re-litigating a CLI grammar rule), keep the union filter for `get_registers`, then resolve per entry.
         filter: lib.Cmd_Get_Filter
         for group in groups[:count] {
             filter += group.filter
