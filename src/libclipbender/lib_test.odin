@@ -249,17 +249,23 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
     named3 := reg_id_from_named_index(3)
     primary2 := reg_id_from_primary_index(2)
 
+    m_plain := [?]string{"text/plain"}
+    m_html := [?]string{"text/html"}
+    b_first := [?]Mime_Blob{mime_blob_of("first", m_plain[:])}
+    b_second := [?]Mime_Blob{mime_blob_of("second entry", m_html[:])}
+    b_third := [?]Mime_Blob{mime_blob_of("third", m_plain[:])}
+
     regs: [MAX_REGS]Reg_Entry
     regs[clip0] = Reg_Entry {
-        blobs     = []Mime_Blob{{data = transmute([]byte)string("first"), mimes = []string{"text/plain"}}},
+        blobs     = b_first[:],
         timestamp = 1000,
     }
     regs[named3] = Reg_Entry {
-        blobs     = []Mime_Blob{{data = transmute([]byte)string("second entry"), mimes = []string{"text/html"}}},
+        blobs     = b_second[:],
         timestamp = 2000,
     }
     regs[primary2] = Reg_Entry {
-        blobs     = []Mime_Blob{{data = transmute([]byte)string("third"), mimes = []string{"text/plain"}}},
+        blobs     = b_third[:],
         timestamp = 3000,
     }
 
@@ -269,25 +275,165 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
     reg_ptrs[named3] = &regs[named3]
     reg_ptrs[primary2] = &regs[primary2]
 
-    n := marshal_resp_registers(reg_ptrs, buf[:])
+    prefs: [MAX_REGS]Mime_Pref // PRINTABLE is the zero value of the union's first variant
+    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    testing.expect(t, ok, "response should fit")
     testing.expect(t, n > 0)
     testing.expect_value(t, Resp_Status(buf[0]), Resp_Status.REGISTERS)
     testing.expect_value(t, buf[1], u8(3))
 
-    dec_regs: [MAX_REGS]Reg_Entry
-    count := unmarshal_resp_registers(buf[1:], &dec_regs)
-    testing.expect_value(t, count, u8(3))
+    dec: [MAX_REGS]Resp_Reg
+    defer for &reg in dec {free_resp_reg(&reg)}
+    count, derr := unmarshal_resp_registers(buf[1:n], &dec)
+    testing.expect_value(t, derr, nil)
+    testing.expect_value(t, count, 3)
 
-    // Entries should land at their original Reg_Id slots (M1: single blob, single mime)
+    // Entries land at their original Reg_Id slots, with the chosen blob's bytes in blobs[0].
     for id in ([]Reg_Id{clip0, named3, primary2}) {
-        testing.expect_value(t, dec_regs[id].timestamp, regs[id].timestamp)
-        testing.expect_value(t, dec_regs[id].blobs[0].mimes[0], regs[id].blobs[0].mimes[0])
-        testing.expect(t, slice.equal(dec_regs[id].blobs[0].data, regs[id].blobs[0].data))
+        testing.expect_value(t, dec[id].timestamp, regs[id].timestamp)
+        testing.expect_value(t, dec[id].mime, regs[id].blobs[0].mimes[0])
+        testing.expect_value(t, len(dec[id].other_mimes), 0)
+        testing.expect(t, slice.equal(dec[id].data, regs[id].blobs[0].data))
+    }
+}
+
+@(test)
+test_resp_registers_sent_mime_in_own_slot :: proc(t: ^testing.T) {
+    // RICHEST picks the png at index 1, so it must be written first: `blobs[0]` is the one `data` belongs to, and the
+    // client should never have to search for the blob with non-empty data.
+    buf: [1024]byte
+    m_html := [?]string{"text/html"}
+    m_png := [?]string{"image/png"}
+    blobs := [?]Mime_Blob{mime_blob_of("<p>hi</p>", m_html[:]), mime_blob_of("PNGDATA", m_png[:])}
+    entry := Reg_Entry {
+        blobs     = blobs[:],
+        timestamp = 42,
     }
 
-    for &entry in dec_regs {
-        free_reg_entry(&entry)
+    id := reg_id_from_named_index(0)
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[id] = &entry
+    prefs: [MAX_REGS]Mime_Pref
+    prefs[id] = Ranked_Mime.RICHEST
+
+    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    testing.expect(t, ok)
+
+    dec: [MAX_REGS]Resp_Reg
+    defer for &r in dec {free_resp_reg(&r)}
+    _, derr := unmarshal_resp_registers(buf[1:n], &dec)
+    testing.expect_value(t, derr, nil)
+
+    testing.expect_value(t, dec[id].mime, "image/png")
+    testing.expect_value(t, string(dec[id].data), "PNGDATA")
+    // The other name is a mime preview: it is listed, but its bytes were not sent.
+    testing.expect_value(t, len(dec[id].other_mimes), 1)
+    testing.expect_value(t, dec[id].other_mimes[0], "text/html")
+}
+
+@(test)
+test_resp_registers_mime_preview_when_nothing_matched :: proc(t: ^testing.T) {
+    // A PNG-only register under PRINTABLE: no bytes, but the mime still travels so the caller knows `image/png` is
+    // there to request. Without that the client could not distinguish this from an empty register.
+    buf: [1024]byte
+    m_png := [?]string{"image/png"}
+    blobs := [?]Mime_Blob{mime_blob_of("PNGDATA", m_png[:])}
+    entry := Reg_Entry {
+        blobs     = blobs[:],
+        timestamp = 7,
     }
+
+    id := reg_id_from_named_index(1)
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[id] = &entry
+    prefs: [MAX_REGS]Mime_Pref // PRINTABLE
+
+    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    testing.expect(t, ok)
+
+    dec: [MAX_REGS]Resp_Reg
+    defer for &r in dec {free_resp_reg(&r)}
+    count, derr := unmarshal_resp_registers(buf[1:n], &dec)
+    testing.expect_value(t, derr, nil)
+    testing.expect_value(t, count, 1)
+    // `mime` is empty exactly because no representation was sent; the name still travels as preview.
+    testing.expect_value(t, dec[id].mime, "")
+    testing.expect_value(t, len(dec[id].data), 0)
+    testing.expect_value(t, len(dec[id].other_mimes), 1)
+    testing.expect_value(t, dec[id].other_mimes[0], "image/png")
+}
+
+@(test)
+test_resp_registers_all_mimes_travel :: proc(t: ^testing.T) {
+    // Every blob's every mime name reaches the client -- that is what the GUI's per-mime picker is built from.
+    buf: [1024]byte
+    m_text := [?]string{"text/plain;charset=utf-8", "text/plain", "STRING"}
+    m_png := [?]string{"image/png"}
+    blobs := [?]Mime_Blob{mime_blob_of("hi", m_text[:]), mime_blob_of("PNGDATA", m_png[:])}
+    entry := Reg_Entry {
+        blobs = blobs[:],
+    }
+
+    id := reg_id_from_named_index(2)
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[id] = &entry
+    prefs: [MAX_REGS]Mime_Pref // PRINTABLE picks the text blob
+
+    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    testing.expect(t, ok)
+
+    dec: [MAX_REGS]Resp_Reg
+    defer for &r in dec {free_resp_reg(&r)}
+    _, derr := unmarshal_resp_registers(buf[1:n], &dec)
+    testing.expect_value(t, derr, nil)
+
+    // The sent representation's first name fills the slot; its aliases join the preview list alongside the png, since
+    // they name the same bytes. No blob grouping survives the wire.
+    testing.expect_value(t, dec[id].mime, "text/plain;charset=utf-8")
+    testing.expect_value(t, string(dec[id].data), "hi")
+    testing.expect_value(t, len(dec[id].other_mimes), 3)
+    testing.expect_value(t, dec[id].other_mimes[0], "text/plain")
+    testing.expect_value(t, dec[id].other_mimes[1], "STRING")
+    testing.expect_value(t, dec[id].other_mimes[2], "image/png")
+}
+
+@(test)
+test_marshal_resp_registers_rejects_oversize :: proc(t: ^testing.T) {
+    // Too small to hold the entry: refuse rather than truncate, since `data len` would otherwise lie about how much
+    // followed and the client could not tell a fragment from a whole blob.
+    small: [16]byte
+    m_plain := [?]string{"text/plain"}
+    blobs := [?]Mime_Blob{mime_blob_of("some data that will not fit", m_plain[:])}
+    entry := Reg_Entry {
+        blobs = blobs[:],
+    }
+
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[reg_id_from_named_index(0)] = &entry
+    prefs: [MAX_REGS]Mime_Pref
+
+    _, ok := marshal_resp_registers(reg_ptrs, prefs, small[:])
+    testing.expect(t, !ok, "oversize response should be rejected")
+}
+
+@(test)
+test_unmarshal_resp_registers_rejects_malformed :: proc(t: ^testing.T) {
+    dec: [MAX_REGS]Resp_Reg
+
+    _, err_empty := unmarshal_resp_registers([]byte{}, &dec)
+    testing.expect(t, err_empty != nil, "empty buffer should be rejected")
+
+    _, err_count := unmarshal_resp_registers([]byte{MAX_REGS + 1}, &dec)
+    testing.expect(t, err_count != nil, "entry count above MAX_REGS should be rejected")
+
+    // count=1 then a header that runs off the end
+    _, err_trunc := unmarshal_resp_registers([]byte{1, 0, 0, 0}, &dec)
+    testing.expect(t, err_trunc != nil, "truncated entry header should be rejected")
+
+    // count=1, reg_id=200 (invalid) -- would write past a [MAX_REGS] array
+    bad_id := [?]byte{1, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    _, err_id := unmarshal_resp_registers(bad_id[:], &dec)
+    testing.expect(t, err_id != nil, "invalid register id should be rejected")
 }
 
 @(test)

@@ -190,14 +190,18 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             return running, dirty
         }
 
-        // Every group's `pref` is discarded here: the union of their filters is collected and served as before.
-        // TODO: `lib.resolve_blob` exists now, so this is unblocked once the response format carries per-blob
-        // descriptors. Flatten into one `[lib.MAX_REGS]lib.Mime_Pref` (first group wins on overlap -- the client
-        // guarantees disjoint groups, but any local process can write to this socket, so be deterministic rather than
-        // re-litigating a CLI grammar rule), keep the union filter for `get_registers`, then resolve per entry.
+        // Flatten the groups: one preference per register, plus the union of every filter for `get_registers`. Groups
+        // do not survive parsing, so the register store keeps its single-mask signature.
         filter: lib.Cmd_Get_Filter
+        prefs: [lib.MAX_REGS]lib.Mime_Pref
+        assigned: lib.Cmd_Get_Filter
         for group in groups[:count] {
             filter += group.filter
+            for bit in group.filter {
+                if bit in assigned {continue}
+                assigned += {bit}
+                prefs[bit] = group.pref
+            }
         }
 
         raw := transmute(u64)filter
@@ -208,8 +212,8 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
 
         regs := get_registers(store, filter)
 
-        // Send REGISTERS response back to client (marshal packs only non-empty slots)
-        resp_written := lib.marshal_resp_registers(regs, resp_buf[:])
+        // Send REGISTERS response back to client (marshal packs only non-empty slots).
+        resp_written, _ := lib.marshal_resp_registers(regs, prefs, resp_buf[:])
         linux.send(client_fd, resp_buf[:resp_written], {})
     case lib.Command_Type.CLEAR:
         log.debugf("Got clear message: %v", data_buf[:bytes_read])

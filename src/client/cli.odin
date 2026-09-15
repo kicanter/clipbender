@@ -16,7 +16,7 @@ print_usage_and_exit :: proc() {
         "Commands:\n" +
         "\t(none)                                  Launch the clipbender GUI\n" +
         "\tset <dest-reg> [source-reg]             Set the `dest-reg` with the content from `source-reg` or stdin.\n" +
-        "\tget <filter...> [fmt=<json|raw>]        Retrieve the content, mime type, and timestamp of the registers matching `filter`.\n" +
+        "\tget <filter...> [fmt=<table|json|raw>]  Retrieve the content, mime type, and timestamp of the registers matching `filter`.\n" +
         "\tclear <reg-id>                          Clear the data stored in register `reg-id`.\n" +
         "\tshutdown                                Shutdown the `clipbenderd` daemon.\n\n" +
         "Examples:\n" +
@@ -67,9 +67,9 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
         )
     case .GET:
         fmt.eprintln(
-            "Usage: clipbender get <filter...> [fmt=<json|raw>]\n\n" +
-            "Retrieve the content, mime type, and timestamp of the registers matching `filter`. Use the `fmt=json` flag\n" +
-            "to output the data as structured JSON and the `fmt=raw` flag to output just the contents of the registers,\n" +
+            "Usage: clipbender get <filter...> [fmt=<table|json|raw>]\n\n" +
+            "Retrieve the content, mime type, and timestamp of the registers matching `filter`. `fmt=table` (the default)\n" +
+            "prints an aligned table, `fmt=json` emits structured JSON, and `fmt=raw` emits just the register contents\n" +
             "separated by NUL bytes (recoverable with `read -d ''`, `xargs -0`; use `fmt=json` for binary contents).\n\n" +
             "Keywords (double prefix `++`/`--`), `@` selects the primary-side variant:\n" +
             "\t++all, --all                                         All registers\n" +
@@ -430,7 +430,8 @@ parse_cmd_get :: proc(
 ) {
     incl: lib.Cmd_Get_Filter
     excl: lib.Cmd_Get_Filter
-    format = .TABLE
+    format = .TABLE // default TODO: make user-configurable
+    format_set := false
 
     for &arg in filter_args {
         if len(arg) == 0 {     // empty string arg should just be skipped, no-op
@@ -464,15 +465,18 @@ parse_cmd_get :: proc(
             value := arg[eq_idx + 1:]
             switch key {
             case "fmt":
-                if format != .TABLE {return {}, {}, "you may only specify one format flag"}
+                if format_set {return {}, {}, "you may only specify one format flag"}
                 switch value {
+                case "table":
+                    format = .TABLE
                 case "json":
                     format = .JSON
                 case "raw":
                     format = .RAW
                 case:
-                    return {}, {}, fmt.tprintf("invalid format value, expected `json` or `raw` (got `%v`)", value)
+                    return {}, {}, fmt.tprintf("invalid format value, expected `table`, `json`, or `raw` (got `%v`)", value)
                 }
+                format_set = true
             case:
                 return {}, {}, fmt.tprintf("unknown flag `%v`", key)
             }
@@ -531,7 +535,7 @@ REG_GROUPS :: [?]Reg_Group {
 }
 
 // Print `regs` register entries formatted as an ascii table.
-cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
+cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     table_top := "┌──────────┬─────────────────────┬──────────────────────────┬──────────────────────────────────────────┐"
     table_sep := "├──────────┼─────────────────────┼──────────────────────────┼──────────────────────────────────────────┤"
     table_bot := "└──────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┘"
@@ -549,7 +553,7 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
         group_printed := false
         for id := group.start; id <= group.end; id += 1 {
             entry := regs[id]
-            if len(entry.blobs) == 0 {continue}
+            if lib.resp_reg_is_empty(entry) {continue}
             // Print a rule above each group that has at least one entry (also separates the header from the body)
             if !group_printed {
                 fmt.println(table_sep)
@@ -559,8 +563,8 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
                 CONTENT_FMT,
                 lib.reg_id_to_string(id),
                 format_unix_timestamp(entry.timestamp, &ts_buf),
-                entry.blobs[0].mimes[0],
-                truncate_content(string(entry.blobs[0].data), CONTENT_COL_WIDTH),
+                entry.mime,
+                truncate_content(string(entry.data), CONTENT_COL_WIDTH),
             )
             any_printed = true
             group_printed = true
@@ -604,27 +608,27 @@ json_escape_string :: proc(str: string) -> string {
     return strings.to_string(escaped)
 }
 
-print_json_entry :: proc(entry: lib.Reg_Entry, id_str: string, printed: ^bool) {
+print_json_entry :: proc(entry: lib.Resp_Reg, id_str: string, printed: ^bool) {
     if printed^ {fmt.print(", ")}
     // M1: single blob, single mime per entry.
     fmt.printf(
         `{{"reg": "%s", "time": "%d", "mime": "%s", "content": "%s"}}`,
         id_str,
         entry.timestamp,
-        json_escape_string(entry.blobs[0].mimes[0]),
-        json_escape_string(string(entry.blobs[0].data)),
+        json_escape_string(entry.mime),
+        json_escape_string(string(entry.data)),
     )
     printed^ = true
 }
 
 // Print `regs` register entries formatted as json.
-cmd_get_format_json :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
+cmd_get_format_json :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     printed := false
     fmt.print("[")
     for group in REG_GROUPS {
         for id := group.start; id <= group.end; id += 1 {
             entry := regs[id]
-            if len(entry.blobs) == 0 {continue}
+            if lib.resp_reg_is_empty(entry) {continue}
             print_json_entry(entry, lib.reg_id_to_string(id), &printed)
         }
     }
@@ -635,14 +639,14 @@ cmd_get_format_json :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
 //
 // NOTE: separator, not terminator: a single-register dump must be byte-identical to the register, or `fmt=raw > file`
 // and `fmt=raw | wl-copy` would append a stray NUL to the file/clipboard.
-cmd_get_format_raw :: proc(regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
+cmd_get_format_raw :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     printed := false
     for group in REG_GROUPS {
         for id := group.start; id <= group.end; id += 1 {
             entry := regs[id]
-            if len(entry.blobs) == 0 {continue}
+            if lib.resp_reg_is_empty(entry) {continue}
             if printed {fmt.print("\x00")}
-            fmt.print(string(entry.blobs[0].data))
+            fmt.print(string(entry.data))
             printed = true
         }
     }
@@ -682,7 +686,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         os.exit(1)
     }
 
-    regs: [lib.MAX_REGS]lib.Reg_Entry // buffer to store the response data, indexed by Reg_Id
+    regs: [lib.MAX_REGS]lib.Resp_Reg // buffer to store the response data, indexed by Reg_Id
     status := lib.Resp_Status(resp_buf[0])
     switch status {
     case .OK:
@@ -693,7 +697,11 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         fmt.eprintfln("Error: %v", err_msg)
         os.exit(1)
     case .REGISTERS:
-        lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &regs)
+        _, unmarshal_err := lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &regs)
+        if unmarshal_err != nil {
+            fmt.eprintfln("Error: malformed response from daemon: %v", unmarshal_err.?)
+            os.exit(1)
+        }
     }
 
     // At this point, we either have the data or have already errored and exited.
@@ -709,7 +717,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
 
     // Free register data
     for &entry in regs {
-        lib.free_reg_entry(&entry)
+        lib.free_resp_reg(&entry)
     }
 }
 

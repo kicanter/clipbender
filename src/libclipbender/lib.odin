@@ -368,15 +368,48 @@ blob_with_mime :: proc(entry: ^Reg_Entry, mime: string) -> (int, bool) {
 // ERROR: `[1 byte Response_Status][N bytes error message]`
 // REGISTERS:  `[1 byte Response_Status][1 byte u8 count][count * entry]`
 //
-// where each GET response entry is:
-// `[1 byte Reg_Id][8 bytes i64 timestamp][1 byte mime len][M bytes mime][4 bytes u32 data len][N bytes data]`
+// where each entry in REGISTERS is:
 //
-// One mime + one data blob per entry: GET is a query, so it packs only the representation the client
-// asked for. The state file (see marshal_state) persists full fidelity instead.
+//     [1b Reg_Id][8b i64 timestamp]
+//     [1b mime len][mime len bytes]                       // the representation `data` holds; len 0 == none matched
+//     [1b other count][[1b mime len][mime len bytes]...]  // every other name the register offers
+//     [4b u32 data len][data len bytes]
+//
+// Every mime name the register offers, and the bytes of exactly one representation. If the first `mime len == 0` that
+// implies there was no data sent.
 Resp_Status :: enum u8 {
     OK,
     ERROR,
     REGISTERS,
+}
+
+// One register as returned by GET: a projection of a `Reg_Entry` through a mime preference, not the entry itself.
+//
+// `mime` names the representation `data` holds, and is `""` exactly when nothing matched the preference (in which case
+// `data` is empty too). `other_mimes` are names the register also offers whose bytes were not sent including any
+// additional names for the sent representation, since those describe the same bytes.
+Resp_Reg :: struct {
+    mime:        string,
+    data:        []byte,
+    other_mimes: []string,
+    timestamp:   i64,
+}
+
+// True for a Reg_Id slot the response did not mention. A register that was returned always names at least one
+// representation (in `mime` if one was sent, in `other_mimes` otherwise) so an absence of names is the marker.
+resp_reg_is_empty :: proc(reg: Resp_Reg) -> bool {
+    return reg.mime == "" && len(reg.other_mimes) == 0
+}
+
+// Free the mime names, the other_mimes slice, and the data, then zero the entry.
+free_resp_reg :: proc(reg: ^Resp_Reg) {
+    delete(reg.mime)
+    for mime in reg.other_mimes {
+        delete(mime)
+    }
+    delete(reg.other_mimes)
+    delete(reg.data)
+    reg^ = {}
 }
 
 // Construct a single-mime Mime_Blob, taking ownership of `data` and `mime` (both must be heap-allocated).
@@ -499,47 +532,119 @@ unmarshal_resp_error :: proc(buf: []byte) -> string {
     return string(buf)
 }
 
-// ok/error responses handled inline
-// REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * Reg]`
+// REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * entry]`
 // buf starts after first Response_Status byte
+//
 // Scatters each packed wire entry into its Reg_Id slot in `regs`. Slots not present in the response are left zeroed.
-// NOTE: caller is responsible for freeing all entries in `regs`
-unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8) {
+//
+// NOTE: caller is responsible for freeing all entries via `free_resp_reg`.
+unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (count: int, err: Maybe(string)) {
     regs^ = {}
-    count = u8(buf[0])
+    defer if err != nil {
+        for &reg in regs {
+            free_resp_reg(&reg)
+        }
+        regs^ = {}
+        count = 0
+    }
 
-    offset := 1
-    for _ in 0 ..< count {
+    if len(buf) == 0 {
+        return 0, "REGISTERS response truncated: missing entry count"
+    }
+    count = int(buf[0])
+    if count > MAX_REGS {
+        return 0, fmt.tprintf("REGISTERS response entry count %d exceeds %d", count, MAX_REGS)
+    }
+
+    offset := size_of(u8)
+    // Iterate through registers in response
+    for i in 0 ..< count {
+        if offset + size_of(Reg_Id) + size_of(i64) > len(buf) {
+            return 0, fmt.tprintf("REGISTERS response truncated: entry %d header", i)
+        }
+
         reg_id := Reg_Id(buf[offset])
+        if !reg_id_is_valid(reg_id) {
+            // Guards the array index below: Reg_Id is a u8, so an invalid one would write past a [MAX_REGS] array.
+            return 0, fmt.tprintf("REGISTERS response entry %d has invalid register id %d", i, u8(reg_id))
+        }
         offset += size_of(Reg_Id)
 
         time_bytes: [size_of(i64)]byte
         copy(time_bytes[:], buf[offset:][:size_of(i64)])
-        time := transmute(i64)time_bytes
+        regs[reg_id].timestamp = transmute(i64)time_bytes
         offset += size_of(i64)
 
-        mime_len := u8(buf[offset])
-        offset += size_of(mime_len)
-        mime := strings.clone(string(buf[offset:][:int(mime_len)]))
-        offset += int(mime_len)
+        // The sent representation's mime. Length 0 means nothing matched the preference, leaving `mime` empty.
+        mime, mime_err := read_resp_mime(buf, &offset)
+        if mime_err != nil {
+            return 0, fmt.tprintf("REGISTERS response truncated: entry %d mime (%s)", i, mime_err.?)
+        }
+        regs[reg_id].mime = mime
 
+        if offset + size_of(u8) > len(buf) {
+            return 0, fmt.tprintf("REGISTERS response truncated: entry %d other-mime count", i)
+        }
+        other_count := int(buf[offset])
+        offset += size_of(u8)
+
+        // Commit before filling so the deferred cleanup can free a partially decoded entry. `delete` on a zeroed string
+        // is a no-op, so the untouched tail is safe to free.
+        others := make([]string, other_count)
+        regs[reg_id].other_mimes = others
+        // Iterate through other mimes in response
+        for m in 0 ..< other_count {
+            other, other_err := read_resp_mime(buf, &offset)
+            if other_err != nil {
+                return 0, fmt.tprintf("REGISTERS response truncated: entry %d other mime %d (%s)", i, m, other_err.?)
+            }
+            others[m] = other
+        }
+
+        if offset + size_of(u32) > len(buf) {
+            return 0, fmt.tprintf("REGISTERS response truncated: entry %d data length", i)
+        }
         data_len_bytes: [size_of(u32)]byte
         copy(data_len_bytes[:], buf[offset:][:size_of(u32)])
-        data_len := transmute(u32)data_len_bytes
+        data_len := int(transmute(u32)data_len_bytes)
         offset += size_of(u32)
-        data := slice.clone(buf[offset:][:int(data_len)])
-        offset += int(data_len)
-
-        // Index by Reg_Id: the array position implicitly encodes the register identity.
-        // M1: single blob, single mime per entry. Heap-allocate the blobs slice so it outlives
-        // this stack frame (a composite-literal slice would point at reused stack memory).
-        regs[reg_id] = Reg_Entry {
-            blobs     = mime_blob_slice(mime_blob_single(data, mime)),
-            timestamp = time,
+        if regs[reg_id].mime == "" && data_len != 0 {
+            // `mime` empty means no representation was sent, so bytes here would contradict the header.
+            return 0, fmt.tprintf("REGISTERS response entry %d carries %d data bytes with no mime", i, data_len)
+        }
+        if offset + data_len > len(buf) {
+            return 0, fmt.tprintf(
+                "REGISTERS response truncated: entry %d data needs %d bytes, %d remain",
+                i,
+                data_len,
+                len(buf) - offset,
+            )
+        }
+        // Skip the clone when nothing matched the preference: `slice.clone` calls `make` unconditionally, so cloning an
+        // empty slice would allocate for every register whose content the preference rejected.
+        if data_len > 0 {
+            regs[reg_id].data = slice.clone(buf[offset:][:data_len])
+            offset += data_len
         }
     }
 
-    return count
+    return count, nil
+}
+
+// Read `[1b mime len][mime len bytes]` at `offset`, advancing it. Returns an owned clone; a length of 0 yields "".
+read_resp_mime :: proc(buf: []byte, offset: ^int) -> (mime: string, err: Maybe(string)) {
+    if offset^ + size_of(u8) > len(buf) {
+        return "", "missing length"
+    }
+    mime_len := int(buf[offset^])
+    offset^ += size_of(u8)
+    if offset^ + mime_len > len(buf) {
+        return "", fmt.tprintf("needs %d bytes, %d remain", mime_len, len(buf) - offset^)
+    }
+    if mime_len == 0 {return "", nil}
+    mime = strings.clone(string(buf[offset^:][:mime_len]))
+    offset^ += mime_len
+    return mime, nil
 }
 
 // Daemon-side
@@ -557,16 +662,51 @@ marshal_resp_error :: proc(message: string, buf: []byte) -> int {
     return size_of(Resp_Status) + len(message)
 }
 
-// REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * Reg]`
-// `regs` is indexed by Reg_Id; only non-empty slots are packed onto the wire, each tagged with its Reg_Id.
-marshal_resp_registers :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
+// REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * entry]`
+// `regs` is indexed by Reg_Id; only non-empty slots are packed onto the wire, each tagged with its Reg_Id. `prefs` is
+// indexed the same way and says which representation each register should contribute.
+//
+// Returns `ok = false` if a complete response does not fit in `buf`.
+marshal_resp_registers :: proc(
+    regs: [MAX_REGS]^Reg_Entry,
+    prefs: [MAX_REGS]Mime_Pref,
+    buf: []byte,
+) -> (
+    written: int,
+    ok: bool,
+) {
+    if len(buf) < size_of(Resp_Status) + size_of(u8) {return 0, false}
+
     buf[0] = byte(Resp_Status.REGISTERS)
     // Reserve the count byte, fill it in after we know how many non-empty entries there are
-    written := size_of(Resp_Status) + size_of(u8)
+    written = size_of(Resp_Status) + size_of(u8)
     count: u8 = 0
 
     for entry_ptr, id in regs {
         if entry_ptr == nil {continue}
+
+        // The representation this register contributes: its bytes, and the one name that goes in the mime slot. Every
+        // other name the register offers becomes preview.
+        chosen, has_blob := resolve_blob(entry_ptr, prefs[id])
+        data: []byte
+        mime: string
+        if has_blob {
+            data = entry_ptr.blobs[chosen].data
+            mime = entry_ptr.blobs[chosen].mimes[0]
+        }
+
+        // Pre-size the entry so it is written all-or-nothing.
+        other_count := 0
+        size := size_of(Reg_Id) + size_of(i64) + size_of(u8) + len(mime) + size_of(u8)
+        for blob in entry_ptr.blobs {
+            for m in blob.mimes {
+                if has_blob && m == mime {continue}
+                other_count += 1
+                size += size_of(u8) + len(m)
+            }
+        }
+        size += size_of(u32) + len(data)
+        if written + size > len(buf) {return 0, false}
 
         // Reg ID u8
         buf[written] = byte(id)
@@ -577,19 +717,20 @@ marshal_resp_registers :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
         copy(buf[written:][:size_of(i64)], time_bytes[:])
         written += size_of(i64)
 
-        // M1: single blob, single mime per entry
-        blob := entry_ptr.blobs[0]
+        // The sent representation's mime; length 0 when nothing matched the preference
+        written += write_resp_mime(buf[written:], mime)
 
-        // Mime length u8 + mime string bytes
-        mime := blob.mimes[0]
-        mime_len := u8(len(mime))
-        buf[written] = byte(mime_len)
-        written += size_of(mime_len)
-        copy(buf[written:][:int(mime_len)], mime)
-        written += int(mime_len)
+        // Other names u8 count, then each one
+        buf[written] = u8(other_count)
+        written += size_of(u8)
+        for blob in entry_ptr.blobs {
+            for m in blob.mimes {
+                if has_blob && m == mime {continue}
+                written += write_resp_mime(buf[written:], m)
+            }
+        }
 
-        // Data length u32 + data blob bytes
-        data := blob.data
+        // Data length u32 + the sent representation's bytes (length 0 when nothing matched)
         data_len := u32(len(data))
         data_len_bytes := transmute([size_of(u32)]byte)data_len
         copy(buf[written:][:size_of(u32)], data_len_bytes[:])
@@ -602,8 +743,18 @@ marshal_resp_registers :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
 
     // Count
     buf[1] = byte(count)
-    return written
+    return written, true
 }
+
+// Write `[1b mime len][mime len bytes]`, returning the bytes written. Caller has already verified the entry fits.
+write_resp_mime :: proc(buf: []byte, mime: string) -> (written: int) {
+    mime_len := u8(min(len(mime), MAX_MIME_LEN))
+    buf[0] = byte(mime_len)
+    written = size_of(mime_len)
+    copy(buf[written:][:int(mime_len)], mime)
+    return written + int(mime_len)
+}
+
 
 // SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b source Reg_Id]`
 // buf starts after Source_Kind byte

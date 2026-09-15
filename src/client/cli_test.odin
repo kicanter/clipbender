@@ -293,3 +293,24 @@ test_parse_cmd_get_primary_specific :: proc(t: ^testing.T) {
     testing.expect(t, 39 in filter)
     testing.expect(t, 44 in filter)
 }
+
+@(test)
+test_parse_cmd_get_fmt_table :: proc(t: ^testing.T) {
+    // `table` is the default, but spelling it explicitly must be accepted so the set is discoverable.
+    _, format, err := parse_cmd_get({"++all", "fmt=table"})
+    testing.expect(t, err == nil)
+    testing.expect_value(t, format, Get_Cmd_Format.TABLE)
+}
+
+@(test)
+test_parse_cmd_get_fmt_table_then_other_rejected :: proc(t: ^testing.T) {
+    // `.TABLE` is both the default and an explicit value, so the duplicate check cannot use it as an unset sentinel.
+    _, _, err_mixed := parse_cmd_get({"++all", "fmt=table", "fmt=json"})
+    testing.expect(t, err_mixed != nil, "fmt=table followed by fmt=json should be rejected")
+
+    _, _, err_dup := parse_cmd_get({"++all", "fmt=table", "fmt=table"})
+    testing.expect(t, err_dup != nil, "duplicate fmt=table should be rejected")
+
+    _, _, err_after := parse_cmd_get({"++all", "fmt=raw", "fmt=table"})
+    testing.expect(t, err_after != nil, "fmt=raw followed by fmt=table should be rejected")
+}

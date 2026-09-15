@@ -87,7 +87,7 @@ Gui_State :: struct {
     // Font
     font:             Font,
     // Register data, indexed by Reg_Id
-    regs:             [lib.MAX_REGS]lib.Reg_Entry,
+    regs:             [lib.MAX_REGS]lib.Resp_Reg,
 }
 
 gui_init_surface :: proc(gui_state: ^Gui_State) {
@@ -342,7 +342,7 @@ gui_cleanup_surface :: proc(gui_state: ^Gui_State) {
 gui_cleanup :: proc(gui_state: ^Gui_State) {
     // Cleanup register data (indexed by Reg_Id; empty slots free harmlessly)
     for &entry in gui_state.regs {
-        lib.free_reg_entry(&entry)
+        lib.free_resp_reg(&entry)
     }
     // Cleanup font
     gui_cleanup_font(gui_state)
@@ -788,7 +788,10 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (err:
         err_msg := string(resp_buf[1:bytes_read])
         return fmt.tprintf("%s", err_msg)
     case .REGISTERS:
-        lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &gui_state.regs)
+        _, unmarshal_err := lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &gui_state.regs)
+        if unmarshal_err != nil {
+            return fmt.tprintf("Malformed response from daemon: %s", unmarshal_err.?)
+        }
     }
 
     return nil
@@ -801,7 +804,7 @@ draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: uint, y: uin
     // `regs` is indexed by Reg_Id; an empty slot (no blobs) renders as a blank register line.
     // M1: single blob, single mime per entry.
     entry := gui_state.regs[reg_id]
-    content := "" if len(entry.blobs) == 0 else truncate_content(string(entry.blobs[0].data), CONTENT_WIDTH)
+    content := "" if lib.resp_reg_is_empty(entry) else truncate_content(string(entry.data), CONTENT_WIDTH)
     reg_str := fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), content)
 
     draw_string(&gui_state.frame_buf, x, y, reg_str, color, &gui_state.font)
