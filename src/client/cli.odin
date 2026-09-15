@@ -664,7 +664,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     // TODO: Replace this with per-group mime preferences parsed from `args`; until then the whole request is one group
     // asking for the simplest representation, matching pre-multi-mime behavior.
     msg: [lib.MAX_MSG_SIZE]byte
-    groups := [?]lib.Cmd_Get_Group{{filter = filter, pref = lib.Ranked_Mime.SIMPLEST}}
+    groups := [?]lib.Cmd_Get_Group{{filter = filter, pref = lib.Ranked_Mime.PRINTABLE}}
     written := lib.marshal_cmd_get(groups[:], msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {

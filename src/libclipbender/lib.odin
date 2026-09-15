@@ -239,21 +239,20 @@ MAX_REGS :: 64
 // whether they want the daemon to handle picking the best mime that the blob provides or if the client wants to pass
 // the exact mime they want to receive.
 //
-// `Ranked_Mime` represents the daemon picking the highest priority mime. `SIMPLEST` meaning less fidelity e.g.
-// plaintext mimes and `RICHEST` meaning more fidelity e.g. images, richtext, uri-list, etc.
-//
-// `Exact_Mime` represents the client picking the mime they want to receive. It's just an alias for a string which will
-// be the literal mime type for the daemon to fetch.
+// `Ranked_Mime` represents the daemon picking the highest priority mime. `RICHEST` is a pure ranking with no boundary
+// that degrades all the way to plain text, so it is effectively never empty. `PRINTABLE` is a filter *plus* a ranking
+// e.g. an image is not a worse answer for a terminal, it is a wrong one that corrupts the output, so it will only
+// include terminal-safe mimes.
 Mime_Pref :: union #no_nil {
     Ranked_Mime, // daemon is in charge of selecting the highest prioritized mime
     Exact_Mime, // client passes exactly what mime type they want to receive
 }
 Ranked_Mime :: enum u8 {
-    SIMPLEST, // prefer simpler mimes like plaintext first
-    RICHEST, // prefer richer mimes like images or richtext first
+    PRINTABLE, // safe to write to a terminal or redirect; excludes images, so it CAN come up empty
+    RICHEST, // highest fidelity available; no boundary, degrades to plain text, effectively never empty
 }
 Exact_Mime :: distinct string // specify exactly what mime to receive
-// Wire tag for the `Mime_Pref` union. `Ranked_Mime` variants encode as their own ordinals (SIMPLEST=0, RICHEST=1) and
+// Wire tag for the `Mime_Pref` union. `Ranked_Mime` variants encode as their own ordinals (PRINTABLE=0, RICHEST=1) and
 // `Exact_Mime` takes the next value after them, derived so that adding a ranked variant shifts the sentinel
 // automatically instead of silently colliding with it.
 //
@@ -270,20 +269,35 @@ EXACT_MIME_TAG :: u8(len(Ranked_Mime))
 // still matches *something* on the daemon side, silently returning the wrong blob.
 MAX_MIME_LEN :: 254
 
-SIMPLEST_MIMES :: [?]string{"text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"}
-RICHEST_MIMES :: [?]string {
+// Mime categories, ordered within each. Every list is an *allowlist*.
+// `@(rodata)` rather than `::` because `::` constants are not addressable and so cannot be sliced.
+@(rodata)
+TEXT_MIMES := [?]string{"text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"}
+
+@(rodata)
+STRUCTURED_MIMES := [?]string {
+    "application/json",
+    "application/xml",
+    "text/xml",
+    "text/csv",
+    "text/tab-separated-values",
+}
+
+@(rodata)
+URI_MIMES := [?]string{"text/uri-list"}
+
+@(rodata)
+MARKUP_MIMES := [?]string{"text/html", "text/markdown", "text/rtf", "application/rtf"}
+
+@(rodata)
+IMAGE_MIMES := [?]string {
     "image/png",
     "image/webp",
     "image/jpeg",
+    "image/tiff",
+    "image/bmp",
     "image/gif",
     "image/svg+xml",
-    "text/html",
-    "text/uri-list",
-    "text/plain;charset=utf-8",
-    "text/plain",
-    "UTF8_STRING",
-    "STRING",
-    "TEXT",
 }
 
 // To reduce bytes passed over IPC, group registers together that share one mime preference. Grouping by *preference*
@@ -306,6 +320,47 @@ Cmd_Get_Group :: struct {
         MAX_REGS * (size_of(Cmd_Get_Filter) + size_of(EXACT_MIME_TAG) + size_of(u8) + 255) <=
     MAX_MSG_SIZE,
 )
+
+// Pick which stored mime blob a GET group gets, as an index into `entry.blobs`. An `Exact_Mime` miss never falls back.
+resolve_blob :: proc(entry: ^Reg_Entry, pref: Mime_Pref) -> (int, bool) {
+    switch p in pref {
+    case Exact_Mime:
+        return blob_with_mime(entry, string(p))
+    case Ranked_Mime:
+        switch p {
+        case .PRINTABLE:
+            return first_match(entry, {TEXT_MIMES[:], STRUCTURED_MIMES[:], URI_MIMES[:], MARKUP_MIMES[:]})
+        case .RICHEST:
+            return first_match(
+                entry,
+                {IMAGE_MIMES[:], MARKUP_MIMES[:], STRUCTURED_MIMES[:], URI_MIMES[:], TEXT_MIMES[:]},
+            )
+        }
+    }
+    return -1, false
+}
+
+// Walk `groups` in order, and each group's mimes in order, returning the first blob that offers one.
+first_match :: proc(entry: ^Reg_Entry, groups: [][]string) -> (int, bool) {
+    for group in groups {
+        for mime in group {
+            if i, ok := blob_with_mime(entry, mime); ok {return i, true}
+        }
+    }
+    return -1, false
+}
+
+// Index of the first blob offering `mime`. Blobs carry several names for one byte stream, so this searches the whole
+// name set. Ties resolve to the lowest index, though should not really be seen in practice since duplicate names across
+// blobs would mean an app claimed the same mime for two different byte streams.
+blob_with_mime :: proc(entry: ^Reg_Entry, mime: string) -> (int, bool) {
+    for blob, i in entry.blobs {
+        for m in blob.mimes {
+            if m == mime {return i, true}
+        }
+    }
+    return -1, false
+}
 
 // Response status from daemon. IPC wire format:
 //
