@@ -113,7 +113,7 @@ Clipboard_Backend :: struct {
     fd:            linux.Fd,
     dispatch:      proc(state: rawptr) -> bool,
     cleanup:       proc(state: rawptr),
-    set_selection: proc(state: rawptr, data: []u8, mime: string, type: Selection_Type),
+    set_selection: proc(state: rawptr, reprs: []Data_Repr, type: Selection_Type),
     state:         rawptr,
 }
 
@@ -275,11 +275,8 @@ EXACT_MIME_TAG :: u8(len(Ranked_Mime))
 // ensure the tag for `Exact_Mime` is one more than the last in `Ranked_Mime`
 #assert(u8(max(Ranked_Mime)) + 1 == EXACT_MIME_TAG)
 
-// Max byte length of a mime string on the wire. Lengths are encoded as a u8, and unmarshaling computes `1 + mime_len`,
-// so 255 wraps to 0 and produces invalid slice indices; 254 is the ceiling. Real mimes are far shorter
-// ("text/plain;charset=utf-8" is 24), so callers must reject anything longer rather than truncate: a truncated mime
-// still matches *something* on the daemon side, silently returning the wrong repr.
-MAX_MIME_LEN :: 254
+// Max byte length of a mime string on the wire. Real mimes are typically far shorter ("text/plain;charset=utf-8" is 24)
+MAX_MIME_LEN :: int(max(u8))
 
 // Mime categories, ordered within each. Every list is an *allowlist*.
 // `@(rodata)` rather than `::` because `::` constants are not addressable and so cannot be sliced.
@@ -461,6 +458,16 @@ clone_data_repr :: proc(repr: Data_Repr) -> Data_Repr {
     return Data_Repr{data = cloned_data, mimes = cloned_mimes}
 }
 
+// Clones a slice of `Data_Repr`s, caller is responsible for freeing returned value.
+clone_data_reprs :: proc(reprs: []Data_Repr) -> []Data_Repr {
+    cloned_reprs := make([]Data_Repr, len(reprs))
+    for repr, i in reprs {
+        cloned_reprs[i] = clone_data_repr(repr)
+    }
+    return cloned_reprs
+}
+
+// Free a repr.
 free_data_repr :: proc(repr: Data_Repr) {
     delete(repr.data)
     for mime in repr.mimes {
@@ -469,12 +476,17 @@ free_data_repr :: proc(repr: Data_Repr) {
     delete(repr.mimes)
 }
 
-// Free every repr in the entry plus the reprs slice itself, then zero the entry.
-free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
-    for repr in reg_entry.reprs {
+// Free every repr in the slice plus the reprs slice itself.
+free_data_reprs :: proc(reprs: []Data_Repr) {
+    for repr in reprs {
         free_data_repr(repr)
     }
-    delete(reg_entry.reprs)
+    delete(reprs)
+}
+
+// Free every repr in the entry plus the reprs slice itself, then zero the entry.
+free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
+    free_data_reprs(reg_entry.reprs)
     reg_entry^ = {}
 }
 

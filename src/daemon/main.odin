@@ -42,10 +42,9 @@ main :: proc() {
             cleanup = proc(state: rawptr) {wayland_cleanup(cast(^Wayland_State)state)},
             set_selection = proc(
                 state: rawptr,
-                data: []u8,
-                mime: string,
+                reprs: []lib.Data_Repr,
                 type: lib.Selection_Type,
-            ) {wayland_set_selection(cast(^Wayland_State)state, data, mime, type)},
+            ) {wayland_set_selection(cast(^Wayland_State)state, reprs, type)},
             state = rawptr(&wl_state),
         }
     case .X11:

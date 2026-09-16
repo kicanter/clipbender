@@ -261,17 +261,18 @@ set_named_reg :: proc(
     unreachable()
 }
 
-set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, data: []byte, mime: string) {
+// Hand `reprs` to the backend to advertise, taking ownership either way.
+set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, reprs: []lib.Data_Repr) {
     if backend.state == nil {
         log.error("No backend state, can't set selection register")
-        delete(data)
-        delete(mime)
+        for repr in reprs {lib.free_data_repr(repr)}
+        delete(reprs)
         return
     }
     if reg_id == lib.SELECTION_CLIPBOARD {
-        backend.set_selection(backend.state, data, mime, .CLIPBOARD)
+        backend.set_selection(backend.state, reprs, .CLIPBOARD)
     } else if reg_id == lib.SELECTION_PRIMARY {
-        backend.set_selection(backend.state, data, mime, .PRIMARY)
+        backend.set_selection(backend.state, reprs, .PRIMARY)
     }
 }
 

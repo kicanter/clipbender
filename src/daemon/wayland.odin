@@ -16,27 +16,6 @@ import wlr_dc "wayland:wlr-data-control"
 EXT_STR :: "ext_data_control"
 WLR_STR :: "wlr_data_control"
 
-// Preferred mime types in order of priority
-PREFERRED_MIMES :: [?]string {
-    "image/webp",
-    "image/gif",
-    "image/svg+xml",
-    "image/png",
-    "image/jpeg",
-    "text/uri-list",
-    "text/plain;charset=utf-8",
-    "text/plain",
-    "UTF8_STRING",
-    "STRING",
-    "TEXT",
-    "text/html",
-    "text/css",
-    "text/javascript",
-    "text/markdown",
-    "text/csv",
-    "text/calendar",
-}
-
 // ============================== Types ==============================
 
 // The data-control protocol objects are represented as tagged unions over the ext and wlr pointer variants. The
@@ -63,15 +42,25 @@ Data_Control_Source :: union {
     ^wlr_dc.data_control_source_v1,
 }
 
+// Copy (incoming): selection monitoring (push to recency registers).
+// This is what an application is offering us. We only store the mimes advertised from it; data is not read until the
+// debounce fires because many of these offers will be superseded before they commit.
+Offer_State :: struct {
+    handle: Data_Control_Offer,
+    mimes:  []string, // Transferred from `advertised_mimes` upon selection event
+    staged: bool, // Check whether we are in a debounce window
+}
+
+// Paste (outgoing): selection writing (setting clipboard/primary for paste).
+// This is what we advertise while we own the selection.
+Source_State :: struct {
+    handle: Data_Control_Source,
+    reprs:  []lib.Data_Repr,
+}
+
 Selection_State :: struct {
-    // Copy: selection monitoring (push to recency registers)
-    offer:       Data_Control_Offer,
-    mimes:       map[string]struct{}, // Transferred from `advertised_mimes` upon selection event
-    staged:      bool, // Check whether we are in a debounce window
-    // Paste: selection writing (setting clipboard/primary for paste)
-    source:      Data_Control_Source,
-    source_data: []byte,
-    source_mime: string,
+    offer:  Offer_State,
+    source: Source_State,
 }
 
 Wayland_State :: struct {
@@ -87,8 +76,8 @@ Wayland_State :: struct {
     // Selection state
     clipboard_state:           Selection_State,
     primary_state:             Selection_State,
-    // Temporary set used to accumulate mimes from an offer and pass to selection/primary_selection event
-    advertised_mimes:          map[string]struct{}, // map with zero-size value = hashset
+    // Accumulates mimes from an offer's repeated "offer" events and pass to selection/primary_selection event
+    advertised_mimes:          [dynamic]string,
 }
 
 // ============================== Connection Lifecycle ==============================
@@ -133,28 +122,40 @@ wayland_init :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
     return true
 }
 
-wayland_cleanup_source :: proc(selection: ^Selection_State) {
-    if selection.source != nil {data_control_source_v1_destroy_wrapper(selection.source)}
-    selection.source = nil
-    delete(selection.source_data)
-    selection.source_data = nil
-    delete(selection.source_mime)
-    selection.source_mime = ""
+wayland_cleanup_offer :: proc(offer: ^Offer_State) {
+    if offer.handle != nil {data_control_offer_v1_destroy_wrapper(offer.handle)}
+    offer.handle = nil
+    wayland_clear_offer_mimes(offer)
+}
+
+// Free just the staged mime names, leaving the handle alone. Staging a replacement offer needs this rather than
+// `wayland_cleanup_offer`, which would destroy the handle it is about to use.
+wayland_clear_offer_mimes :: proc(offer: ^Offer_State) {
+    for mime in offer.mimes {delete(mime)}
+    delete(offer.mimes)
+    offer.mimes = nil
+}
+
+wayland_cleanup_source :: proc(source: ^Source_State) {
+    if source.handle != nil {data_control_source_v1_destroy_wrapper(source.handle)}
+    source.handle = nil
+    for repr in source.reprs {
+        lib.free_data_repr(repr)
+    }
+    delete(source.reprs)
+    source.reprs = nil
 }
 
 wayland_cleanup_selection :: proc(selection: ^Selection_State) {
-    if selection.offer != nil {data_control_offer_v1_destroy_wrapper(selection.offer)}
-    selection.offer = nil
-    wayland_cleanup_source(selection)
-    for mime in selection.mimes {delete(mime)}
-    delete(selection.mimes)
-    selection.mimes = {}
+    wayland_cleanup_offer(&selection.offer)
+    wayland_cleanup_source(&selection.source)
 }
 
 // Destroy in reverse order of creation, children before parents
 wayland_cleanup :: proc(wl_state: ^Wayland_State) {
     wayland_cleanup_selection(&wl_state.clipboard_state)
     wayland_cleanup_selection(&wl_state.primary_state)
+    for mime in wl_state.advertised_mimes {delete(mime)}
     delete(wl_state.advertised_mimes)
 
     // Cleanup connection state
@@ -380,7 +381,16 @@ offer_listener_offer :: proc "c" (data: rawptr, data_control_offer_v1: Data_Cont
     case ^wlr_dc.data_control_offer_v1:
         log.debugf(logstr, WLR_STR, mime_type_)
     }
-    wl_state.advertised_mimes[strings.clone_from_cstring(mime_type_, context.temp_allocator)] = {}
+    // Freed by `wayland_stage_selection` or `wayland_cleanup`.
+    mime := strings.clone_from_cstring(mime_type_)
+    // Nothing forbids a compositor advertising the same mime twice so dedup.
+    for existing in wl_state.advertised_mimes {
+        if existing == mime {
+            delete(mime)
+            return
+        }
+    }
+    append(&wl_state.advertised_mimes, mime)
 }
 
 ext_offer_listener := ext_dc.data_control_offer_v1_listener {
@@ -411,10 +421,10 @@ source_listener_send :: proc "c" (
     protostr := EXT_STR
     if _, is_wlr := data_control_source_v1.(^wlr_dc.data_control_source_v1); is_wlr {protostr = WLR_STR}
     switch data_control_source_v1 {
-    case wl_state.clipboard_state.source:
+    case wl_state.clipboard_state.source.handle:
         log.debugf(logstr, protostr, "clipboard")
         wayland_send_source(&wl_state.clipboard_state, string(mime_type_), cast(linux.Fd)fd_)
-    case wl_state.primary_state.source:
+    case wl_state.primary_state.source.handle:
         log.debugf(logstr, protostr, "primary")
         wayland_send_source(&wl_state.primary_state, string(mime_type_), cast(linux.Fd)fd_)
     }
@@ -429,12 +439,12 @@ source_listener_cancelled :: proc "c" (data: rawptr, data_control_source_v1: Dat
     protostr := EXT_STR
     if _, is_wlr := data_control_source_v1.(^wlr_dc.data_control_source_v1); is_wlr {protostr = WLR_STR}
     switch data_control_source_v1 {
-    case wl_state.clipboard_state.source:
+    case wl_state.clipboard_state.source.handle:
         log.debugf(logstr, protostr, "clipboard")
-        wayland_cleanup_source(&wl_state.clipboard_state)
-    case wl_state.primary_state.source:
+        wayland_cleanup_source(&wl_state.clipboard_state.source)
+    case wl_state.primary_state.source.handle:
         log.debugf(logstr, protostr, "primary")
-        wayland_cleanup_source(&wl_state.primary_state)
+        wayland_cleanup_source(&wl_state.primary_state.source)
     }
 }
 
@@ -476,19 +486,31 @@ wayland_stage_selection :: proc(wl_state: ^Wayland_State, selection: ^Selection_
     }
 
     // Destroy previous pending offer if replacing (debounce reset)
-    if selection.offer != nil {
-        data_control_offer_v1_destroy_wrapper(selection.offer)
+    if selection.offer.handle != nil {
+        data_control_offer_v1_destroy_wrapper(selection.offer.handle)
     }
-    selection.offer = id_
+    selection.offer.handle = id_
 
-    // Snapshot advertised mimes into this selection's state
-    for mime in selection.mimes {delete(mime)}
-    clear(&selection.mimes)
-    for mime in wl_state.advertised_mimes {
-        selection.mimes[strings.clone(mime)] = {}
+    // Move the accumulated names onto this selection. Ownership transfers rather than being cloned.
+    wayland_clear_offer_mimes(&selection.offer)
+    selection.offer.mimes = make([]string, len(wl_state.advertised_mimes))
+    for mime, i in wl_state.advertised_mimes {
+        selection.offer.mimes[i] = mime
     }
     clear(&wl_state.advertised_mimes)
-    selection.staged = true
+    selection.offer.staged = true
+}
+
+reprs_are_equal :: proc(a: []lib.Data_Repr, b: []lib.Data_Repr) -> bool {
+    if len(a) != len(b) {return false}
+    for repr, i in a {
+        if len(repr.mimes) != len(b[i].mimes) {return false}
+        for mime, j in repr.mimes {
+            if mime != b[i].mimes[j] {return false}
+        }
+        if !slice.equal(repr.data, b[i].data) {return false}
+    }
+    return true
 }
 
 // Called when a debounce timer successfully expires. Reads the pending offer and pushes to recency ring.
@@ -508,14 +530,13 @@ wayland_commit_selection :: proc(
         selection = &wl_state.primary_state
     }
 
-    offer := selection.offer
+    offer := selection.offer.handle
     if offer == nil {return false}
 
-    data: []u8
-    mime: string
+    reprs: []lib.Data_Repr
     // Check if this selection event was triggered by clipbender setting the clipboard/primary, this means we still
     // have ownership of the clipboard at this point. In these scenarios, the sequence of events is:
-    // 1. Set clipboard/primary with register e.g. `clipbender set clipboard a`
+    // 1. Set clipboard/primary with register e.g. `clipbender set selection a`
     // 2. Daemon sets the clipboard selection to register `a` (clipbender takes ownership of clipboard)
     // 3. We set the cached clipboard selection source to this one
     // 4. Compositor echoes a selection event and we arrive back here
@@ -523,85 +544,94 @@ wayland_commit_selection :: proc(
     // If we didn't have this check, we would try to read the data offer and timeout because we would also have to be
     // the one sending it (in `wayland_read_offer_data()` the pipe read would time out waiting for us to write).
     self_source := false
-    if selection.source != nil {
-        // Reuse the data from our own cache to give to the register
-        data = selection.source_data
-        mime = selection.source_mime
+    if selection.source.handle != nil {
+        // Reuse the reprs from our own cache to give to the register
+        reprs = selection.source.reprs
         self_source = true
     } else {
-        // Allocates mime
-        mime = pick_best_mime(selection.mimes)
-        if mime == "" {
-            log.errorf("No mime found for debounced %v selection, canceling push to recency register", type)
-            return false
-        }
-
-        // Allocates data
-        data = wayland_read_offer_data(offer, wl_state.display, mime)
-        if data == nil {
-            log.errorf("Couldn't read data from debounced %v offer", type)
-            delete(mime)
+        reprs = wayland_read_offer_reprs(wl_state, offer, selection.offer.mimes)
+        if len(reprs) == 0 {
+            log.errorf("No usable representations from debounced %v offer", type)
             return false
         }
     }
 
-    // Update only timestamp of cached live selection if duplicate, otherwise update the cached live selection.
-    // M1: single repr, single mime per entry.
+    // Update only timestamp of cached live selection if duplicate, otherwise replace it.
     live_selection := get_live_selection(store, type)
-    if live_selection != nil &&
-       len(live_selection.reprs) > 0 &&
-       live_selection.reprs[0].mimes[0] == mime &&
-       slice.equal(live_selection.reprs[0].data, data) {
+    if live_selection != nil && reprs_are_equal(live_selection.reprs, reprs) {
         bump_live_selection(store, type)
     } else {
-        // Clone data and mime since the live selection takes ownership.
-        set_live_selection(store, type, lib.data_repr_single(slice.clone(data), strings.clone(mime)))
+        // The live selection owns its copy: it and the recency head are independent entries with independent lifetimes.
+        cloned_reprs := lib.clone_data_reprs(reprs)
+        set_live_selection(store, type, cloned_reprs)
     }
 
-    // Deduplicate: don't push if identical to the most recent entry, but bump the live selection's timestamp
+    // Deduplicate: don't push if identical to the most recent entry
     head_reg := get_recency_reg(store, type, 0)
-    if head_reg != nil &&
-       len(head_reg.reprs) > 0 &&
-       head_reg.reprs[0].mimes[0] == mime &&
-       slice.equal(head_reg.reprs[0].data, data) {
+    if head_reg != nil && reprs_are_equal(head_reg.reprs, reprs) {
         log.debugf("Got duplicate %v copy, suppressing register push", type)
         if !self_source {
-            delete(data)
-            delete(mime)
+            for repr in reprs {lib.free_data_repr(repr)}
+            delete(reprs)
         }
         return false
     }
 
-    // Clone the data if it's pointing at our owned selection.
+    // Clone if the reprs belong to our own cached source, which keeps ownership of them.
     self_source_str := ""
     if self_source {
-        data, mime = slice.clone(data), strings.clone(mime)
+        reprs = lib.clone_data_reprs(reprs)
         self_source_str = " (self-source)"
     }
-    // Ownership of data and mime transferred
-    push_recency_reg(store, type, lib.data_repr_single(data, mime))
-    data, mime = {}, {}
+    // Ownership of reprs transferred
+    push_recency_reg(store, type, reprs)
     log.infof("Pushed to %v recency register%s", type, self_source_str)
     return true
 }
 
-// Pick the highest-priority mime type, fall back to any available if none match.
-// Caller is responsible for cleaning up the returned string.
-pick_best_mime :: proc(avail_mimes: map[string]struct{}) -> string {
-    if len(avail_mimes) == 0 {return ""}
-    for preferred in PREFERRED_MIMES {
-        if preferred in avail_mimes {
-            return strings.clone(preferred)
+// Read every advertised mime and coalesce the ones that produced identical bytes into a single repr. Costs a pipe round
+// trip for every mime advertised. Mime order is preserved, so the first repr holds whatever the app advertised first
+// (its own preference signal).
+wayland_read_offer_reprs :: proc(
+    wl_state: ^Wayland_State,
+    offer: Data_Control_Offer,
+    mimes: []string,
+) -> []lib.Data_Repr {
+    reprs := make([dynamic]lib.Data_Repr, 0, len(mimes))
+
+    for mime in mimes {
+        // Returns copied data
+        data := wayland_read_offer_data(offer, wl_state.display, mime)
+        if data == nil {
+            log.warnf("Couldn't read `%s` from offer, skipping that representation", mime)
+            continue
         }
+
+        // Fold into an existing repr when the bytes match one already read. Manually realloc since coalescing is
+        // probably not _super_ common.
+        duplicate := false
+        for &repr in reprs {
+            if slice.equal(repr.data, data) {
+                names := make([]string, len(repr.mimes) + 1)
+                copy(names, repr.mimes)
+                names[len(repr.mimes)] = strings.clone(mime)
+                delete(repr.mimes)
+                repr.mimes = names
+                delete(data)
+                duplicate = true
+                log.debugf("Found duplicate data for mime `%s`", mime)
+                break
+            }
+        }
+        if duplicate {continue}     // Don't append to reprs list if duplicate
+
+        // This is a new repr, so it'll start with a new mime list of length 1 which includes the new unique mime.
+        new_mime_slice := make([]string, 1)
+        new_mime_slice[0] = strings.clone(mime)
+        append(&reprs, lib.Data_Repr{data = data, mimes = new_mime_slice})
     }
 
-    for avail in avail_mimes {
-        log.infof("No offered mime types matched preferred mimes, using offered mime: %s", avail)
-        return strings.clone(avail)
-    }
-
-    // Unreachable since we check empty `avail_mimes` at the start of the function
-    unreachable()
+    return reprs[:]
 }
 
 // Caller is responsible for freeing returned data
@@ -651,7 +681,7 @@ wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display,
 
 // ============================== Selection Writing (Paste) ==============================
 
-wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: string, type: lib.Selection_Type) {
+wayland_set_selection :: proc(wl_state: ^Wayland_State, reprs: []lib.Data_Repr, type: lib.Selection_Type) {
     selection: ^Selection_State
     switch type {
     case .CLIPBOARD:
@@ -661,48 +691,59 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, data: []byte, mime: stri
     }
 
     // Cleanup any previous source set
-    wayland_cleanup_source(selection)
+    wayland_cleanup_source(&selection.source)
 
-    // Take ownership of data + mime
-    selection.source_data = data
-    selection.source_mime = mime
+    // Take ownership of the reprs we will serve
+    selection.source.reprs = reprs
 
     // Create new data source to advertise
-    selection.source = data_control_manager_v1_create_data_source_wrapper(wl_state.data_control_manager)
-    if selection.source == nil {
+    selection.source.handle = data_control_manager_v1_create_data_source_wrapper(wl_state.data_control_manager)
+    if selection.source.handle == nil {
         log.error("Failed to create data control source")
         return
     }
 
-    // Offer mime type
-    data_control_source_v1_offer_wrapper(selection.source, strings.clone_to_cstring(mime, context.temp_allocator))
+    // Advertise every name we can serve, in stored order, so a requesting app sees the same preference the original
+    // application expressed.
+    for repr in reprs {
+        for mime in repr.mimes {
+            data_control_source_v1_offer_wrapper(
+                selection.source.handle,
+                strings.clone_to_cstring(mime, context.temp_allocator),
+            )
+        }
+    }
 
     // Attach listener for send/cancelled events
-    data_control_source_v1_add_listener_wrapper(selection.source, rawptr(wl_state))
+    data_control_source_v1_add_listener_wrapper(selection.source.handle, rawptr(wl_state))
 
     // Set selection on device
     switch type {
     case .CLIPBOARD:
-        data_control_device_v1_set_selection_wrapper(wl_state.data_control_device, selection.source)
+        data_control_device_v1_set_selection_wrapper(wl_state.data_control_device, selection.source.handle)
     case .PRIMARY:
-        data_control_device_v1_set_primary_selection_wrapper(wl_state.data_control_device, selection.source)
+        data_control_device_v1_set_primary_selection_wrapper(wl_state.data_control_device, selection.source.handle)
     }
 
     // Flush display
     wl.display_flush(wl_state.display)
-    log.debugf("Set %v selection with mime `%s` (%d bytes)", type, mime, len(data))
+    log.debugf("Set %v selection with %d representation(s)", type, len(reprs))
 }
 
 wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, fd: linux.Fd) {
-    if mime_type != selection.source_mime {
-        log.errorf(
-            "Requested mime `%s` does not match offered mime `%s`, this is unexpected",
-            mime_type,
-            selection.source_mime,
-        )
-        return
+    // Serve whichever representation claims the requested name. We advertised every name across every repr, so a miss
+    // means the compositor asked for something we never offered.
+    for repr in selection.source.reprs {
+        for mime in repr.mimes {
+            if mime == mime_type {
+                linux.write(fd, repr.data)
+                linux.close(fd)
+                return
+            }
+        }
     }
-    linux.write(fd, selection.source_data)
+
+    log.errorf("Requested mime `%s` was never offered, this is unexpected", mime_type)
     linux.close(fd)
 }
 

@@ -742,7 +742,9 @@ infer_output :: proc(
     format := format
     pref := pref
     if !format_stated {format = .RAW}
-    if !pref_stated {
+
+    // Only override the preference when the output is actually raw bytes.
+    if !pref_stated && format == .RAW {
         // An unrecognised or absent extension leaves RICHEST, which still gets the bytes out -- it just cannot honour
         // the extension when a register holds several image formats.
         if mime := mime_for_path(stdout_path()); mime != "" {

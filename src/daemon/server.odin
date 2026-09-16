@@ -3,8 +3,6 @@ package main
 import "core:fmt"
 import "core:log"
 import "core:os"
-import "core:slice"
-import "core:strings"
 import "core:sys/linux"
 import "core:sys/linux/uring"
 
@@ -136,8 +134,8 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         dest_reg := lib.Reg_Id(data_buf[1])
         set_mode := lib.Set_Mode(data_buf[2])
         source_kind := lib.Source_Kind(data_buf[3])
-        data: []u8
-        mime: string
+        // Every representation this SET will store. One for INLINE, all of the source's for REGISTER.
+        reprs: []lib.Data_Repr
 
         switch (source_kind) {
         case .REGISTER:
@@ -150,8 +148,9 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 return running, dirty
             }
 
-            // M1: single repr, single mime per source entry.
-            data, mime = slice.clone(source.reprs[0].data), strings.clone(source.reprs[0].mimes[0])
+            // Deep-copy every representation: source and destination own their content independently, so freeing one
+            // must not disturb the other.
+            reprs = lib.clone_data_reprs(source.reprs)
             log.debug("REGISTER:")
             log.debugf("\tSource Reg: `%s`", lib.reg_id_to_string(source_reg))
 
@@ -164,18 +163,21 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 move_recency_reg_to_front(store, .PRIMARY, lib.reg_id_to_primary_index(source_reg))
             }
         case .INLINE:
-            inline_err: Maybe(string)
-            mime, data, inline_err = lib.unmarshal_cmd_set_inline(data_buf[lib.CMD_SET_HEADER_SIZE:bytes_read])
+            mime, data, inline_err := lib.unmarshal_cmd_set_inline(data_buf[lib.CMD_SET_HEADER_SIZE:bytes_read])
             if inline_err != nil {
                 resp_written := lib.marshal_resp_error(inline_err.?, resp_buf[:])
                 send_resp(client_fd, resp_buf[:resp_written])
                 return running, dirty
             }
+            // SET INLINE carries a single mime, so this is always one representation.
+            reprs = lib.data_repr_single(data, mime)
             log.debug("INLINE:")
         }
 
-        log.debugf("\tContent: `%s`", string(data))
-        log.debugf("\tMime: `%s`", mime)
+        for repr in reprs {
+            log.debugf("\tContent: `%s`", string(repr.data))
+            log.debugf("\tMimes: %v", repr.mimes)
+        }
         log.debugf(
             "\tDestination Reg: %s `%s`",
             "OVERWRITE" if set_mode == .OVERWRITE else "APPEND",
@@ -185,20 +187,20 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         // Destination register must be either named a register or SELECTION_CLIPBOARD/PRIMARY
         errmsg := ""
         if lib.reg_id_is_named(dest_reg) {
-            // ownership of data and mime transferred (M1: single-mime repr)
-            set_named_reg(store, dest_reg, lib.data_repr_single(data, mime), set_mode)
-            data, mime = {}, {}
+            // ownership of reprs transferred
+            set_named_reg(store, dest_reg, reprs, set_mode)
+            reprs = nil
         } else if lib.reg_id_is_selection(dest_reg) {
-            // ownership of data and mime transferred
-            set_selection_reg(&server.backend, dest_reg, data, mime)
-            data, mime = {}, {}
+            // ownership of reprs transferred
+            set_selection_reg(&server.backend, dest_reg, reprs)
+            reprs = nil
         } else {
             errmsg = fmt.tprintf(
                 "invalid destination register, must be named or selection register (got `%s`)",
                 lib.reg_id_to_string(dest_reg),
             )
-            delete(data)
-            delete(mime)
+            for repr in reprs {lib.free_data_repr(repr)}
+            delete(reprs)
         }
 
         resp_written: int
@@ -366,12 +368,12 @@ dispatch_cqe :: proc(
 
             // Check if either selection needs a debounce timer (re)armed
             wl_state := cast(^Wayland_State)server.backend.state
-            if wl_state.clipboard_state.staged {
-                wl_state.clipboard_state.staged = false
+            if wl_state.clipboard_state.offer.staged {
+                wl_state.clipboard_state.offer.staged = false
                 arm_debounce(server, ring, .CLIPBOARD)
             }
-            if wl_state.primary_state.staged {
-                wl_state.primary_state.staged = false
+            if wl_state.primary_state.offer.staged {
+                wl_state.primary_state.offer.staged = false
                 arm_debounce(server, ring, .PRIMARY)
             }
         } else {
