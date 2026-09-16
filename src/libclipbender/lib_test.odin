@@ -252,21 +252,21 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
 
     m_plain := [?]string{"text/plain"}
     m_html := [?]string{"text/html"}
-    b_first := [?]Mime_Blob{mime_blob_of("first", m_plain[:])}
-    b_second := [?]Mime_Blob{mime_blob_of("second entry", m_html[:])}
-    b_third := [?]Mime_Blob{mime_blob_of("third", m_plain[:])}
+    b_first := [?]Data_Repr{data_repr_of("first", m_plain[:])}
+    b_second := [?]Data_Repr{data_repr_of("second entry", m_html[:])}
+    b_third := [?]Data_Repr{data_repr_of("third", m_plain[:])}
 
     regs: [MAX_REGS]Reg_Entry
     regs[clip0] = Reg_Entry {
-        blobs     = b_first[:],
+        reprs     = b_first[:],
         timestamp = 1000,
     }
     regs[named3] = Reg_Entry {
-        blobs     = b_second[:],
+        reprs     = b_second[:],
         timestamp = 2000,
     }
     regs[primary2] = Reg_Entry {
-        blobs     = b_third[:],
+        reprs     = b_third[:],
         timestamp = 3000,
     }
 
@@ -289,25 +289,25 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
     testing.expect_value(t, derr, nil)
     testing.expect_value(t, count, 3)
 
-    // Entries land at their original Reg_Id slots, with the chosen blob's bytes in blobs[0].
+    // Entries land at their original Reg_Id slots, with the chosen repr's bytes in reprs[0].
     for id in ([]Reg_Id{clip0, named3, primary2}) {
         testing.expect_value(t, dec[id].timestamp, regs[id].timestamp)
-        testing.expect_value(t, dec[id].mime, regs[id].blobs[0].mimes[0])
+        testing.expect_value(t, dec[id].mime, regs[id].reprs[0].mimes[0])
         testing.expect_value(t, len(dec[id].other_mimes), 0)
-        testing.expect(t, slice.equal(dec[id].data, regs[id].blobs[0].data))
+        testing.expect(t, slice.equal(dec[id].data, regs[id].reprs[0].data))
     }
 }
 
 @(test)
 test_resp_registers_sent_mime_in_own_slot :: proc(t: ^testing.T) {
-    // RICHEST picks the png at index 1, so it must be written first: `blobs[0]` is the one `data` belongs to, and the
-    // client should never have to search for the blob with non-empty data.
+    // RICHEST picks the png at index 1, so it must be written first: `reprs[0]` is the one `data` belongs to, and the
+    // client should never have to search for the repr with non-empty data.
     buf: [1024]byte
     m_html := [?]string{"text/html"}
     m_png := [?]string{"image/png"}
-    blobs := [?]Mime_Blob{mime_blob_of("<p>hi</p>", m_html[:]), mime_blob_of("PNGDATA", m_png[:])}
+    reprs := [?]Data_Repr{data_repr_of("<p>hi</p>", m_html[:]), data_repr_of("PNGDATA", m_png[:])}
     entry := Reg_Entry {
-        blobs     = blobs[:],
+        reprs     = reprs[:],
         timestamp = 42,
     }
 
@@ -338,9 +338,9 @@ test_resp_registers_mime_preview_when_nothing_matched :: proc(t: ^testing.T) {
     // there to request. Without that the client could not distinguish this from an empty register.
     buf: [1024]byte
     m_png := [?]string{"image/png"}
-    blobs := [?]Mime_Blob{mime_blob_of("PNGDATA", m_png[:])}
+    reprs := [?]Data_Repr{data_repr_of("PNGDATA", m_png[:])}
     entry := Reg_Entry {
-        blobs     = blobs[:],
+        reprs     = reprs[:],
         timestamp = 7,
     }
 
@@ -366,19 +366,19 @@ test_resp_registers_mime_preview_when_nothing_matched :: proc(t: ^testing.T) {
 
 @(test)
 test_resp_registers_all_mimes_travel :: proc(t: ^testing.T) {
-    // Every blob's every mime name reaches the client -- that is what the GUI's per-mime picker is built from.
+    // Every repr's every mime name reaches the client -- that is what the GUI's per-mime picker is built from.
     buf: [1024]byte
     m_text := [?]string{"text/plain;charset=utf-8", "text/plain", "STRING"}
     m_png := [?]string{"image/png"}
-    blobs := [?]Mime_Blob{mime_blob_of("hi", m_text[:]), mime_blob_of("PNGDATA", m_png[:])}
+    reprs := [?]Data_Repr{data_repr_of("hi", m_text[:]), data_repr_of("PNGDATA", m_png[:])}
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
     id := reg_id_from_named_index(2)
     reg_ptrs: [MAX_REGS]^Reg_Entry
     reg_ptrs[id] = &entry
-    prefs: [MAX_REGS]Mime_Pref // PRINTABLE picks the text blob
+    prefs: [MAX_REGS]Mime_Pref // PRINTABLE picks the text repr
 
     n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
     testing.expect(t, ok)
@@ -389,7 +389,7 @@ test_resp_registers_all_mimes_travel :: proc(t: ^testing.T) {
     testing.expect_value(t, derr, nil)
 
     // The sent representation's first name fills the slot; its aliases join the preview list alongside the png, since
-    // they name the same bytes. No blob grouping survives the wire.
+    // they name the same bytes. No repr grouping survives the wire.
     testing.expect_value(t, dec[id].mime, "text/plain;charset=utf-8")
     testing.expect_value(t, string(dec[id].data), "hi")
     testing.expect_value(t, len(dec[id].other_mimes), 3)
@@ -401,12 +401,12 @@ test_resp_registers_all_mimes_travel :: proc(t: ^testing.T) {
 @(test)
 test_marshal_resp_registers_rejects_oversize :: proc(t: ^testing.T) {
     // Too small to hold the entry: refuse rather than truncate, since `data len` would otherwise lie about how much
-    // followed and the client could not tell a fragment from a whole blob.
+    // followed and the client could not tell a fragment from a whole repr.
     small: [16]byte
     m_plain := [?]string{"text/plain"}
-    blobs := [?]Mime_Blob{mime_blob_of("some data that will not fit", m_plain[:])}
+    reprs := [?]Data_Repr{data_repr_of("some data that will not fit", m_plain[:])}
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
     reg_ptrs: [MAX_REGS]^Reg_Entry
@@ -563,62 +563,62 @@ test_marshal_unmarshal_cmd_set_inline_max_mime :: proc(t: ^testing.T) {
     testing.expect(t, slice.equal(dec_data, data))
 }
 
-// resolve_blob tests. Entries are built by hand rather than through the register store so each case pins down one
+// resolve_repr tests. Entries are built by hand rather than through the register store so each case pins down one
 // resolution rule in isolation.
 //
 // Mime name arrays are declared as named locals and sliced, never passed through a variadic: an `..string` parameter
-// backs its slice with storage valid only for the duration of the call, so a `Mime_Blob` built that way would hold a
+// backs its slice with storage valid only for the duration of the call, so a `Data_Repr` built that way would hold a
 // dangling `mimes` slice by the time the entry is used.
-mime_blob_of :: proc(data: string, mimes: []string) -> Mime_Blob {
-    return Mime_Blob{data = transmute([]byte)data, mimes = mimes}
+data_repr_of :: proc(data: string, mimes: []string) -> Data_Repr {
+    return Data_Repr{data = transmute([]byte)data, mimes = mimes}
 }
 
-// resolve_blob returns (index, ok). These wrap the pair so each case reads as one assertion and a miss is checked as a
+// resolve_repr returns (index, ok). These wrap the pair so each case reads as one assertion and a miss is checked as a
 // miss rather than as a sentinel index.
-expect_blob :: proc(t: ^testing.T, entry: ^Reg_Entry, pref: Mime_Pref, want: int, loc := #caller_location) {
-    i, ok := resolve_blob(entry, pref)
-    testing.expect(t, ok, "expected a blob to resolve", loc = loc)
+expect_repr :: proc(t: ^testing.T, entry: ^Reg_Entry, pref: Mime_Pref, want: int, loc := #caller_location) {
+    i, ok := resolve_repr(entry, pref)
+    testing.expect(t, ok, "expected a repr to resolve", loc = loc)
     testing.expect_value(t, i, want, loc)
 }
 
-expect_no_blob :: proc(t: ^testing.T, entry: ^Reg_Entry, pref: Mime_Pref, loc := #caller_location) {
-    _, ok := resolve_blob(entry, pref)
-    testing.expect(t, !ok, "expected no blob to resolve", loc = loc)
+expect_no_repr :: proc(t: ^testing.T, entry: ^Reg_Entry, pref: Mime_Pref, loc := #caller_location) {
+    _, ok := resolve_repr(entry, pref)
+    testing.expect(t, !ok, "expected no repr to resolve", loc = loc)
 }
 
 @(test)
 test_resolve_blob_ranked_beats_storage_order :: proc(t: ^testing.T) {
     // The ordering test: html is stored first, but RICHEST ranks images above markup. If the resolution loops were
-    // inverted (blobs outer), this would return 0 -- and every single-blob test would still pass.
+    // inverted (reprs outer), this would return 0 -- and every single-repr test would still pass.
     html_mimes := [?]string{"text/html"}
     png_mimes := [?]string{"image/png"}
-    blobs := [?]Mime_Blob {
-        mime_blob_of("<p>hi</p>", html_mimes[:]),
-        mime_blob_of("\x89PNG", png_mimes[:]),
+    reprs := [?]Data_Repr {
+        data_repr_of("<p>hi</p>", html_mimes[:]),
+        data_repr_of("\x89PNG", png_mimes[:]),
     }
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
-    expect_blob(t, &entry, Ranked_Mime.RICHEST, 1)
+    expect_repr(t, &entry, Ranked_Mime.RICHEST, 1)
     // PRINTABLE excludes images entirely, so it takes the markup it can print.
-    expect_blob(t, &entry, Ranked_Mime.PRINTABLE, 0)
+    expect_repr(t, &entry, Ranked_Mime.PRINTABLE, 0)
 }
 
 @(test)
 test_resolve_blob_printable_prefers_plain_over_markup :: proc(t: ^testing.T) {
     html_mimes := [?]string{"text/html"}
     plain_mimes := [?]string{"text/plain"}
-    blobs := [?]Mime_Blob {
-        mime_blob_of("<p>hi</p>", html_mimes[:]),
-        mime_blob_of("hi", plain_mimes[:]),
+    reprs := [?]Data_Repr {
+        data_repr_of("<p>hi</p>", html_mimes[:]),
+        data_repr_of("hi", plain_mimes[:]),
     }
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
-    expect_blob(t, &entry, Ranked_Mime.PRINTABLE, 1)
-    expect_blob(t, &entry, Ranked_Mime.RICHEST, 0)
+    expect_repr(t, &entry, Ranked_Mime.PRINTABLE, 1)
+    expect_repr(t, &entry, Ranked_Mime.RICHEST, 0)
 }
 
 @(test)
@@ -626,13 +626,13 @@ test_resolve_blob_printable_empty_for_image_only :: proc(t: ^testing.T) {
     // A GIMP-style PNG-only register: PRINTABLE is a filter plus a ranking, so it legitimately matches nothing rather
     // than spraying binary into a terminal. RICHEST has no boundary and takes it.
     png_mimes := [?]string{"image/png"}
-    blobs := [?]Mime_Blob{mime_blob_of("\x89PNG", png_mimes[:])}
+    reprs := [?]Data_Repr{data_repr_of("\x89PNG", png_mimes[:])}
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
-    expect_no_blob(t, &entry, Ranked_Mime.PRINTABLE)
-    expect_blob(t, &entry, Ranked_Mime.RICHEST, 0)
+    expect_no_repr(t, &entry, Ranked_Mime.PRINTABLE)
+    expect_repr(t, &entry, Ranked_Mime.RICHEST, 0)
 }
 
 @(test)
@@ -640,13 +640,13 @@ test_resolve_blob_structured_only :: proc(t: ^testing.T) {
     // application/json has no text/plain form but is printable, so both prefs must resolve it -- the case that would
     // return -1 if the structured category were missing from either policy.
     json_mimes := [?]string{"application/json"}
-    blobs := [?]Mime_Blob{mime_blob_of(`{"a":1}`, json_mimes[:])}
+    reprs := [?]Data_Repr{data_repr_of(`{"a":1}`, json_mimes[:])}
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
-    expect_blob(t, &entry, Ranked_Mime.PRINTABLE, 0)
-    expect_blob(t, &entry, Ranked_Mime.RICHEST, 0)
+    expect_repr(t, &entry, Ranked_Mime.PRINTABLE, 0)
+    expect_repr(t, &entry, Ranked_Mime.RICHEST, 0)
 }
 
 @(test)
@@ -654,57 +654,57 @@ test_resolve_blob_app_private_never_wins_ranked :: proc(t: ^testing.T) {
     // Excluded by absence from every allowlist, not by a denylist predicate.
     chromium_mimes := [?]string{"chromium/x-web-custom-data"}
     moz_mimes := [?]string{"text/_moz_htmlcontext"}
-    blobs := [?]Mime_Blob {
-        mime_blob_of("junk", chromium_mimes[:]),
-        mime_blob_of("moz", moz_mimes[:]),
+    reprs := [?]Data_Repr {
+        data_repr_of("junk", chromium_mimes[:]),
+        data_repr_of("moz", moz_mimes[:]),
     }
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
-    expect_no_blob(t, &entry, Ranked_Mime.PRINTABLE)
-    expect_no_blob(t, &entry, Ranked_Mime.RICHEST)
+    expect_no_repr(t, &entry, Ranked_Mime.PRINTABLE)
+    expect_no_repr(t, &entry, Ranked_Mime.RICHEST)
 
     // ...but an explicit request names the full string, so there is no accident to prevent.
-    expect_blob(t, &entry, Exact_Mime("chromium/x-web-custom-data"), 0)
+    expect_repr(t, &entry, Exact_Mime("chromium/x-web-custom-data"), 0)
 }
 
 @(test)
 test_resolve_blob_exact :: proc(t: ^testing.T) {
     plain_mimes := [?]string{"text/plain"}
     png_mimes := [?]string{"image/png"}
-    blobs := [?]Mime_Blob {
-        mime_blob_of("hi", plain_mimes[:]),
-        mime_blob_of("\x89PNG", png_mimes[:]),
+    reprs := [?]Data_Repr {
+        data_repr_of("hi", plain_mimes[:]),
+        data_repr_of("\x89PNG", png_mimes[:]),
     }
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
-    expect_blob(t, &entry, Exact_Mime("image/png"), 1)
+    expect_repr(t, &entry, Exact_Mime("image/png"), 1)
     // An exact miss must not fall back: `+a=image/gif fmt=raw > out.gif` would otherwise write the wrong bytes.
-    expect_no_blob(t, &entry, Exact_Mime("image/gif"))
+    expect_no_repr(t, &entry, Exact_Mime("image/gif"))
 }
 
 @(test)
 test_resolve_blob_matches_any_name_on_blob :: proc(t: ^testing.T) {
-    // One byte stream, several names. Whichever name the policy hits first must resolve to the same blob.
+    // One byte stream, several names. Whichever name the policy hits first must resolve to the same repr.
     mimes := [?]string{"text/plain;charset=utf-8", "text/plain", "STRING"}
-    blobs := [?]Mime_Blob{mime_blob_of("hi", mimes[:])}
+    reprs := [?]Data_Repr{data_repr_of("hi", mimes[:])}
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
-    expect_blob(t, &entry, Ranked_Mime.PRINTABLE, 0)
-    expect_blob(t, &entry, Exact_Mime("STRING"), 0)
+    expect_repr(t, &entry, Ranked_Mime.PRINTABLE, 0)
+    expect_repr(t, &entry, Exact_Mime("STRING"), 0)
 }
 
 @(test)
 test_resolve_blob_empty_entry :: proc(t: ^testing.T) {
     entry: Reg_Entry
-    expect_no_blob(t, &entry, Ranked_Mime.PRINTABLE)
-    expect_no_blob(t, &entry, Ranked_Mime.RICHEST)
-    expect_no_blob(t, &entry, Exact_Mime("text/plain"))
+    expect_no_repr(t, &entry, Ranked_Mime.PRINTABLE)
+    expect_no_repr(t, &entry, Ranked_Mime.RICHEST)
+    expect_no_repr(t, &entry, Exact_Mime("text/plain"))
 }
 
 @(test)
@@ -712,13 +712,13 @@ test_resolve_blob_svg_is_an_image_not_printable :: proc(t: ^testing.T) {
     // Deliberate: SVG source is text, but it is categorized as an image so a terminal gets a placeholder rather than
     // a screenful of XML. Documented on IMAGE_MIMES; this test is what fails if that decision is reversed.
     svg_mimes := [?]string{"image/svg+xml"}
-    blobs := [?]Mime_Blob{mime_blob_of("<svg/>", svg_mimes[:])}
+    reprs := [?]Data_Repr{data_repr_of("<svg/>", svg_mimes[:])}
     entry := Reg_Entry {
-        blobs = blobs[:],
+        reprs = reprs[:],
     }
 
-    expect_no_blob(t, &entry, Ranked_Mime.PRINTABLE)
-    expect_blob(t, &entry, Ranked_Mime.RICHEST, 0)
+    expect_no_repr(t, &entry, Ranked_Mime.PRINTABLE)
+    expect_repr(t, &entry, Ranked_Mime.RICHEST, 0)
 }
 
 @(test)
@@ -727,9 +727,9 @@ test_state_size_matches_marshal :: proc(t: ^testing.T) {
     // under-estimate is a bug even when the buffer happens to be big enough.
     m_text := [?]string{"text/plain", "text/plain;charset=utf-8"}
     m_png := [?]string{"image/png"}
-    blobs := [?]Mime_Blob{mime_blob_of("hello", m_text[:]), mime_blob_of("PNGDATA", m_png[:])}
+    reprs := [?]Data_Repr{data_repr_of("hello", m_text[:]), data_repr_of("PNGDATA", m_png[:])}
     entry := Reg_Entry {
-        blobs     = blobs[:],
+        reprs     = reprs[:],
         timestamp = 99,
     }
 

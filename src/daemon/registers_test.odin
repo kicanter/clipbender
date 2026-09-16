@@ -13,7 +13,7 @@ free_ring :: proc(ring: ^Recency_Ring) {
     ring^ = {}
 }
 
-// Convenience clone wrappers around the owning setters: build a single-mime blob from (data, mime),
+// Convenience clone wrappers around the owning setters: build a single-mime repr from (data, mime),
 // cloning both. Test-only, so tests can pass string literals to procs that take ownership and free.
 push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
     push_to_ring(ring, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
@@ -34,12 +34,12 @@ set_live_selection_clone :: proc(store: ^Register_Store, type: lib.Selection_Typ
     set_live_selection(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
 }
 
-// M1 test helpers: entries hold a single blob with a single mime.
+// M1 test helpers: entries hold a single repr with a single mime.
 entry_data :: proc(entry: ^lib.Reg_Entry) -> []byte {
-    return entry.blobs[0].data
+    return entry.reprs[0].data
 }
 entry_mime :: proc(entry: ^lib.Reg_Entry) -> string {
-    return entry.blobs[0].mimes[0]
+    return entry.reprs[0].mimes[0]
 }
 
 @(test)
@@ -409,7 +409,7 @@ test_move_recency_to_front :: proc(t: ^testing.T) {
 }
 
 // Full persistence cycle: marshal_state -> unmarshal_state -> load_registers repopulates a fresh
-// store. Exercises the state-file format (M2) and the load path (which frees unmarshalled blobs).
+// store. Exercises the state-file format (M2) and the load path (which frees unmarshalled reprs).
 @(test)
 test_state_roundtrip :: proc(t: ^testing.T) {
     src: Register_Store
@@ -449,26 +449,26 @@ test_state_roundtrip :: proc(t: ^testing.T) {
     testing.expect_value(t, string(entry_data(named)), "named-b")
 }
 
-// The state format is full-fidelity: multiple blobs per entry, multiple mimes per blob, survive a
-// marshal/unmarshal roundtrip. (M1 stores single-blob entries, but the format must be M4-ready.)
+// The state format is full-fidelity: multiple reprs per entry, multiple mimes per repr, survive a
+// marshal/unmarshal roundtrip. (M1 stores single-repr entries, but the format must be M4-ready.)
 @(test)
-test_state_roundtrip_multi_blob :: proc(t: ^testing.T) {
-    // Build an entry with two blobs, one of which coalesces two mimes.
+test_state_roundtrip_multi_repr :: proc(t: ^testing.T) {
+    // Build an entry with two reprs, one of which coalesces two mimes.
     src: lib.Reg_Entry
     src.timestamp = 4242
-    src.blobs = make([]lib.Mime_Blob, 2)
+    src.reprs = make([]lib.Data_Repr, 2)
     {
         m0 := make([]string, 2)
         m0[0] = strings.clone("text/plain")
         m0[1] = strings.clone("STRING")
-        src.blobs[0] = lib.Mime_Blob {
+        src.reprs[0] = lib.Data_Repr {
             data  = slice.clone(transmute([]byte)string("hello")),
             mimes = m0,
         }
 
         m1 := make([]string, 1)
         m1[0] = strings.clone("text/html")
-        src.blobs[1] = lib.Mime_Blob {
+        src.reprs[1] = lib.Data_Repr {
             data  = slice.clone(transmute([]byte)string("<p>hello</p>")),
             mimes = m1,
         }
@@ -487,14 +487,14 @@ test_state_roundtrip_multi_blob :: proc(t: ^testing.T) {
 
     got := dec[lib.reg_id_from_named_index(0)]
     testing.expect_value(t, got.timestamp, i64(4242))
-    testing.expect_value(t, len(got.blobs), 2)
-    testing.expect_value(t, len(got.blobs[0].mimes), 2)
-    testing.expect_value(t, got.blobs[0].mimes[0], "text/plain")
-    testing.expect_value(t, got.blobs[0].mimes[1], "STRING")
-    testing.expect_value(t, string(got.blobs[0].data), "hello")
-    testing.expect_value(t, len(got.blobs[1].mimes), 1)
-    testing.expect_value(t, got.blobs[1].mimes[0], "text/html")
-    testing.expect_value(t, string(got.blobs[1].data), "<p>hello</p>")
+    testing.expect_value(t, len(got.reprs), 2)
+    testing.expect_value(t, len(got.reprs[0].mimes), 2)
+    testing.expect_value(t, got.reprs[0].mimes[0], "text/plain")
+    testing.expect_value(t, got.reprs[0].mimes[1], "STRING")
+    testing.expect_value(t, string(got.reprs[0].data), "hello")
+    testing.expect_value(t, len(got.reprs[1].mimes), 1)
+    testing.expect_value(t, got.reprs[1].mimes[0], "text/html")
+    testing.expect_value(t, string(got.reprs[1].data), "<p>hello</p>")
 }
 
 @(test)

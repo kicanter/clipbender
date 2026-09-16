@@ -546,12 +546,12 @@ wayland_commit_selection :: proc(
     }
 
     // Update only timestamp of cached live selection if duplicate, otherwise update the cached live selection.
-    // M1: single blob, single mime per entry.
+    // M1: single repr, single mime per entry.
     live_selection := get_live_selection(store, type)
     if live_selection != nil &&
-       len(live_selection.blobs) > 0 &&
-       live_selection.blobs[0].mimes[0] == mime &&
-       slice.equal(live_selection.blobs[0].data, data) {
+       len(live_selection.reprs) > 0 &&
+       live_selection.reprs[0].mimes[0] == mime &&
+       slice.equal(live_selection.reprs[0].data, data) {
         bump_live_selection(store, type)
     } else {
         // Clone data and mime since the live selection takes ownership.
@@ -561,9 +561,9 @@ wayland_commit_selection :: proc(
     // Deduplicate: don't push if identical to the most recent entry, but bump the live selection's timestamp
     head_reg := get_recency_reg(store, type, 0)
     if head_reg != nil &&
-       len(head_reg.blobs) > 0 &&
-       head_reg.blobs[0].mimes[0] == mime &&
-       slice.equal(head_reg.blobs[0].data, data) {
+       len(head_reg.reprs) > 0 &&
+       head_reg.reprs[0].mimes[0] == mime &&
+       slice.equal(head_reg.reprs[0].data, data) {
         log.debugf("Got duplicate %v copy, suppressing register push", type)
         if !self_source {
             delete(data)

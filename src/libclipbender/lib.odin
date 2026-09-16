@@ -10,16 +10,16 @@ import "core:sys/linux"
 // Max data allowed to pass over IPC
 MAX_MSG_SIZE :: 65536 // 64 KiB
 
-// Representation of a single unique data blob and a list of mimes it can represent
-Mime_Blob :: struct {
+// One unique byte stream plus every mime name it answers to. A register holds several of these when an application
+// offers the same selection in more than one format.
+Data_Repr :: struct {
     data:  []byte,
     mimes: []string,
 }
 
-// Info related to a single register entry, includes a `Mime_Blob` for every mime associated with the selection and a
-// timestamp.
+// One register: a `Data_Repr` per representation the selection was offered in, plus a timestamp.
 Reg_Entry :: struct {
-    blobs:     []Mime_Blob,
+    reprs:     []Data_Repr,
     timestamp: i64, // unix epoch time
 }
 
@@ -247,7 +247,7 @@ CMD_GET_FILTER_ALL ::
 MAX_REGS :: 64
 
 // Preference of mime type to pass data for from daemon -> client. Clients use this in their GET IPC request to indicate
-// whether they want the daemon to handle picking the best mime that the blob provides or if the client wants to pass
+// whether they want the daemon to handle picking the best mime that the repr provides or if the client wants to pass
 // the exact mime they want to receive.
 //
 // `Ranked_Mime` represents the daemon picking the highest priority mime. `RICHEST` is a pure ranking with no boundary
@@ -277,7 +277,7 @@ EXACT_MIME_TAG :: u8(len(Ranked_Mime))
 // Max byte length of a mime string on the wire. Lengths are encoded as a u8, and unmarshaling computes `1 + mime_len`,
 // so 255 wraps to 0 and produces invalid slice indices; 254 is the ceiling. Real mimes are far shorter
 // ("text/plain;charset=utf-8" is 24), so callers must reject anything longer rather than truncate: a truncated mime
-// still matches *something* on the daemon side, silently returning the wrong blob.
+// still matches *something* on the daemon side, silently returning the wrong repr.
 MAX_MIME_LEN :: 254
 
 // Mime categories, ordered within each. Every list is an *allowlist*.
@@ -332,11 +332,11 @@ Cmd_Get_Group :: struct {
     MAX_MSG_SIZE,
 )
 
-// Pick which stored mime blob a GET group gets, as an index into `entry.blobs`. An `Exact_Mime` miss never falls back.
-resolve_blob :: proc(entry: ^Reg_Entry, pref: Mime_Pref) -> (int, bool) {
+// Pick which stored mime repr a GET group gets, as an index into `entry.reprs`. An `Exact_Mime` miss never falls back.
+resolve_repr :: proc(entry: ^Reg_Entry, pref: Mime_Pref) -> (int, bool) {
     switch p in pref {
     case Exact_Mime:
-        return blob_with_mime(entry, string(p))
+        return repr_with_mime(entry, string(p))
     case Ranked_Mime:
         switch p {
         case .PRINTABLE:
@@ -351,22 +351,22 @@ resolve_blob :: proc(entry: ^Reg_Entry, pref: Mime_Pref) -> (int, bool) {
     return -1, false
 }
 
-// Walk `groups` in order, and each group's mimes in order, returning the first blob that offers one.
+// Walk `groups` in order, and each group's mimes in order, returning the first repr that offers one.
 first_match :: proc(entry: ^Reg_Entry, groups: [][]string) -> (int, bool) {
     for group in groups {
         for mime in group {
-            if i, ok := blob_with_mime(entry, mime); ok {return i, true}
+            if i, ok := repr_with_mime(entry, mime); ok {return i, true}
         }
     }
     return -1, false
 }
 
-// Index of the first blob offering `mime`. Blobs carry several names for one byte stream, so this searches the whole
+// Index of the first repr offering `mime`. Blobs carry several names for one byte stream, so this searches the whole
 // name set. Ties resolve to the lowest index, though should not really be seen in practice since duplicate names across
-// blobs would mean an app claimed the same mime for two different byte streams.
-blob_with_mime :: proc(entry: ^Reg_Entry, mime: string) -> (int, bool) {
-    for blob, i in entry.blobs {
-        for m in blob.mimes {
+// reprs would mean an app claimed the same mime for two different byte streams.
+repr_with_mime :: proc(entry: ^Reg_Entry, mime: string) -> (int, bool) {
+    for repr, i in entry.reprs {
+        for m in repr.mimes {
             if m == mime {return i, true}
         }
     }
@@ -423,34 +423,34 @@ free_resp_reg :: proc(reg: ^Resp_Reg) {
     reg^ = {}
 }
 
-// Construct a single-mime Mime_Blob, taking ownership of `data` and `mime` (both must be heap-allocated).
-mime_blob_single :: proc(data: []byte, mime: string) -> Mime_Blob {
+// Construct a single-mime Data_Repr, taking ownership of `data` and `mime` (both must be heap-allocated).
+mime_blob_single :: proc(data: []byte, mime: string) -> Data_Repr {
     mimes := make([]string, 1)
     mimes[0] = mime
-    return Mime_Blob{data = data, mimes = mimes}
+    return Data_Repr{data = data, mimes = mimes}
 }
 
-// Heap-allocate a single-element []Mime_Blob (a composite-literal slice would point at stack memory).
-mime_blob_slice :: proc(blob: Mime_Blob) -> []Mime_Blob {
-    blobs := make([]Mime_Blob, 1)
-    blobs[0] = blob
-    return blobs
+// Heap-allocate a single-element []Data_Repr (a composite-literal slice would point at stack memory).
+mime_blob_slice :: proc(repr: Data_Repr) -> []Data_Repr {
+    reprs := make([]Data_Repr, 1)
+    reprs[0] = repr
+    return reprs
 }
 
-free_mime_data :: proc(mime_data: Mime_Blob) {
-    delete(mime_data.data)
-    for mime in mime_data.mimes {
+free_data_repr :: proc(repr: Data_Repr) {
+    delete(repr.data)
+    for mime in repr.mimes {
         delete(mime)
     }
-    delete(mime_data.mimes)
+    delete(repr.mimes)
 }
 
-// Free every blob in the entry plus the blobs slice itself, then zero the entry.
+// Free every repr in the entry plus the reprs slice itself, then zero the entry.
 free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
-    for mime_data in reg_entry.blobs {
-        free_mime_data(mime_data)
+    for repr in reg_entry.reprs {
+        free_data_repr(repr)
     }
-    delete(reg_entry.blobs)
+    delete(reg_entry.reprs)
     reg_entry^ = {}
 }
 
@@ -698,19 +698,19 @@ marshal_resp_registers :: proc(
 
         // The representation this register contributes: its bytes, and the one name that goes in the mime slot. Every
         // other name the register offers becomes preview.
-        chosen, has_blob := resolve_blob(entry_ptr, prefs[id])
+        chosen, has_blob := resolve_repr(entry_ptr, prefs[id])
         data: []byte
         mime: string
         if has_blob {
-            data = entry_ptr.blobs[chosen].data
-            mime = entry_ptr.blobs[chosen].mimes[0]
+            data = entry_ptr.reprs[chosen].data
+            mime = entry_ptr.reprs[chosen].mimes[0]
         }
 
         // Pre-size the entry so it is written all-or-nothing.
         other_count := 0
         size := size_of(Reg_Id) + size_of(i64) + size_of(u8) + len(mime) + size_of(u8)
-        for blob in entry_ptr.blobs {
-            for m in blob.mimes {
+        for repr in entry_ptr.reprs {
+            for m in repr.mimes {
                 if has_blob && m == mime {continue}
                 other_count += 1
                 size += size_of(u8) + len(m)
@@ -734,8 +734,8 @@ marshal_resp_registers :: proc(
         // Other names u8 count, then each one
         buf[written] = u8(other_count)
         written += size_of(u8)
-        for blob in entry_ptr.blobs {
-            for m in blob.mimes {
+        for repr in entry_ptr.reprs {
+            for m in repr.mimes {
                 if has_blob && m == mime {continue}
                 written += write_resp_mime(buf[written:], m)
             }
@@ -867,7 +867,7 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
     return Reg_Id(buf[0])
 }
 
-// State-file serialization. Distinct from the GET response format: state persists FULL fidelity (every blob and every
+// State-file serialization. Distinct from the GET response format: state persists FULL fidelity (every repr and every
 // mime of every entry), whereas GET (marshal_resp_registers) is a query that packs a single mime/data per entry.
 // Keeping them separate lets the GET format change without touching persistence.
 //
@@ -875,7 +875,7 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 //   [1b count]
 //   for entry in count:
 //     [1b Reg_Id][8b i64 timestamp][1b blob_count]
-//     for blob in blob_count:
+//     for repr in blob_count:
 //       [1b mime_count]
 //       for mime in mime_count: [1b mime_len][mime_len bytes]
 //       [4b u32 data_len][data_len bytes]
@@ -885,12 +885,12 @@ state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
     for entry in regs {
         if entry == nil {continue}
         size += size_of(Reg_Id) + size_of(i64) + size_of(u8)
-        for blob in entry.blobs {
+        for repr in entry.reprs {
             size += size_of(u8)
-            for mime in blob.mimes {
+            for mime in repr.mimes {
                 size += size_of(u8) + len(mime)
             }
-            size += size_of(u32) + len(blob.data)
+            size += size_of(u32) + len(repr.data)
         }
     }
     return size
@@ -916,14 +916,14 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
         written += size_of(i64)
 
         // Blob count u8
-        buf[written] = u8(len(entry_ptr.blobs))
+        buf[written] = u8(len(entry_ptr.reprs))
         written += size_of(u8)
 
-        for blob in entry_ptr.blobs {
+        for repr in entry_ptr.reprs {
             // Mime count u8, then each [mime_len u8][mime bytes]
-            buf[written] = u8(len(blob.mimes))
+            buf[written] = u8(len(repr.mimes))
             written += size_of(u8)
-            for mime in blob.mimes {
+            for mime in repr.mimes {
                 mime_len := u8(len(mime))
                 buf[written] = byte(mime_len)
                 written += size_of(mime_len)
@@ -932,11 +932,11 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
             }
 
             // Data length u32 + data bytes
-            data_len := u32(len(blob.data))
+            data_len := u32(len(repr.data))
             data_len_bytes := transmute([size_of(u32)]byte)data_len
             copy(buf[written:][:size_of(u32)], data_len_bytes[:])
             written += size_of(u32)
-            copy(buf[written:][:int(data_len)], blob.data)
+            copy(buf[written:][:int(data_len)], repr.data)
             written += int(data_len)
         }
 
@@ -966,7 +966,7 @@ unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8) 
         blob_count := u8(buf[offset])
         offset += size_of(u8)
 
-        blobs := make([]Mime_Blob, int(blob_count))
+        reprs := make([]Data_Repr, int(blob_count))
         for b in 0 ..< int(blob_count) {
             mime_count := u8(buf[offset])
             offset += size_of(u8)
@@ -985,14 +985,14 @@ unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8) 
             data := slice.clone(buf[offset:][:int(data_len)])
             offset += int(data_len)
 
-            blobs[b] = Mime_Blob {
+            reprs[b] = Data_Repr {
                 data  = data,
                 mimes = mimes,
             }
         }
 
         regs[reg_id] = Reg_Entry {
-            blobs     = blobs,
+            reprs     = reprs,
             timestamp = time,
         }
     }

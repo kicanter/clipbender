@@ -19,13 +19,13 @@ clipbender_state_path :: proc(persist_state: bool) -> string {
     return fmt.aprintf("%s/%s", dir, REGISTERS_FILENAME)
 }
 
-// Registers are persisted using the dedicated state format (full fidelity: all blobs and mimes per entry), distinct
+// Registers are persisted using the dedicated state format (full fidelity: all reprs and mimes per entry), distinct
 // from the GET response format. See `libclipbender.marshal_state()` / `libclipbender.unmarshal_state()`.
 save_registers_state :: proc(filename: string, regs: [lib.MAX_REGS]^lib.Reg_Entry) -> (written: int, err: os.Error) {
     // Sized to the content, not to a constant: a single register can hold a multi-megabyte image, so any fixed buffer
     // eventually overruns, and truncating a save would silently lose registers the user stored. `MAX_MSG_SIZE` in
     // particular is the SOCK_SEQPACKET datagram limit and has no meaning for a file -- state is also strictly larger than
-    // a GET response for the same registers, since it keeps every blob rather than one.
+    // a GET response for the same registers, since it keeps every repr rather than one.
     buf := make([]u8, lib.state_size(regs))
     defer delete(buf)
 

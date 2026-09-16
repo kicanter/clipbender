@@ -150,8 +150,8 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 return running, dirty
             }
 
-            // M1: single blob, single mime per source entry.
-            data, mime = slice.clone(source.blobs[0].data), strings.clone(source.blobs[0].mimes[0])
+            // M1: single repr, single mime per source entry.
+            data, mime = slice.clone(source.reprs[0].data), strings.clone(source.reprs[0].mimes[0])
             log.debug("REGISTER:")
             log.debugf("\tSource Reg: `%s`", lib.reg_id_to_string(source_reg))
 
@@ -185,7 +185,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         // Destination register must be either named a register or SELECTION_CLIPBOARD/PRIMARY
         errmsg := ""
         if lib.reg_id_is_named(dest_reg) {
-            // ownership of data and mime transferred (M1: single-mime blob)
+            // ownership of data and mime transferred (M1: single-mime repr)
             set_named_reg(store, dest_reg, lib.mime_blob_single(data, mime), set_mode)
             data, mime = {}, {}
         } else if lib.reg_id_is_selection(dest_reg) {
