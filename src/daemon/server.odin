@@ -199,8 +199,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 "invalid destination register, must be named or selection register (got `%s`)",
                 lib.reg_id_to_string(dest_reg),
             )
-            for repr in reprs {lib.free_data_repr(repr)}
-            delete(reprs)
+            lib.free_data_reprs(reprs)
         }
 
         resp_written: int

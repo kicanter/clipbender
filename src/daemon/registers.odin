@@ -265,8 +265,7 @@ set_named_reg :: proc(
 set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, reprs: []lib.Data_Repr) {
     if backend.state == nil {
         log.error("No backend state, can't set selection register")
-        for repr in reprs {lib.free_data_repr(repr)}
-        delete(reprs)
+        lib.free_data_reprs(reprs)
         return
     }
     if reg_id == lib.SELECTION_CLIPBOARD {

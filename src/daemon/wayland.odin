@@ -139,10 +139,7 @@ wayland_clear_offer_mimes :: proc(offer: ^Offer_State) {
 wayland_cleanup_source :: proc(source: ^Source_State) {
     if source.handle != nil {data_control_source_v1_destroy_wrapper(source.handle)}
     source.handle = nil
-    for repr in source.reprs {
-        lib.free_data_repr(repr)
-    }
-    delete(source.reprs)
+    lib.free_data_reprs(source.reprs)
     source.reprs = nil
 }
 
@@ -571,8 +568,7 @@ wayland_commit_selection :: proc(
     if head_reg != nil && reprs_are_equal(head_reg.reprs, reprs) {
         log.debugf("Got duplicate %v copy, suppressing register push", type)
         if !self_source {
-            for repr in reprs {lib.free_data_repr(repr)}
-            delete(reprs)
+            lib.free_data_reprs(reprs)
         }
         return false
     }
@@ -600,6 +596,12 @@ wayland_read_offer_reprs :: proc(
     reprs := make([dynamic]lib.Data_Repr, 0, len(mimes))
 
     for mime in mimes {
+        // The one boundary where an application's arbitrary string becomes ours, make sure it's under the limit.
+        if len(mime) > lib.MAX_MIME_LEN {
+            log.warnf("Offered mime is %d bytes, over the %d limit; skipping it", len(mime), lib.MAX_MIME_LEN)
+            continue
+        }
+
         // Returns copied data
         data := wayland_read_offer_data(offer, wl_state.display, mime)
         if data == nil {
@@ -661,13 +663,26 @@ wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display,
         return nil
     }
 
-    // Read all data from pipe until EOF
-    buf: [4096]byte
+    // Read all data from pipe until EOF, or until the source exceeds what we are willing to hold. Discard rather than
+    // truncate because a half-read blob is not a representation of anything.
     result: [dynamic]byte
     for {
-        num_bytes, err := linux.read(read_fd, buf[:])
-        if err != .NONE || num_bytes <= 0 {break}
-        append(&result, ..buf[:num_bytes])
+        old := len(result)
+        resize(&result, old + lib.PIPE_READ_SIZE)
+        num_bytes, err := linux.read(read_fd, result[old:])
+        if err != .NONE || num_bytes <= 0 {
+            resize(&result, old)
+        }
+        if len(result) + num_bytes > lib.MAX_READ_SIZE {
+            log.errorf(
+                "Source app wrote more than %d bytes for mime `%s`, discarding this representation",
+                lib.MAX_READ_SIZE,
+                mime,
+            )
+            delete(result)
+            linux.close(read_fd)
+            return nil
+        }
     }
     linux.close(read_fd)
 

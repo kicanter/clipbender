@@ -278,6 +278,12 @@ EXACT_MIME_TAG :: u8(len(Ranked_Mime))
 // Max byte length of a mime string on the wire. Real mimes are typically far shorter ("text/plain;charset=utf-8" is 24)
 MAX_MIME_LEN :: int(max(u8))
 
+// Ceiling on a single read from a source application's pipe; huge limit just to prevent fatal errors like OOM.
+MAX_READ_SIZE :: 512 * 1024 * 1024 // 512 MiB
+
+// Linux's default pipe capacity, used for reading in Wayland data offers from pipe.
+PIPE_READ_SIZE :: 64 * 1024 // 64 KiB
+
 // Mime categories, ordered within each. Every list is an *allowlist*.
 // `@(rodata)` rather than `::` because `::` constants are not addressable and so cannot be sliced.
 @(rodata)
