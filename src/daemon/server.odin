@@ -95,6 +95,21 @@ cleanup_socket :: proc(socket_path: string, socket_fd: linux.Fd) {
     os.remove(socket_path)
 }
 
+// Send a marshalled response back to the client.
+//
+// `.NOSIGNAL` because the daemon only blocks SIGINT/SIGTERM, so writing to a peer that already disconnected would
+// otherwise terminate it. Reachable whenever a client dies between sending its request and reading the reply -- Ctrl-C
+// during a get, or the GUI exiting on a keypress -- since the response is sent regardless of who is still listening.
+//
+// Nothing here can recover: the client is already blocked in `recv`, so a dropped response hangs it. Log it so the hang
+// has a cause in the journal instead of being a mystery.
+send_resp :: proc(client_fd: linux.Fd, resp: []u8) {
+    _, err := linux.send(client_fd, resp, {.NOSIGNAL})
+    if err != nil {
+        log.errorf("Failed sending %d byte response to client (fd=%d): errno %v", len(resp), client_fd, err)
+    }
+}
+
 // Returns `running` (false to shut down the daemon) and `dirty` (true if a register was mutated and state should be
 // persisted). The caller arms the save-state debounce when `dirty`.
 handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd) -> (running: bool, dirty: bool) {
@@ -120,7 +135,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             if source == nil {
                 errmsg := fmt.tprintf("source register `%s` is empty", lib.reg_id_to_string(source_reg))
                 resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
-                linux.send(client_fd, resp_buf[:resp_written], {})
+                send_resp(client_fd, resp_buf[:resp_written])
                 return running, dirty
             }
 
@@ -179,14 +194,14 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         }
 
         // Send response back to client
-        linux.send(client_fd, resp_buf[:resp_written], {})
+        send_resp(client_fd, resp_buf[:resp_written])
     case lib.Command_Type.GET:
         log.debugf("Got get message: %v", data_buf[:bytes_read])
         groups: [lib.MAX_REGS]lib.Cmd_Get_Group
         count, get_err := lib.unmarshal_cmd_get(data_buf[1:bytes_read], &groups)
         if get_err != nil {
             resp_written := lib.marshal_resp_error(get_err.?, resp_buf[:])
-            linux.send(client_fd, resp_buf[:resp_written], {})
+            send_resp(client_fd, resp_buf[:resp_written])
             return running, dirty
         }
 
@@ -214,7 +229,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
 
         // Send REGISTERS response back to client (marshal packs only non-empty slots).
         resp_written, _ := lib.marshal_resp_registers(regs, prefs, resp_buf[:])
-        linux.send(client_fd, resp_buf[:resp_written], {})
+        send_resp(client_fd, resp_buf[:resp_written])
     case lib.Command_Type.CLEAR:
         log.debugf("Got clear message: %v", data_buf[:bytes_read])
         reg := lib.Reg_Id(data_buf[1])
@@ -236,13 +251,13 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         }
 
         // Send response back to client
-        linux.send(client_fd, resp_buf[:resp_written], {})
+        send_resp(client_fd, resp_buf[:resp_written])
     case lib.Command_Type.SHUTDOWN:
         fmt.println("Shutting clipbenderd down")
         running = false
         // Send OK response back to client
         resp_written := lib.marshal_resp_ok(resp_buf[:])
-        linux.send(client_fd, resp_buf[:resp_written], {})
+        send_resp(client_fd, resp_buf[:resp_written])
     }
 
     return running, dirty
