@@ -451,6 +451,16 @@ data_repr_single :: proc(data: []byte, mime: string) -> []Data_Repr {
     return reprs
 }
 
+// Clones a `Data_Repr`, caller is responsible for freeing returned value.
+clone_data_repr :: proc(repr: Data_Repr) -> Data_Repr {
+    cloned_data := slice.clone(repr.data)
+    cloned_mimes := make([]string, len(repr.mimes))
+    for i in 0 ..< len(repr.mimes) {
+        cloned_mimes[i] = strings.clone(repr.mimes[i])
+    }
+    return Data_Repr{data = cloned_data, mimes = cloned_mimes}
+}
+
 free_data_repr :: proc(repr: Data_Repr) {
     delete(repr.data)
     for mime in repr.mimes {
