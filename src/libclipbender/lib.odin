@@ -196,6 +196,14 @@ Command_Type :: enum u8 {
     SHUTDOWN,
 }
 
+// Exact wire sizes for the fixed-length commands, so callers size their buffers from the format rather than counting
+// bytes by hand. Each mirrors what the matching `marshal_*` returns.
+//
+// SET (INLINE) and GET have no constant: both carry variable-length payloads and use `MAX_MSG_SIZE` buffers.
+CMD_SET_REG_SIZE :: size_of(Command_Type) + (2 * size_of(Reg_Id)) + size_of(Set_Mode) + size_of(Source_Kind)
+CMD_CLEAR_SIZE :: size_of(Command_Type) + size_of(Reg_Id)
+CMD_SHUTDOWN_SIZE :: size_of(Command_Type)
+
 // For SET operations, whether the register should be overwritten or appended
 Set_Mode :: enum u8 {
     OVERWRITE, // lowercase named register
@@ -454,7 +462,7 @@ marshal_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, bu
     buf[2] = byte(set_mode)
     buf[3] = byte(Source_Kind.REGISTER)
     buf[4] = byte(source)
-    return size_of(Command_Type) + (2 * size_of(Reg_Id)) + size_of(Set_Mode) + size_of(Source_Kind)
+    return CMD_SET_REG_SIZE
 }
 
 // SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
@@ -511,13 +519,13 @@ marshal_cmd_get :: proc(groups: []Cmd_Get_Group, buf: []byte) -> int {
 marshal_cmd_clear :: proc(reg_id: Reg_Id, buf: []byte) -> int {
     buf[0] = byte(Command_Type.CLEAR)
     buf[1] = byte(reg_id)
-    return size_of(Command_Type) + size_of(Reg_Id)
+    return CMD_CLEAR_SIZE
 }
 
 // SHUTDOWN: `[1b Message_Type]`
 marshal_cmd_shutdown :: proc(buf: []byte) -> int {
     buf[0] = byte(Command_Type.SHUTDOWN)
-    return size_of(Command_Type)
+    return CMD_SHUTDOWN_SIZE
 }
 
 // OK: `[1 byte Response_Status]`

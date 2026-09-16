@@ -88,7 +88,7 @@ test_marshal_cmd_set_reg :: proc(t: ^testing.T) {
     mode := Set_Mode.OVERWRITE
 
     n := marshal_cmd_set_reg(dest, source, mode, buf[:])
-    testing.expect_value(t, n, 5)
+    testing.expect_value(t, n, CMD_SET_REG_SIZE)
     testing.expect_value(t, Command_Type(buf[0]), Command_Type.SET)
     testing.expect_value(t, Reg_Id(buf[1]), dest)
     testing.expect_value(t, Set_Mode(buf[2]), mode)
@@ -456,7 +456,7 @@ test_marshal_cmd_set_reg_append :: proc(t: ^testing.T) {
     mode := Set_Mode.APPEND
 
     n := marshal_cmd_set_reg(dest, source, mode, buf[:])
-    testing.expect_value(t, n, 5)
+    testing.expect_value(t, n, CMD_SET_REG_SIZE)
     testing.expect_value(t, Command_Type(buf[0]), Command_Type.SET)
     testing.expect_value(t, Reg_Id(buf[1]), dest)
     testing.expect_value(t, Set_Mode(buf[2]), mode)
@@ -482,7 +482,7 @@ test_marshal_unmarshal_cmd_clear :: proc(t: ^testing.T) {
     reg := reg_id_from_named_index(12)
 
     n := marshal_cmd_clear(reg, buf[:])
-    testing.expect_value(t, n, 2)
+    testing.expect_value(t, n, CMD_CLEAR_SIZE)
     testing.expect_value(t, Command_Type(buf[0]), Command_Type.CLEAR)
 
     decoded_reg := unmarshal_cmd_clear(buf[1:])
@@ -494,7 +494,7 @@ test_marshal_cmd_shutdown :: proc(t: ^testing.T) {
     buf: [16]byte
 
     n := marshal_cmd_shutdown(buf[:])
-    testing.expect_value(t, n, 1)
+    testing.expect_value(t, n, CMD_SHUTDOWN_SIZE)
     testing.expect_value(t, Command_Type(buf[0]), Command_Type.SHUTDOWN)
 }
 

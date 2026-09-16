@@ -239,7 +239,7 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
             fmt.eprintfln("Error: %v", err.?)
             print_cmd_usage_and_exit(.SET)
         }
-        msg: [5]byte // SET with source reg is 5-byte message
+        msg: [lib.CMD_SET_REG_SIZE]byte
         written := lib.marshal_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
         _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
         if send_err != nil {
@@ -1110,7 +1110,7 @@ cmd_clear :: proc(args: []string, client_fd: linux.Fd) {
     }
 
     // Send CLEAR message
-    msg: [2]byte
+    msg: [lib.CMD_CLEAR_SIZE]byte
     written := lib.marshal_cmd_clear(reg_id, msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {
@@ -1147,7 +1147,7 @@ cmd_shutdown :: proc(args: []string, client_fd: linux.Fd) {
     }
 
     // Send SHUTDOWN message
-    msg: [1]byte
+    msg: [lib.CMD_SHUTDOWN_SIZE]byte
     written := lib.marshal_cmd_shutdown(msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {

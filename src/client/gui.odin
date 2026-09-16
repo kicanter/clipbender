@@ -609,7 +609,7 @@ keyboard_listener := wl.keyboard_listener {
 
         // Otherwise, consume the keypress and reset prefix to nil.
         // These operations invoke a SET call from the daemon one way or another.
-        msg: [5]byte // SET with source reg is 5-byte message
+        msg: [lib.CMD_SET_REG_SIZE]byte
         dest_reg: lib.Reg_Id
         source_reg: lib.Reg_Id
         set_mode: lib.Set_Mode
