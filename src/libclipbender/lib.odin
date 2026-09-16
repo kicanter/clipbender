@@ -857,7 +857,31 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 //       [1b mime_count]
 //       for mime in mime_count: [1b mime_len][mime_len bytes]
 //       [4b u32 data_len][data_len bytes]
+// Exact serialized size of `regs` in the state format, so a caller can allocate a buffer that fits instead of guessing.
+//
+// State has no message ceiling to work around -- it is a file, not a datagram -- and a single register can hold a
+// multi-megabyte image, so no fixed-size buffer is safe. Capping it would be worse than allocating: `marshal_state`
+// would either run off the end or have to drop registers the user deliberately stored.
+state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
+    size := size_of(u8) // entry count
+    for entry in regs {
+        if entry == nil {continue}
+        size += size_of(Reg_Id) + size_of(i64) + size_of(u8)
+        for blob in entry.blobs {
+            size += size_of(u8)
+            for mime in blob.mimes {
+                size += size_of(u8) + len(mime)
+            }
+            size += size_of(u32) + len(blob.data)
+        }
+    }
+    return size
+}
+
 marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
+    // Every write below is unchecked, so a short buffer would run off the end. Size it with `state_size`.
+    assert(len(buf) >= state_size(regs), "marshal_state buffer too small; size it with state_size()")
+
     written := size_of(u8) // reserve count byte
     count: u8 = 0
 

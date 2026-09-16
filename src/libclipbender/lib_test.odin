@@ -717,3 +717,32 @@ test_resolve_blob_svg_is_an_image_not_printable :: proc(t: ^testing.T) {
     expect_no_blob(t, &entry, Ranked_Mime.PRINTABLE)
     expect_blob(t, &entry, Ranked_Mime.RICHEST, 0)
 }
+
+@(test)
+test_state_size_matches_marshal :: proc(t: ^testing.T) {
+    // The whole point of `state_size` is that `save_registers_state` can allocate exactly enough, so an over- or
+    // under-estimate is a bug even when the buffer happens to be big enough.
+    m_text := [?]string{"text/plain", "text/plain;charset=utf-8"}
+    m_png := [?]string{"image/png"}
+    blobs := [?]Mime_Blob{mime_blob_of("hello", m_text[:]), mime_blob_of("PNGDATA", m_png[:])}
+    entry := Reg_Entry {
+        blobs     = blobs[:],
+        timestamp = 99,
+    }
+
+    regs: [MAX_REGS]^Reg_Entry
+    regs[reg_id_from_named_index(0)] = &entry
+    regs[reg_id_from_clipboard_index(3)] = &entry
+
+    size := state_size(regs)
+    buf := make([]u8, size)
+    defer delete(buf)
+
+    testing.expect_value(t, marshal_state(regs, buf), size)
+}
+
+@(test)
+test_state_size_empty :: proc(t: ^testing.T) {
+    regs: [MAX_REGS]^Reg_Entry
+    testing.expect_value(t, state_size(regs), size_of(u8)) // just the entry count
+}
