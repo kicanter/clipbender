@@ -6,6 +6,7 @@ import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:sys/linux"
+import "core:unicode/utf8"
 
 // Max data allowed to pass over IPC
 MAX_MSG_SIZE :: 65536 // 64 KiB
@@ -421,6 +422,16 @@ free_resp_reg :: proc(reg: ^Resp_Reg) {
     delete(reg.other_mimes)
     delete(reg.data)
     reg^ = {}
+}
+
+// The mime that best describes `data`, for input arriving without one -- stdin and inline `set`.
+//
+// TODO: magic-byte detection for PNG (`\x89PNG`), GIF (`GIF8`), JPEG (`\xFF\xD8`), PDF (`%PDF`),
+// WEBP (`RIFF....WEBP`), plus SVG/HTML heuristics. Until then `clipbender set a < image.png` is stored as
+// `application/octet-stream`, so `get +a=image/png` will not match it.
+resolve_mime :: proc(data: []byte) -> string {
+    if utf8.valid_string(string(data)) {return "text/plain"}
+    return "application/octet-stream"
 }
 
 // Heap-allocate a one-representation slice, taking ownership of `data` and `mime` (both must be heap-allocated).

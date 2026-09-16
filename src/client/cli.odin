@@ -219,13 +219,14 @@ parse_cmd_set_inline :: proc(
     }
 
     // get data from stdin
-    mime = "text/plain" // TODO: add resolve_mime() to introspect mime based on magic bytes
-    if !utf8.valid_string(string(data)) {mime = "application/octet-stream"}
     os_err: os.Error
     data, os_err = os.read_entire_file(stdin, context.allocator)
     if os_err != nil {
         return {}, {}, {}, {}, fmt.tprintf("could not read stdin: %v", os_err)
     }
+
+    // Derived from the bytes, so necessarily after the read.
+    mime = strings.clone(lib.resolve_mime(data))
     return dest, set_mode, mime, data, {}
 }
 
