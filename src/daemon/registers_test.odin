@@ -16,10 +16,10 @@ free_ring :: proc(ring: ^Recency_Ring) {
 // Convenience clone wrappers around the owning setters: build a single-mime repr from (data, mime),
 // cloning both. Test-only, so tests can pass string literals to procs that take ownership and free.
 push_to_ring_clone :: proc(ring: ^Recency_Ring, data: []u8, mime: string) {
-    push_to_ring(ring, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
+    push_to_ring(ring, lib.data_repr_single(slice.clone(data), strings.clone(mime)))
 }
 push_recency_reg_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
-    push_recency_reg(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
+    push_recency_reg(store, type, lib.data_repr_single(slice.clone(data), strings.clone(mime)))
 }
 set_named_reg_clone :: proc(
     store: ^Register_Store,
@@ -28,10 +28,10 @@ set_named_reg_clone :: proc(
     mime: string,
     set_mode: lib.Set_Mode,
 ) -> bool {
-    return set_named_reg(store, reg_id, lib.mime_blob_single(slice.clone(data), strings.clone(mime)), set_mode)
+    return set_named_reg(store, reg_id, lib.data_repr_single(slice.clone(data), strings.clone(mime)), set_mode)
 }
 set_live_selection_clone :: proc(store: ^Register_Store, type: lib.Selection_Type, data: []u8, mime: string) {
-    set_live_selection(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
+    set_live_selection(store, type, lib.data_repr_single(slice.clone(data), strings.clone(mime)))
 }
 
 // M1 test helpers: entries hold a single repr with a single mime.
@@ -518,4 +518,92 @@ test_get_registers_filter_mixed :: proc(t: ^testing.T) {
     named_entry := get_reg(&store, id)
     testing.expect(t, named_entry != nil, "should find named entry")
     testing.expect_value(t, string(entry_data(named_entry)), "named")
+}
+
+@(test)
+test_intersect_mimes :: proc(t: ^testing.T) {
+    a := [?]string{"text/plain;charset=utf-8", "text/plain", "STRING"}
+    b := [?]string{"text/plain", "STRING", "TEXT"}
+    got := intersect_mimes(a[:], b[:])
+    defer {for m in got {delete(m)};delete(got)}
+
+    // Only the names both sides claimed survive: the result is not guaranteed to still be UTF-8.
+    testing.expect_value(t, len(got), 2)
+    testing.expect_value(t, got[0], "text/plain")
+    testing.expect_value(t, got[1], "STRING")
+}
+
+@(test)
+test_intersect_mimes_disjoint_falls_back :: proc(t: ^testing.T) {
+    a := [?]string{"UTF8_STRING"}
+    b := [?]string{"TEXT"}
+    got := intersect_mimes(a[:], b[:])
+    defer {for m in got {delete(m)};delete(got)}
+
+    testing.expect_value(t, len(got), 1)
+    testing.expect_value(t, got[0], "text/plain")
+}
+
+@(test)
+test_append_narrows_mimes_and_drops_other_reprs :: proc(t: ^testing.T) {
+    store: Register_Store
+    defer cleanup_registers(&store)
+
+    reg := lib.reg_id_from_named_index(0)
+    idx := lib.reg_id_to_named_index(reg)
+
+    // Destination holds a UTF-8 text repr plus a PNG. Both describe the same original copy.
+    text_mimes := make([]string, 2)
+    text_mimes[0] = strings.clone("text/plain;charset=utf-8")
+    text_mimes[1] = strings.clone("text/plain")
+    png_mimes := make([]string, 1)
+    png_mimes[0] = strings.clone("image/png")
+    reprs := make([]lib.Data_Repr, 2)
+    reprs[0] = lib.Data_Repr {
+        data  = slice.clone(transmute([]byte)string("first")),
+        mimes = text_mimes,
+    }
+    reprs[1] = lib.Data_Repr {
+        data  = slice.clone(transmute([]byte)string("PNGDATA")),
+        mimes = png_mimes,
+    }
+    overwrite_named_reg(&store, idx, reprs)
+
+    // Append a plain (not UTF-8-declared) payload.
+    ok := set_named_reg(
+        &store,
+        reg,
+        lib.data_repr_single(slice.clone(transmute([]byte)string(" second")), strings.clone("text/plain")),
+        .APPEND,
+    )
+    testing.expect(t, ok, "append should succeed")
+
+    entry := get_reg(&store, reg)
+    testing.expect(t, entry != nil)
+    // Text-only afterwards: the PNG described the pre-append content.
+    testing.expect_value(t, len(entry.reprs), 1)
+    testing.expect_value(t, string(entry.reprs[0].data), "first second")
+    // The register must stop claiming charset=utf-8, which the appended bytes were never declared to satisfy.
+    testing.expect_value(t, len(entry.reprs[0].mimes), 1)
+    testing.expect_value(t, entry.reprs[0].mimes[0], "text/plain")
+}
+
+@(test)
+test_append_non_text_repr_is_rejected :: proc(t: ^testing.T) {
+    store: Register_Store
+    defer cleanup_registers(&store)
+
+    reg := lib.reg_id_from_named_index(1)
+    set_named_reg_clone(&store, reg, transmute([]byte)string("text"), "text/plain", .OVERWRITE)
+
+    ok := set_named_reg(
+        &store,
+        reg,
+        lib.data_repr_single(slice.clone(transmute([]byte)string("PNGDATA")), strings.clone("image/png")),
+        .APPEND,
+    )
+    testing.expect(t, !ok, "appending an image should be rejected")
+
+    entry := get_reg(&store, reg)
+    testing.expect_value(t, string(entry.reprs[0].data), "text") // unchanged
 }

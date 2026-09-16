@@ -186,7 +186,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         errmsg := ""
         if lib.reg_id_is_named(dest_reg) {
             // ownership of data and mime transferred (M1: single-mime repr)
-            set_named_reg(store, dest_reg, lib.mime_blob_single(data, mime), set_mode)
+            set_named_reg(store, dest_reg, lib.data_repr_single(data, mime), set_mode)
             data, mime = {}, {}
         } else if lib.reg_id_is_selection(dest_reg) {
             // ownership of data and mime transferred

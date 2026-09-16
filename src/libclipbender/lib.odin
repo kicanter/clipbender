@@ -423,17 +423,20 @@ free_resp_reg :: proc(reg: ^Resp_Reg) {
     reg^ = {}
 }
 
-// Construct a single-mime Data_Repr, taking ownership of `data` and `mime` (both must be heap-allocated).
-mime_blob_single :: proc(data: []byte, mime: string) -> Data_Repr {
+// Heap-allocate a one-representation slice, taking ownership of `data` and `mime` (both must be heap-allocated).
+//
+// The slice has to be heap-allocated: a composite literal would be backed by a temporary in the caller's frame, so the
+// store would hold a dangling pointer once the caller returned. Used by the paths that genuinely produce one
+// representation -- SET inline, and register-to-register copies; M4's capture path builds multi-repr slices directly.
+data_repr_single :: proc(data: []byte, mime: string) -> []Data_Repr {
     mimes := make([]string, 1)
     mimes[0] = mime
-    return Data_Repr{data = data, mimes = mimes}
-}
 
-// Heap-allocate a single-element []Data_Repr (a composite-literal slice would point at stack memory).
-mime_blob_slice :: proc(repr: Data_Repr) -> []Data_Repr {
     reprs := make([]Data_Repr, 1)
-    reprs[0] = repr
+    reprs[0] = Data_Repr {
+        data  = data,
+        mimes = mimes,
+    }
     return reprs
 }
 

@@ -555,7 +555,7 @@ wayland_commit_selection :: proc(
         bump_live_selection(store, type)
     } else {
         // Clone data and mime since the live selection takes ownership.
-        set_live_selection(store, type, lib.mime_blob_single(slice.clone(data), strings.clone(mime)))
+        set_live_selection(store, type, lib.data_repr_single(slice.clone(data), strings.clone(mime)))
     }
 
     // Deduplicate: don't push if identical to the most recent entry, but bump the live selection's timestamp
@@ -579,7 +579,7 @@ wayland_commit_selection :: proc(
         self_source_str = " (self-source)"
     }
     // Ownership of data and mime transferred
-    push_recency_reg(store, type, lib.mime_blob_single(data, mime))
+    push_recency_reg(store, type, lib.data_repr_single(data, mime))
     data, mime = {}, {}
     log.infof("Pushed to %v recency register%s", type, self_source_str)
     return true

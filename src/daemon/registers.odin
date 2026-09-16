@@ -2,6 +2,7 @@ package main
 
 import "core:log"
 import "core:slice"
+import "core:strings"
 import "core:time"
 
 import lib "src:libclipbender"
@@ -25,7 +26,7 @@ Register_Store :: struct {
 }
 
 // Overwrite the live selection cache for `type`, taking ownership of `data` and `mime` (frees the previous value).
-set_live_selection :: proc(store: ^Register_Store, type: lib.Selection_Type, repr: lib.Data_Repr) {
+set_live_selection :: proc(store: ^Register_Store, type: lib.Selection_Type, reprs: []lib.Data_Repr) {
     selection: ^lib.Reg_Entry
     switch type {
     case .CLIPBOARD:
@@ -35,7 +36,7 @@ set_live_selection :: proc(store: ^Register_Store, type: lib.Selection_Type, rep
     }
     lib.free_reg_entry(selection)
     selection^ = lib.Reg_Entry {
-        reprs     = lib.mime_blob_slice(repr),
+        reprs     = reprs,
         timestamp = time.time_to_unix(time.now()),
     }
 }
@@ -69,61 +70,34 @@ free_live_selections :: proc(store: ^Register_Store) {
     lib.free_reg_entry(&store.primary_selection)
 }
 
-// Consume a loaded entry, returning the one repr the store can hold and releasing everything else.
-//
-// Note: lossy now (only stores one repr), but will support multi-repr in the future
-take_storable_repr :: proc(entry: lib.Reg_Entry, reg: lib.Reg_Id) -> lib.Data_Repr {
-    if len(entry.reprs) > 1 {
-        // Only reachable from a state file this build did not write -- a newer version's, or a hand-made one -- since
-        // the store cannot hold a second repr to save in the first place.
-        log.warnf(
-            "State for register `%s` has %d representations; this build stores one, dropping %d",
-            lib.reg_id_to_string(reg),
-            len(entry.reprs),
-            len(entry.reprs) - 1,
-        )
-        for repr in entry.reprs[1:] {
-            lib.free_data_repr(repr)
-        }
-    }
-
-    first := entry.reprs[0]
-    delete(entry.reprs)
-    return first
-}
-
 load_registers :: proc(store: ^Register_Store, regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     // `regs` is indexed by Reg_Id. Recency rings are serialized most-recent-first, so within each ring we push in
     // reverse (highest recency index first) so the most recent entry ends up at the ring head.
     for i := int(lib.CLIPBOARD_END); i >= int(lib.CLIPBOARD_START); i -= 1 {
         entry := regs[i]
         if len(entry.reprs) == 0 {continue}
-        push_recency_reg(store, .CLIPBOARD, take_storable_repr(entry, lib.Reg_Id(i)))
+        push_recency_reg(store, .CLIPBOARD, entry.reprs)
     }
     for i := int(lib.PRIMARY_END); i >= int(lib.PRIMARY_START); i -= 1 {
         entry := regs[i]
         if len(entry.reprs) == 0 {continue}
-        push_recency_reg(store, .PRIMARY, take_storable_repr(entry, lib.Reg_Id(i)))
+        push_recency_reg(store, .PRIMARY, entry.reprs)
     }
     for i in int(lib.NAMED_START) ..= int(lib.NAMED_END) {
         entry := regs[i]
         if len(entry.reprs) == 0 {continue}
-        overwrite_named_reg(
-            store,
-            lib.reg_id_to_named_index(lib.Reg_Id(i)),
-            take_storable_repr(entry, lib.Reg_Id(i)),
-        )
+        overwrite_named_reg(store, lib.reg_id_to_named_index(lib.Reg_Id(i)), entry.reprs)
     }
 }
 
 // Push to head, takes ownership of data and mime (caller must provide heap-allocated memory)
-push_to_ring :: proc(ring: ^Recency_Ring, repr: lib.Data_Repr, timestamp: Maybe(i64) = nil) {
+push_to_ring :: proc(ring: ^Recency_Ring, reprs: []lib.Data_Repr, timestamp: Maybe(i64) = nil) {
     ring.head = (ring.head + 1) % lib.RECENCY_SIZE
     lib.free_reg_entry(&ring.entries[ring.head])
 
     ts := timestamp.? or_else time.time_to_unix(time.now())
     ring.entries[ring.head] = lib.Reg_Entry {
-        reprs     = lib.mime_blob_slice(repr),
+        reprs     = reprs,
         timestamp = ts,
     }
     ring.count = min(ring.count + 1, lib.RECENCY_SIZE)
@@ -132,7 +106,7 @@ push_to_ring :: proc(ring: ^Recency_Ring, repr: lib.Data_Repr, timestamp: Maybe(
 push_recency_reg :: proc(
     store: ^Register_Store,
     type: lib.Selection_Type,
-    repr: lib.Data_Repr,
+    reprs: []lib.Data_Repr,
     timestamp: Maybe(i64) = nil,
 ) {
     ring: ^Recency_Ring
@@ -143,7 +117,7 @@ push_recency_reg :: proc(
         ring = &store.primary_registers
     }
 
-    push_to_ring(ring, repr, timestamp)
+    push_to_ring(ring, reprs, timestamp)
 }
 
 // Move the entry at `recency` to the front (recency 0), shifting the entries in between back one slot. Refreshes the
@@ -253,29 +227,35 @@ get_registers :: proc(store: ^Register_Store, filter: lib.Cmd_Get_Filter) -> [li
 set_named_reg :: proc(
     store: ^Register_Store,
     reg_id: lib.Reg_Id,
-    repr: lib.Data_Repr,
+    reprs: []lib.Data_Repr,
     set_mode: lib.Set_Mode,
 ) -> bool {
     idx := lib.reg_id_to_named_index(reg_id)
 
     switch set_mode {
     case .OVERWRITE:
-        overwrite_named_reg(store, idx, repr)
+        overwrite_named_reg(store, idx, reprs)
         return true
     case .APPEND:
         reg_entry := &store.named_registers[idx]
         if len(reg_entry.reprs) == 0 {
             // Nothing to append to, treat same as set
-            overwrite_named_reg(store, idx, repr)
+            overwrite_named_reg(store, idx, reprs)
             return true
         }
-        // M1: single repr, single mime. Append takes ownership of (data, mime).
-        // Free the mimes slice header here (append owns the mime string + data);
-        // deleting the []string frees the header array, not the string bytes.
-        data := repr.data
-        mime := repr.mimes[0]
-        delete(repr.mimes)
-        return append_named_reg(reg_entry, data, mime)
+        // Append the incoming plaintext representation and discard the rest: there is no meaningful way to append an
+        // image to an image. The destination's other representations are left in place, which is worth revisiting --
+        // after appending text they no longer correspond to it.
+        appended := false
+        for repr in reprs {
+            if !appended && is_plaintext_repr(repr) {
+                appended = append_named_reg(reg_entry, repr)
+            } else {
+                lib.free_data_repr(repr)
+            }
+        }
+        delete(reprs)
+        return appended
     }
 
     unreachable()
@@ -296,10 +276,10 @@ set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, d
 }
 
 // Overwrite a named reg
-overwrite_named_reg :: proc(store: ^Register_Store, idx: u8, repr: lib.Data_Repr) {
+overwrite_named_reg :: proc(store: ^Register_Store, idx: u8, reprs: []lib.Data_Repr) {
     lib.free_reg_entry(&store.named_registers[idx])
     store.named_registers[idx] = lib.Reg_Entry {
-        reprs     = lib.mime_blob_slice(repr),
+        reprs     = reprs,
         timestamp = time.time_to_unix(time.now()),
     }
 }
@@ -325,29 +305,90 @@ find_plaintext_repr :: proc(reg_entry: ^lib.Reg_Entry) -> ^lib.Data_Repr {
 // structured formats like html/png would corrupt them). Takes ownership of `data` and `mime`,
 // both must be heap-allocated as they will be freed.
 // M1: single repr, single mime; the existing repr is already text, so its mimes are left as-is.
-append_named_reg :: proc(reg_entry: ^lib.Reg_Entry, data: []u8, mime: string) -> bool {
-    dest_repr := find_plaintext_repr(reg_entry) // nil if the entry has no text representation
+// True when any of `repr`'s names is a plaintext mime.
+is_plaintext_repr :: proc(repr: lib.Data_Repr) -> bool {
+    for mime in repr.mimes {
+        if is_plaintext_mime(mime) do return true
+    }
+    return false
+}
+
+// Names present in both sets, cloned. Falls back to `text/plain` when they share none: every plaintext mime refines it,
+// so it is always a truthful label for concatenated text.
+//
+// Two passes so the result is exactly sized and its ownership is unambiguous -- slicing a [dynamic]string would hand the
+// caller a pointer whose allocation carries capacity it does not know about.
+intersect_mimes :: proc(a: []string, b: []string) -> []string {
+    count := 0
+    for m in a {
+        for n in b {
+            if m == n {
+                count += 1
+                break
+            }
+        }
+    }
+
+    if count == 0 {
+        out := make([]string, 1)
+        out[0] = strings.clone("text/plain")
+        return out
+    }
+
+    out := make([]string, count)
+    i := 0
+    for m in a {
+        for n in b {
+            if m == n {
+                out[i] = strings.clone(m)
+                i += 1
+                break
+            }
+        }
+    }
+    return out
+}
+
+// Concatenate `repr`'s bytes onto the entry's plaintext representation, taking ownership of `repr` either way.
+//
+// Append is a text operation -- concatenating two PNGs produces garbage -- and it leaves the register **text-only**:
+//
+//   - The result's names are the *intersection* of both sides'. Appending a `STRING` (latin-1) payload to a
+//     `text/plain;charset=utf-8` one does not yield valid UTF-8, so the register must stop claiming any name the incoming
+//     bytes did not also satisfy.
+//   - Every other representation is dropped, because they describe the pre-append content. Keeping a stored PNG would
+//     mean `get +a=image/png` returning an image inconsistent with `get +a`, and M5 paste offering the compositor a
+//     mismatched set.
+append_named_reg :: proc(reg_entry: ^lib.Reg_Entry, repr: lib.Data_Repr) -> bool {
+    dest := find_plaintext_repr(reg_entry) // nil if the entry has no text representation
 
     // Both sides must be plaintext to concatenate.
-    if !is_plaintext_mime(mime) || dest_repr == nil {
-        delete(data)
-        delete(mime)
+    if !is_plaintext_repr(repr) || dest == nil {
+        lib.free_data_repr(repr)
         return false
     }
 
-    // Concatenate incoming data onto the existing plaintext repr.
-    new_data, err := slice.concatenate([][]byte{dest_repr.data, data})
+    new_data, err := slice.concatenate([][]byte{dest.data, repr.data})
     if err != nil {
         log.errorf("allocator error when appending to named reg: errno %v", err)
-        delete(data)
-        delete(mime)
+        lib.free_data_repr(repr)
         return false
     }
-    delete(dest_repr.data)
-    delete(data) // caller's data, already copied into new_data
-    delete(mime) // caller's mime, register keeps its existing repr mimes
-    dest_repr.data = new_data
-    reg_entry.timestamp = time.time_to_unix(time.now())
+    new_mimes := intersect_mimes(dest.mimes, repr.mimes)
+
+    // Both salvaged values are freshly allocated, so the old entry and the incoming repr can go.
+    lib.free_reg_entry(reg_entry)
+    lib.free_data_repr(repr)
+
+    reprs := make([]lib.Data_Repr, 1)
+    reprs[0] = lib.Data_Repr {
+        data  = new_data,
+        mimes = new_mimes,
+    }
+    reg_entry^ = lib.Reg_Entry {
+        reprs     = reprs,
+        timestamp = time.time_to_unix(time.now()),
+    }
     return true
 }
 
