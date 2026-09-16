@@ -1,10 +1,12 @@
 package main
 
+import "core:encoding/base64"
 import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/linux"
 import "core:time"
+import "core:unicode/utf8"
 
 import lib "src:libclipbender"
 
@@ -218,6 +220,7 @@ parse_cmd_set_inline :: proc(
 
     // get data from stdin
     mime = "text/plain" // TODO: add resolve_mime() to introspect mime based on magic bytes
+    if !utf8.valid_string(string(data)) {mime = "application/octet-stream"}
     os_err: os.Error
     data, os_err = os.read_entire_file(stdin, context.allocator)
     if os_err != nil {
@@ -677,26 +680,62 @@ format_unix_timestamp :: proc(timestamp: i64, buf: ^[19]u8) -> string {
     return fmt.bprintf(buf[:], "%04d-%02d-%02d %02d:%02d:%02d", y, int(m), d, h, min, s)
 }
 
-// Sanitize control characters and truncate string to fit column width, appending "..." if truncated
-truncate_content :: proc(content: string, width: int) -> string {
+// Sanitize control characters and truncate string to fit column width, appending "..." if truncated.
+// Prepare a string for a fixed-width table cell: escape anything that would move the terminal cursor, truncate to
+// `width`, then pad to exactly `width`.
+//
+// Widths are counted in runes, not bytes.
+table_cell :: proc(str: string, width: int) -> string {
     escaped := strings.builder_make(context.temp_allocator)
-    for ch in content {
+    runes := 0
+    truncated := false
+    for ch in str {
+        if runes >= width - 3 {
+            // Only pay for the ellipsis if something actually remains.
+            truncated = true
+            break
+        }
+
         switch ch {
         case '\n':
             strings.write_string(&escaped, `\n`)
+            runes += 2
         case '\t':
             strings.write_string(&escaped, `\t`)
+            runes += 2
         case '\r':
             strings.write_string(&escaped, `\r`)
+            runes += 2
+        case 0 ..< 0x20, 0x7F:
+            // Every other control byte, escaped rather than printed. A form feed or an escape sequence in clipboard
+            // content would otherwise move the cursor and wreck the table -- and clipboard content is untrusted text.
+            fmt.sbprintf(&escaped, "\\x%02x", int(ch))
+            runes += 4
         case:
             strings.write_rune(&escaped, ch)
+            runes += 1
         }
     }
-    cleaned := strings.to_string(escaped)
-    if len(cleaned) <= width {
-        return cleaned
+
+    cell := strings.to_string(escaped)
+    if truncated {
+        cell = fmt.tprintf("%s...", cell)
+        runes += 3
     }
-    return fmt.tprintf("%s...", cleaned[:width - 3])
+    if runes >= width {return cell}
+    return fmt.tprintf("%s%s", cell, strings.repeat(" ", width - runes, context.temp_allocator))
+}
+
+// The content cell for one register. Non-text content is described rather than rendered: replacement characters are
+// noise, and their widths would skew the column even after escaping.
+display_content :: proc(entry: lib.Resp_Reg, width: int) -> string {
+    if entry.mime == "" {
+        return table_cell("[no printable mime]", width)
+    }
+    if !utf8.valid_string(string(entry.data)) {
+        return table_cell(fmt.tprintf("[%d bytes of binary data]", len(entry.data)), width)
+    }
+    return table_cell(string(entry.data), width)
 }
 
 // Ordered groups of register IDs for display: clipboard recency, named, primary recency, then live selections.
@@ -714,16 +753,18 @@ REG_GROUPS :: [?]Reg_Group {
 
 // Print `regs` register entries formatted as an ascii table.
 cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
-    table_top := "┌──────────┬─────────────────────┬──────────────────────────┬──────────────────────────────────────────┐"
-    table_sep := "├──────────┼─────────────────────┼──────────────────────────┼──────────────────────────────────────────┤"
-    table_bot := "└──────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┘"
+    table_top := "┌────────────┬─────────────────────┬──────────────────────────┬──────────────────────────────────────────┐"
+    table_sep := "├────────────┼─────────────────────┼──────────────────────────┼──────────────────────────────────────────┤"
+    table_bot := "└────────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┘"
     fmt.println(table_top)
     fmt.println(
-        "│ Register │ Timestamp           │ Mime Type                │ Content                                  │",
+        "│  Register  │ Timestamp           │ Mimes                    │ Content                                  │",
     )
 
-    CONTENT_FMT :: "│ % 8s │ % -10s │ % -24s │ % -40s │"
-    CONTENT_COL_WIDTH :: 40 // How much of the content to show total including truncation
+    // Mime and content cells are pre-padded by `table_cell`, so the format string must not pad them again.
+    CONTENT_FMT :: "│ % 10s │ % -19s │ %s │ %s │"
+    MIME_COL_WIDTH :: 24
+    CONTENT_COL_WIDTH :: 40
 
     ts_buf: [19]u8
     any_printed := false
@@ -736,14 +777,26 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
             if !group_printed {
                 fmt.println(table_sep)
             }
-            // M1: single blob, single mime per entry.
+
+            // The representation that was actually fetched heads the mime column, sharing the line with its content. A
+            // blank content cell would read like a bug next to a populated mime list, so say why the bytes are absent.
+            mime := entry.mime
+            if mime == "" {mime = entry.other_mimes[0]}
             fmt.printfln(
                 CONTENT_FMT,
                 lib.reg_id_to_string(id),
                 format_unix_timestamp(entry.timestamp, &ts_buf),
-                entry.mime,
-                truncate_content(string(entry.data), CONTENT_COL_WIDTH),
+                table_cell(mime, MIME_COL_WIDTH),
+                display_content(entry, CONTENT_COL_WIDTH),
             )
+
+            // Every other name the register advertises, stacked below. Not truncated: there is no other view that would
+            // show what was hidden, so a `+N more` would be a dead end.
+            others := entry.other_mimes if entry.mime != "" else entry.other_mimes[1:]
+            for other in others {
+                fmt.printfln(CONTENT_FMT, "", "", table_cell(other, MIME_COL_WIDTH), table_cell("", CONTENT_COL_WIDTH))
+            }
+
             any_printed = true
             group_printed = true
         }
@@ -751,13 +804,13 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
 
     if !any_printed {
         fmt.println(
-            "├──────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┤",
+            "├────────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┤",
         )
         fmt.println(
-            "│                                       No registers to display                                        │",
+            "│                                        No registers to display                                         │",
         )
         fmt.println(
-            "└──────────────────────────────────────────────────────────────────────────────────────────────────────┘",
+            "└────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
         )
         return
     }
@@ -765,6 +818,8 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     fmt.println(table_bot)
 }
 
+// Escape a string for a JSON string literal. Caller must have established the input is valid UTF-8 -- this iterates
+// runes, so invalid bytes would silently become U+FFFD. See `json_content` for that check.
 json_escape_string :: proc(str: string) -> string {
     escaped := strings.builder_make(context.temp_allocator)
     for ch in str {
@@ -779,6 +834,10 @@ json_escape_string :: proc(str: string) -> string {
             strings.write_string(&escaped, `\t`)
         case '\r':
             strings.write_string(&escaped, `\r`)
+        case 0 ..< 0x20:
+            // Valid UTF-8 but illegal unescaped in JSON, and clipboard text really does carry these (form feed, vertical
+            // tab, NUL from a botched copy). Without this a single stray byte makes the whole document unparseable.
+            fmt.sbprintf(&escaped, "\\u%04x", int(ch))
         case:
             strings.write_rune(&escaped, ch)
         }
@@ -786,16 +845,43 @@ json_escape_string :: proc(str: string) -> string {
     return strings.to_string(escaped)
 }
 
+// Render `data` as a JSON value: a string when it is valid UTF-8, else base64 with a sibling `content_encoding` field.
+json_content :: proc(data: []byte) -> (value: string, is_base64: bool) {
+    str := string(data)
+    if utf8.valid_string(str) {
+        return fmt.tprintf(`"%s"`, json_escape_string(str)), false
+    }
+    return fmt.tprintf(`"%s"`, base64.encode(data, allocator = context.temp_allocator)), true
+}
+
+// `mime` is the representation `content` holds; both are null when nothing matched the preference. `other_mimes` lists
+// the register's remaining names, any of which a consumer can pass back as `=mime` to fetch that representation.
 print_json_entry :: proc(entry: lib.Resp_Reg, id_str: string, printed: ^bool) {
     if printed^ {fmt.print(", ")}
-    // M1: single blob, single mime per entry.
-    fmt.printf(
-        `{{"reg": "%s", "time": "%d", "mime": "%s", "content": "%s"}}`,
-        id_str,
-        entry.timestamp,
-        json_escape_string(entry.mime),
-        json_escape_string(string(entry.data)),
-    )
+
+    fmt.printf(`{{"register": "%s", "timestamp": %d, "mime": `, id_str, entry.timestamp)
+    if entry.mime == "" {
+        fmt.print("null")
+    } else {
+        fmt.printf(`"%s"`, json_escape_string(entry.mime))
+    }
+
+    fmt.print(`, "content": `)
+    if entry.mime == "" {
+        fmt.print("null")
+    } else {
+        value, is_base64 := json_content(entry.data)
+        fmt.print(value)
+        if is_base64 {fmt.print(`, "content_encoding": "base64"`)}
+    }
+
+    fmt.print(`, "other_mimes": [`)
+    for other, i in entry.other_mimes {
+        if i > 0 {fmt.print(", ")}
+        fmt.printf(`"%s"`, json_escape_string(other))
+    }
+    fmt.print("]}")
+
     printed^ = true
 }
 
@@ -822,7 +908,9 @@ cmd_get_format_raw :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     for group in REG_GROUPS {
         for id := group.start; id <= group.end; id += 1 {
             entry := regs[id]
-            if lib.resp_reg_is_empty(entry) {continue}
+            // Skip entries with no bytes, not just absent ones: a register whose content did not match the preference
+            // would otherwise contribute a bare separator, which a consumer reads as an empty register.
+            if len(entry.data) == 0 {continue}
             if printed {fmt.print("\x00")}
             fmt.print(string(entry.data))
             printed = true

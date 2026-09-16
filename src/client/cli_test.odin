@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import "core:unicode/utf8"
 
 import lib "src:libclipbender"
 
@@ -118,39 +119,74 @@ test_parse_cmd_get_incomplete_token_error :: proc(t: ^testing.T) {
 CONTENT_COL_WIDTH :: 40
 
 @(test)
-test_truncate_content_short :: proc(t: ^testing.T) {
-    result := truncate_content("hello", CONTENT_COL_WIDTH)
-    testing.expect_value(t, result, "hello")
+test_table_cell_pads_to_width :: proc(t: ^testing.T) {
+    // Cells are pre-padded because `fmt`'s `%-Ns` pads by bytes; the table's borders depend on exact widths.
+    result := table_cell("hello", CONTENT_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+    testing.expect_value(t, result[:5], "hello")
 }
 
 @(test)
-test_truncate_content_exact :: proc(t: ^testing.T) {
-    // exactly CONTENT_COL_WIDTH chars
-    s := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 40 chars
-    result := truncate_content(s, CONTENT_COL_WIDTH)
-    testing.expect_value(t, result, s)
+test_table_cell_exact_width :: proc(t: ^testing.T) {
+    s := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // exactly 40
+    result := table_cell(s, CONTENT_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
 }
 
 @(test)
-test_truncate_content_long :: proc(t: ^testing.T) {
+test_table_cell_truncates_with_ellipsis :: proc(t: ^testing.T) {
     s := "this string is definitely longer than forty characters and should be truncated"
-    result := truncate_content(s, CONTENT_COL_WIDTH)
-    testing.expect(t, len(result) == CONTENT_COL_WIDTH)
-    // should end with "..."
-    testing.expect_value(t, result[CONTENT_COL_WIDTH - 3:], "...")
+    result := table_cell(s, CONTENT_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+    testing.expect_value(t, result[len(result) - 3:], "...")
 }
 
 @(test)
-test_truncate_content_newline :: proc(t: ^testing.T) {
-    result := truncate_content("hello\nworld", CONTENT_COL_WIDTH)
-    // newline should be replaced with visible \n
-    testing.expect_value(t, result, `hello\nworld`)
+test_table_cell_escapes_whitespace :: proc(t: ^testing.T) {
+    testing.expect_value(t, strings.trim_space(table_cell("hello\nworld", CONTENT_COL_WIDTH)), `hello\nworld`)
+    testing.expect_value(t, strings.trim_space(table_cell("hello\tworld", CONTENT_COL_WIDTH)), `hello\tworld`)
+    testing.expect_value(t, strings.trim_space(table_cell("hello\rworld", CONTENT_COL_WIDTH)), `hello\rworld`)
 }
 
 @(test)
-test_truncate_content_tab :: proc(t: ^testing.T) {
-    result := truncate_content("hello\tworld", CONTENT_COL_WIDTH)
-    testing.expect_value(t, result, `hello\tworld`)
+test_table_cell_escapes_other_control_bytes :: proc(t: ^testing.T) {
+    // A form feed printed raw moves the terminal cursor and wrecks the row. Clipboard content is untrusted text, so
+    // every control byte has to be neutralised, not just the three common whitespace ones.
+    result := table_cell("a\x01b\x0cc\x7fd", CONTENT_COL_WIDTH)
+    testing.expect_value(t, strings.trim_space(result), `a\x01b\x0cc\x7fd`)
+    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+}
+
+@(test)
+test_table_cell_multibyte_width_counted_in_runes :: proc(t: ^testing.T) {
+    // "é" is two bytes but one column: byte-based padding left the cell short and skewed every border to its right.
+    result := table_cell("ééé", CONTENT_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+}
+
+@(test)
+test_display_content_binary_is_described_not_rendered :: proc(t: ^testing.T) {
+    data := [?]byte{0x89, 'P', 'N', 'G', 0xFF, 0xFE}
+    mimes := [?]string{}
+    entry := lib.Resp_Reg {
+        mime        = "image/png",
+        data        = data[:],
+        other_mimes = mimes[:],
+    }
+    result := display_content(entry, CONTENT_COL_WIDTH)
+    testing.expect_value(t, strings.trim_space(result), "[6 bytes of binary data]")
+    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+}
+
+@(test)
+test_display_content_no_printable_mime :: proc(t: ^testing.T) {
+    others := [?]string{"image/png"}
+    entry := lib.Resp_Reg {
+        mime        = "",
+        other_mimes = others[:],
+    }
+    result := display_content(entry, CONTENT_COL_WIDTH)
+    testing.expect_value(t, strings.trim_space(result), "[no printable mime]")
 }
 
 // json_escape_string tests

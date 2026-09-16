@@ -799,12 +799,17 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (err:
 
 draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: uint, y: uint, color: u32) {
     CONTENT_WIDTH :: 100
-    reg_fmt := "% 8s  % -" + "100s"
+    // `display_content` pads to CONTENT_WIDTH itself, so the format string must not pad again.
+    reg_fmt := "% 10s  %s"
 
-    // `regs` is indexed by Reg_Id; an empty slot (no blobs) renders as a blank register line.
-    // M1: single blob, single mime per entry.
+    // `regs` is indexed by Reg_Id; a slot the response did not mention renders as a blank register line.
     entry := gui_state.regs[reg_id]
-    content := "" if lib.resp_reg_is_empty(entry) else truncate_content(string(entry.data), CONTENT_WIDTH)
+    content := ""
+    if !lib.resp_reg_is_empty(entry) {
+        // Shares the CLI's sanitising: control bytes render as garbage glyphs here rather than moving a cursor, and
+        // non-text content is described instead of drawn.
+        content = display_content(entry, CONTENT_WIDTH)
+    }
     reg_str := fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), content)
 
     draw_string(&gui_state.frame_buf, x, y, reg_str, color, &gui_state.font)
