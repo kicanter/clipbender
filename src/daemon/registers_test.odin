@@ -525,7 +525,7 @@ test_intersect_mimes :: proc(t: ^testing.T) {
     a := [?]string{"text/plain;charset=utf-8", "text/plain", "STRING"}
     b := [?]string{"text/plain", "STRING", "TEXT"}
     got := intersect_mimes(a[:], b[:])
-    defer {for m in got {delete(m)};delete(got)}
+    defer {for m in got {delete(m)}; delete(got)}
 
     // Only the names both sides claimed survive: the result is not guaranteed to still be UTF-8.
     testing.expect_value(t, len(got), 2)
@@ -538,7 +538,7 @@ test_intersect_mimes_disjoint_falls_back :: proc(t: ^testing.T) {
     a := [?]string{"UTF8_STRING"}
     b := [?]string{"TEXT"}
     got := intersect_mimes(a[:], b[:])
-    defer {for m in got {delete(m)};delete(got)}
+    defer {for m in got {delete(m)}; delete(got)}
 
     testing.expect_value(t, len(got), 1)
     testing.expect_value(t, got[0], "text/plain")

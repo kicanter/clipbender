@@ -592,10 +592,7 @@ test_resolve_blob_ranked_beats_storage_order :: proc(t: ^testing.T) {
     // inverted (reprs outer), this would return 0 -- and every single-repr test would still pass.
     html_mimes := [?]string{"text/html"}
     png_mimes := [?]string{"image/png"}
-    reprs := [?]Data_Repr {
-        data_repr_of("<p>hi</p>", html_mimes[:]),
-        data_repr_of("\x89PNG", png_mimes[:]),
-    }
+    reprs := [?]Data_Repr{data_repr_of("<p>hi</p>", html_mimes[:]), data_repr_of("\x89PNG", png_mimes[:])}
     entry := Reg_Entry {
         reprs = reprs[:],
     }
@@ -609,10 +606,7 @@ test_resolve_blob_ranked_beats_storage_order :: proc(t: ^testing.T) {
 test_resolve_blob_printable_prefers_plain_over_markup :: proc(t: ^testing.T) {
     html_mimes := [?]string{"text/html"}
     plain_mimes := [?]string{"text/plain"}
-    reprs := [?]Data_Repr {
-        data_repr_of("<p>hi</p>", html_mimes[:]),
-        data_repr_of("hi", plain_mimes[:]),
-    }
+    reprs := [?]Data_Repr{data_repr_of("<p>hi</p>", html_mimes[:]), data_repr_of("hi", plain_mimes[:])}
     entry := Reg_Entry {
         reprs = reprs[:],
     }
@@ -654,10 +648,7 @@ test_resolve_blob_app_private_never_wins_ranked :: proc(t: ^testing.T) {
     // Excluded by absence from every allowlist, not by a denylist predicate.
     chromium_mimes := [?]string{"chromium/x-web-custom-data"}
     moz_mimes := [?]string{"text/_moz_htmlcontext"}
-    reprs := [?]Data_Repr {
-        data_repr_of("junk", chromium_mimes[:]),
-        data_repr_of("moz", moz_mimes[:]),
-    }
+    reprs := [?]Data_Repr{data_repr_of("junk", chromium_mimes[:]), data_repr_of("moz", moz_mimes[:])}
     entry := Reg_Entry {
         reprs = reprs[:],
     }
@@ -673,10 +664,7 @@ test_resolve_blob_app_private_never_wins_ranked :: proc(t: ^testing.T) {
 test_resolve_blob_exact :: proc(t: ^testing.T) {
     plain_mimes := [?]string{"text/plain"}
     png_mimes := [?]string{"image/png"}
-    reprs := [?]Data_Repr {
-        data_repr_of("hi", plain_mimes[:]),
-        data_repr_of("\x89PNG", png_mimes[:]),
-    }
+    reprs := [?]Data_Repr{data_repr_of("hi", plain_mimes[:]), data_repr_of("\x89PNG", png_mimes[:])}
     entry := Reg_Entry {
         reprs = reprs[:],
     }
