@@ -576,7 +576,7 @@ Mime_Token :: struct {
 resolve_mime_groups :: proc(
     filter_args: []string,
     presence: lib.Cmd_Get_Filter,
-    default_pref: lib.Ranked_Mime,
+    default_pref: lib.Mime_Pref,
     groups: ^[lib.MAX_REGS]lib.Cmd_Get_Group,
 ) -> (
     count: int,
@@ -670,6 +670,95 @@ resolve_mime_groups :: proc(
     }
 
     return count, nil
+}
+
+// Extension -> mime for the targets people actually redirect into. Deliberately small: the general solution is parsing
+// Note: will read `/usr/share/mime/globs2` (with `/etc/mime.types` as fallback) in the future.
+OUTPUT_EXT_MIMES :: [?]struct {
+    ext:  string,
+    mime: string,
+} {
+    {".png", "image/png"},
+    {".webp", "image/webp"},
+    {".jpg", "image/jpeg"},
+    {".jpeg", "image/jpeg"},
+    {".gif", "image/gif"},
+    {".tif", "image/tiff"},
+    {".tiff", "image/tiff"},
+    {".bmp", "image/bmp"},
+    {".svg", "image/svg+xml"},
+    {".html", "text/html"},
+    {".htm", "text/html"},
+    {".md", "text/markdown"},
+    {".rtf", "text/rtf"},
+    {".json", "application/json"},
+    {".xml", "application/xml"},
+    {".csv", "text/csv"},
+    {".tsv", "text/tab-separated-values"},
+    {".txt", "text/plain"},
+    {".uri", "text/uri-list"},
+}
+
+// True when stdout is a terminal, i.e. output is being read by a human right now.
+stdout_is_terminal :: proc() -> bool {
+    return os.is_tty(os.stdout)
+}
+
+// The file stdout is redirected to, or "" when it is not a named file.
+stdout_path :: proc() -> string {
+    path, err := os.read_link("/proc/self/fd/1", context.temp_allocator)
+    if err != nil {return ""}
+    if !strings.has_prefix(path, "/") {return ""}     // `pipe:[N]`, `socket:[N]`, `anon_inode:...`
+    if strings.has_prefix(path, "/dev/") {return ""}
+    return path
+}
+
+// The mime implied by a path's extension, or "" if unrecognised.
+mime_for_path :: proc(path: string) -> string {
+    dot := strings.last_index_byte(path, '.')
+    if dot < 0 {return ""}
+    ext := strings.to_lower(path[dot:], context.temp_allocator)
+    for entry in OUTPUT_EXT_MIMES {
+        if ext == entry.ext {return entry.mime}
+    }
+    return ""
+}
+
+// Infer unstated output intent from where stdout goes. Only attempts to infer for a request of a single register and if
+// the output is not going directly to stdout.
+infer_output :: proc(
+    filter: lib.Cmd_Get_Filter,
+    format: Get_Cmd_Format,
+    pref: lib.Mime_Pref,
+    format_stated: bool,
+    pref_stated: bool,
+) -> (
+    Get_Cmd_Format,
+    lib.Mime_Pref,
+) {
+    if card(filter) != 1 || stdout_is_terminal() {return format, pref}
+
+    format := format
+    pref := pref
+    if !format_stated {format = .RAW}
+    if !pref_stated {
+        // An unrecognised or absent extension leaves RICHEST, which still gets the bytes out -- it just cannot honour
+        // the extension when a register holds several image formats.
+        if mime := mime_for_path(stdout_path()); mime != "" {
+            pref = lib.Exact_Mime(mime)
+        } else {
+            pref = lib.Ranked_Mime.RICHEST
+        }
+    }
+    return format, pref
+}
+
+// Whether the user wrote a `key=` flag.
+has_flag :: proc(args: []string, key: string) -> bool {
+    for arg in args {
+        if strings.has_prefix(arg, key) {return true}
+    }
+    return false
 }
 
 // Format unix epoch timestamp as date time
@@ -930,8 +1019,11 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         print_cmd_usage_and_exit(.GET)
     }
 
+    // Try to infer the output preference for a single-register request that isn't going to stdout.
+    out_format, out_pref := infer_output(filter, format, pref, has_flag(args, "fmt="), has_flag(args, "pref="))
+
     groups: [lib.MAX_REGS]lib.Cmd_Get_Group
-    group_count, group_err := resolve_mime_groups(args, filter, pref, &groups)
+    group_count, group_err := resolve_mime_groups(args, filter, out_pref, &groups)
     if group_err != nil {
         fmt.eprintfln("Error: %v", group_err.?)
         os.exit(1)
@@ -979,7 +1071,7 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
 
     // At this point, we either have the data or have already errored and exited.
     // Handle printing + formatting the received register entries.
-    switch format {
+    switch out_format {
     case .TABLE:
         cmd_get_format_table(&regs)
     case .JSON:
