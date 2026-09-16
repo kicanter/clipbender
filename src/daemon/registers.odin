@@ -71,29 +71,50 @@ free_live_selections :: proc(store: ^Register_Store) {
     lib.free_reg_entry(&store.primary_selection)
 }
 
+// Consume a loaded entry, returning the one blob the store can hold and releasing everything else.
+//
+// Note: lossy now (only stores one blob), but will support multi-blob in the future
+take_storable_blob :: proc(entry: lib.Reg_Entry, reg: lib.Reg_Id) -> lib.Mime_Blob {
+    if len(entry.blobs) > 1 {
+        // Only reachable from a state file this build did not write -- a newer version's, or a hand-made one -- since
+        // the store cannot hold a second blob to save in the first place.
+        log.warnf(
+            "State for register `%s` has %d representations; this build stores one, dropping %d",
+            lib.reg_id_to_string(reg),
+            len(entry.blobs),
+            len(entry.blobs) - 1,
+        )
+        for blob in entry.blobs[1:] {
+            lib.free_mime_data(blob)
+        }
+    }
+
+    first := entry.blobs[0]
+    delete(entry.blobs)
+    return first
+}
+
 load_registers :: proc(store: ^Register_Store, regs: ^[lib.MAX_REGS]lib.Reg_Entry) {
     // `regs` is indexed by Reg_Id. Recency rings are serialized most-recent-first, so within each ring we push in
     // reverse (highest recency index first) so the most recent entry ends up at the ring head.
-    // M1: single blob per entry; a populated entry has len(blobs) == 1.
-    // The blob's contents (data/mimes) transfer ownership into the store; free each source entry's `blobs`
-    // slice header afterward (unmarshal heap-allocated it), otherwise the backing array leaks.
     for i := int(lib.CLIPBOARD_END); i >= int(lib.CLIPBOARD_START); i -= 1 {
         entry := regs[i]
         if len(entry.blobs) == 0 {continue}
-        push_recency_reg(store, .CLIPBOARD, entry.blobs[0])
-        delete(entry.blobs)
+        push_recency_reg(store, .CLIPBOARD, take_storable_blob(entry, lib.Reg_Id(i)))
     }
     for i := int(lib.PRIMARY_END); i >= int(lib.PRIMARY_START); i -= 1 {
         entry := regs[i]
         if len(entry.blobs) == 0 {continue}
-        push_recency_reg(store, .PRIMARY, entry.blobs[0])
-        delete(entry.blobs)
+        push_recency_reg(store, .PRIMARY, take_storable_blob(entry, lib.Reg_Id(i)))
     }
     for i in int(lib.NAMED_START) ..= int(lib.NAMED_END) {
         entry := regs[i]
         if len(entry.blobs) == 0 {continue}
-        overwrite_named_reg(store, lib.reg_id_to_named_index(lib.Reg_Id(i)), entry.blobs[0])
-        delete(entry.blobs)
+        overwrite_named_reg(
+            store,
+            lib.reg_id_to_named_index(lib.Reg_Id(i)),
+            take_storable_blob(entry, lib.Reg_Id(i)),
+        )
     }
 }
 
