@@ -653,27 +653,39 @@ wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display,
     linux.close(write_fd)
     wl.display_flush(display)
 
-    // Wait for source app to write data, with timeout to avoid blocking forever on hung apps
+    // Wait for source app to write data, with timeout to avoid blocking forever on hung apps. Polled before every read.
     poll_fds := [1]linux.Poll_Fd{{fd = read_fd, events = {.IN}}}
     timeout: i32 = 2000 // 2s timeout
-    poll_ret, poll_err := linux.poll(poll_fds[:], timeout)
-    if poll_err != .NONE || poll_ret <= 0 {
-        log.errorf("Timed out waiting for source app to write clipboard data: errno %v", poll_err)
-        linux.close(read_fd)
-        return nil
-    }
 
     // Read all data from pipe until EOF, or until the source exceeds what we are willing to hold. Discard rather than
     // truncate because a half-read blob is not a representation of anything.
     result: [dynamic]byte
     for {
+        // Poll the FD
+        poll_ret, poll_err := linux.poll(poll_fds[:], timeout)
+        if poll_err != .NONE || poll_ret <= 0 {
+            log.errorf("Timed out waiting for source app to write mime `%s`: errno %v", mime, poll_err)
+            delete(result)
+            linux.close(read_fd)
+            return nil
+        }
+
+        // Read straight into the tail rather than staging through a scratch buffer, then trim to what actually arrived.
         old := len(result)
         resize(&result, old + lib.PIPE_READ_SIZE)
         num_bytes, err := linux.read(read_fd, result[old:])
-        if err != .NONE || num_bytes <= 0 {
-            resize(&result, old)
+        if err != .NONE {     // boooo :(
+            log.errorf("Failed reading mime `%s` from source app: errno %v", mime, err)
+            delete(result)
+            linux.close(read_fd)
+            return nil
+        } else if num_bytes == 0 {     // EOF success!
+            resize(&result, old) // discard the unfilled tail
+            break
         }
-        if len(result) + num_bytes > lib.MAX_READ_SIZE {
+        resize(&result, old + num_bytes)
+
+        if len(result) > lib.MAX_READ_SIZE {
             log.errorf(
                 "Source app wrote more than %d bytes for mime `%s`, discarding this representation",
                 lib.MAX_READ_SIZE,
