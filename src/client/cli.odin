@@ -67,7 +67,7 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
         )
     case .GET:
         fmt.eprintln(
-            "Usage: clipbender get <filter...> [fmt=<table|json|raw>]\n\n" +
+            "Usage: clipbender get <filter...> [fmt=<table|json|raw>] [pref=<printable|richest>]\n\n" +
             "Retrieve the content, mime type, and timestamp of the registers matching `filter`. `fmt=table` (the default)\n" +
             "prints an aligned table, `fmt=json` emits structured JSON, and `fmt=raw` emits just the register contents\n" +
             "separated by NUL bytes (recoverable with `read -d ''`, `xargs -0`; use `fmt=json` for binary contents).\n\n" +
@@ -76,21 +76,28 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
             "\t++numbered, ++@numbered                              Clipboard / primary recency registers\n" +
             "\t++named                                              Named registers (a-z)\n" +
             "\t++selection, ++@selection                            Live clipboard / primary selection\n\n" +
+            "Exact mime (attaches to any `+`/`++` token with `=`; quote mimes containing `;`):\n" +
+            "\t+a=image/png                                         Fetch that exact representation\n" +
+            "\t++all=text/plain                                     ...for every register\n" +
+            "\t++all=text/plain +a=image/png                        Broad default, narrow override\n" +
+            "\t'+a=text/plain;charset=utf-8'                        Quote it: `;` ends the command otherwise\n\n" +
             "Register tokens (single prefix `+`/`-`):\n" +
             "\t+adz, +038, +@038                                    Include specific registers\n" +
             "\t-adz, -038, -@038                                    Exclude specific registers\n" +
             "\t+0:5, +a:f, +@0:5                                    Include range\n" +
             "\t-0:5, -a:f, -@0:5                                    Exclude range\n\n" +
             "Examples:\n" +
-            "\tclipbender get ++all                  Print all registers.\n" +
-            "\tclipbender get ++all --@selection     Print all registers except the live primary selection.\n" +
-            "\tclipbender get ++named -adz           Print named registers except `a`, `d`, `z`.\n" +
-            "\tclipbender get +@012 +012             Print the first three numbered registers from primary and clipboard.\n" +
-            "\tclipbender get +0:5 +@0:3             Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
-            "\tclipbender get ++numbered fmt=json    Print clipboard recency registers as structured JSON.\n" +
-            "\tclipbender get ++selection            Print the live clipboard selection.\n" +
-            "\tclipbender get +a fmt=raw | wl-copy   Pipe only the contents of register `a` into wl-copy.\n" +
-            "\tclipbender get +a fmt=raw > <file>    Redirect the contents of register `a` to `file`.\n",
+            "\tclipbender get ++all                                 Print all registers.\n" +
+            "\tclipbender get ++all --@selection                    Print all registers except the live primary selection.\n" +
+            "\tclipbender get ++named -adz                          Print named registers except `a`, `d`, `z`.\n" +
+            "\tclipbender get +@012 +012                            Print the first three numbered registers from primary and clipboard.\n" +
+            "\tclipbender get +0:5 +@0:3                            Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
+            "\tclipbender get ++numbered fmt=json                   Print clipboard recency registers as structured JSON.\n" +
+            "\tclipbender get ++selection                           Print the live clipboard selection.\n" +
+            "\tclipbender get +a fmt=raw | wl-copy                  Pipe only the contents of register `a` into wl-copy.\n" +
+            "\tclipbender get +a fmt=raw > <file>                   Redirect the contents of register `a` to `file`.\n" +
+            "\tclipbender get ++all pref=richest                    Prefer the highest-fidelity representation of each register.\n" +
+            "\tclipbender get +a=image/png fmt=raw > out.png        Write register `a`'s PNG representation to a file.\n",
         )
     case .CLEAR:
         fmt.eprintln(
@@ -420,18 +427,24 @@ parse_cmd_get_keyword :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err: M
 // Named). A Primary Numbered group is denoted by a single `@` following the prefix token e.g. `+@015`.
 // * Ranges of registers may be denoted with a `:` delimiting two ends of an inclusive range following a prefix token
 // within the same "kind" (Clipboard Numbered, Primary Numbered, or Named) e.g. `+d:g`.
-// * One format flags is available and is prefixed by `fmt=`: `fmt=json` and `fmt=raw` (changes output format).
+// * An exact mime attaches to any `+`/`++` token with `=`, e.g. `+a=image/png` or `++named=text/html`.
+// * Flags are `key=value`: `fmt=table|json|raw` (output shape) and `pref=printable|richest` (mime ranking).
 parse_cmd_get :: proc(
     filter_args: []string,
 ) -> (
     filter: lib.Cmd_Get_Filter,
     format: Get_Cmd_Format,
+    pref: lib.Ranked_Mime,
     err: Maybe(string),
 ) {
     incl: lib.Cmd_Get_Filter
     excl: lib.Cmd_Get_Filter
-    format = .TABLE // default TODO: make user-configurable
+
+    // Flags
+    format = .TABLE // fmt= default TODO: make user-configurable
     format_set := false
+    pref = .PRINTABLE // pref= default TODO: make user-configurable
+    pref_set := false
 
     for &arg in filter_args {
         if len(arg) == 0 {     // empty string arg should just be skipped, no-op
@@ -439,33 +452,46 @@ parse_cmd_get :: proc(
         }
 
         if len(arg) == 1 {
-            return {}, {}, "incomplete token"
+            return {}, {}, {}, "incomplete token"
         }
 
         switch arg[0] {     // every arg must start with one of the prefix tokens
         case '+':
-            if arg[1] == '+' {     // double prefix include token
-                err = parse_cmd_get_keyword(&incl, arg[2:])
+            // Strip any `=mime` before dispatching so neither register nor keyword parsing has to know about it. The
+            // mime itself is re-read by `resolve_mime_groups`; validated here so a bad one is rejected once, up front.
+            token, mime, has_mime := split_mime_suffix(arg)
+            if has_mime {
+                if err = validate_exact_mime(mime); err != nil {return {}, {}, {}, err}
+            }
+            if token[1] == '+' {     // double prefix include token
+                err = parse_cmd_get_keyword(&incl, token[2:])
             } else {     // otherwise treat it as a register group
-                err = parse_cmd_get_registers(&incl, arg[1:])
+                err = parse_cmd_get_registers(&incl, token[1:])
             }
         case '-':
-            if arg[1] == '-' {     // double prefix include token
-                err = parse_cmd_get_keyword(&excl, arg[2:])
+            token, _, has_mime := split_mime_suffix(arg)
+            if has_mime {
+                // Exclusion operates on register *presence*, so "exclude `a`, but as plain text" has no coherent
+                // meaning. Silently dropping the mime would look like it worked.
+                return {}, {}, {}, fmt.tprintf("cannot attach a mime to an exclusion token (got `%v`)", arg)
+            }
+            if token[1] == '-' {     // double prefix exclude token
+                err = parse_cmd_get_keyword(&excl, token[2:])
             } else {     // otherwise treat it as a register group
-                err = parse_cmd_get_registers(&excl, arg[1:])
+                err = parse_cmd_get_registers(&excl, token[1:])
             }
         case 'a' ..= 'z':
-            // key=value flags (e.g. fmt=json, fmt=raw)
+            // key=value flags. Register tokens keep their `+` prefix precisely so they stay distinguishable from this
+            // namespace -- a bare `a=text/plain` is a flag named `a`, not register `a`.
             eq_idx := strings.index_byte(arg, '=')
             if eq_idx < 0 {
-                return {}, {}, fmt.tprintf("invalid arg, expected key=value flag (got `%v`)", arg)
+                return {}, {}, {}, fmt.tprintf("invalid arg, expected key=value flag (got `%v`)", arg)
             }
             key := arg[:eq_idx]
             value := arg[eq_idx + 1:]
             switch key {
             case "fmt":
-                if format_set {return {}, {}, "you may only specify one format flag"}
+                if format_set {return {}, {}, {}, "you may only specify one format flag"}
                 switch value {
                 case "table":
                     format = .TABLE
@@ -474,21 +500,173 @@ parse_cmd_get :: proc(
                 case "raw":
                     format = .RAW
                 case:
-                    return {}, {}, fmt.tprintf("invalid format value, expected `table`, `json`, or `raw` (got `%v`)", value)
+                    return {}, {}, {}, fmt.tprintf("invalid format value, expected `table`, `json`, or `raw` (got `%v`)", value)
                 }
                 format_set = true
+            case "pref":
+                if pref_set {return {}, {}, {}, "you may only specify one pref flag"}
+                switch value {
+                case "printable":
+                    pref = .PRINTABLE
+                case "richest":
+                    pref = .RICHEST
+                case:
+                    return {}, {}, {}, fmt.tprintf("invalid pref value, expected `printable` or `richest` (got `%v`)", value)
+                }
+                pref_set = true
             case:
-                return {}, {}, fmt.tprintf("unknown flag `%v`", key)
+                return {}, {}, {}, fmt.tprintf("unknown flag `%v`", key)
             }
         case:
-            return {}, {}, fmt.tprintf("invalid arg, each arg should start with `+`, `-`, or be a key=value flag (got `%v`)", arg)
+            return {}, {}, {}, fmt.tprintf("invalid arg, each arg should start with `+`, `-`, or be a key=value flag (got `%v`)", arg)
         }
 
-        if err != nil {return {}, {}, err}
+        if err != nil {return {}, {}, {}, err}
     }
 
     filter = incl & ~excl
-    return filter, format, {}
+    return filter, format, pref, {}
+}
+
+// Split a register token from a trailing `=mime`. Splits on the first `=` because mimes can contain them (e.g.
+// `text/plain;charset=utf-8`).
+split_mime_suffix :: proc(arg: string) -> (token: string, mime: string, has_mime: bool) {
+    eq_idx := strings.index_byte(arg, '=')
+    if eq_idx < 0 {return arg, "", false}
+    return arg[:eq_idx], arg[eq_idx + 1:], true
+}
+
+validate_exact_mime :: proc(mime: string) -> Maybe(string) {
+    if len(mime) == 0 {
+        return "empty mime after `=`"
+    }
+    if len(mime) > lib.MAX_MIME_LEN {
+        return fmt.tprintf("mime is %d bytes, the maximum is %d (got `%v`)", len(mime), lib.MAX_MIME_LEN, mime)
+    }
+    if !strings.contains(mime, "/") {
+        // Deliberately no prefix matching, unlike wl-paste's `-t image`: that discards the ranked order `pref=richest`
+        // exists to provide, since alphabetically `image/gif` would beat `image/png`.
+        return fmt.tprintf("mime must be a full `type/subtype` (got `%v`)", mime)
+    }
+    return nil
+}
+
+// One `+`/`++` token that carried an `=mime`, as the set of registers it covers plus that mime. Kept as a set rather
+// than flattened immediately because overlap resolution has to compare the sets two tokens cover.
+Mime_Token :: struct {
+    set:  lib.Cmd_Get_Filter,
+    mime: string,
+    arg:  string, // the original token, for error messages
+}
+
+// Turn the parsed args into wire groups: one group per distinct preference, together covering exactly `presence`.
+//
+// Tokens may cover overlapping register sets, and the two-mask parser is order-independent, so resolution must be too --
+// comparing the sets rather than relying on the order they were written:
+//
+//   - disjoint sets            -> no interaction
+//   - same mime on both        -> never a conflict, whatever the shapes
+//   - strict nesting           -> the narrower set wins those registers
+//   - partial overlap          -> error, because neither set contains the other and they disagree
+//
+// `++all=text/plain +a=image/png` is the useful case: a broad default with a narrow override.
+resolve_mime_groups :: proc(
+    filter_args: []string,
+    presence: lib.Cmd_Get_Filter,
+    default_pref: lib.Ranked_Mime,
+    groups: ^[lib.MAX_REGS]lib.Cmd_Get_Group,
+) -> (
+    count: int,
+    err: Maybe(string),
+) {
+    tokens: [lib.MAX_REGS]Mime_Token
+    token_count := 0
+
+    for &arg in filter_args {
+        if len(arg) < 2 || arg[0] != '+' {continue}
+        token, mime, has_mime := split_mime_suffix(arg)
+        if !has_mime {continue}
+
+        set: lib.Cmd_Get_Filter
+        if token[1] == '+' {
+            parse_cmd_get_keyword(&set, token[2:])
+        } else {
+            parse_cmd_get_registers(&set, token[1:])
+        }
+        // Excluded registers are already gone from `presence`, so they cannot be resurrected by a mime token.
+        set &= presence
+        if set == {} {continue}
+
+        if token_count == lib.MAX_REGS {
+            return 0, fmt.tprintf("too many mime selections, the maximum is %d", lib.MAX_REGS)
+        }
+        tokens[token_count] = Mime_Token {
+            set  = set,
+            mime = mime,
+            arg  = arg,
+        }
+        token_count += 1
+    }
+
+    // Validate every disagreeing pair before assigning anything, so an error names the conflict rather than whichever
+    // register happened to be visited first.
+    for i in 0 ..< token_count {
+        for j in i + 1 ..< token_count {
+            a := tokens[i]
+            b := tokens[j]
+            if a.mime == b.mime {continue}
+
+            inter := a.set & b.set
+            if inter == {} {continue}
+            // Strict nesting: the narrower set wins.
+            if inter == a.set && inter != b.set {continue}
+            if inter == b.set && inter != a.set {continue}
+
+            for bit in inter {
+                return 0, fmt.tprintf(
+                    "overlapping mime selections disagree on register `%s` (`%s` vs `%s`)",
+                    lib.reg_id_to_string(lib.Reg_Id(bit)),
+                    a.arg,
+                    b.arg,
+                )
+            }
+        }
+    }
+
+    // Narrowest covering token wins each register. Ties in cardinality mean identical sets, which the pass above
+    // already rejected unless the mimes match.
+    assigned: [lib.MAX_REGS]string
+    for bit in presence {
+        best := -1
+        for i in 0 ..< token_count {
+            if bit not_in tokens[i].set {continue}
+            if best < 0 || card(tokens[i].set) < card(tokens[best].set) {best = i}
+        }
+        if best >= 0 {assigned[bit] = tokens[best].mime}
+    }
+
+    // Partition by winning mime. Two tokens resolving to the same mime belong in one group.
+    emitted: lib.Cmd_Get_Filter
+    for bit in presence {
+        if bit in emitted {continue}
+
+        mime := assigned[bit]
+        set: lib.Cmd_Get_Filter
+        for other in presence {
+            if other in emitted {continue}
+            if assigned[other] == mime {set += {other}}
+        }
+        emitted += set
+
+        pref: lib.Mime_Pref = default_pref if mime == "" else lib.Exact_Mime(mime)
+        groups[count] = lib.Cmd_Get_Group {
+            filter = set,
+            pref   = pref,
+        }
+        count += 1
+    }
+
+    return count, nil
 }
 
 // Format unix epoch timestamp as date time
@@ -658,20 +836,27 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         print_cmd_usage_and_exit(.GET)
     }
 
-    filter, format, err := parse_cmd_get(args)
+    filter, format, pref, err := parse_cmd_get(args)
     if err != nil {
         fmt.eprintfln("Error: %v", err.?)
         print_cmd_usage_and_exit(.GET)
     }
 
-    // Send GET message.
-    // TODO: `parse_cmd_get` does not parse the `=mime` suffix yet, so every matched register collapses into one
-    // PRINTABLE group -- reproducing pre-multi-mime behavior, where there is no way to request a specific mime. Once it
-    // yields {register set, mime} per token, resolve those into groups (overlap resolution, then partition by mime) and
-    // marshal `groups[:count]`.
+    groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+    group_count, group_err := resolve_mime_groups(args, filter, pref, &groups)
+    if group_err != nil {
+        fmt.eprintfln("Error: %v", group_err.?)
+        os.exit(1)
+    }
+    if group_count == 0 {
+        // Every group must claim at least one register, so the daemon rejects an empty request.
+        fmt.eprintln("Error: filter matches no registers")
+        os.exit(1)
+    }
+
+    // Send GET message
     msg: [lib.MAX_MSG_SIZE]byte
-    groups := [?]lib.Cmd_Get_Group{{filter = filter, pref = lib.Ranked_Mime.PRINTABLE}}
-    written := lib.marshal_cmd_get(groups[:], msg[:])
+    written := lib.marshal_cmd_get(groups[:group_count], msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {
         fmt.eprintfln("Error: failed sending GET to daemon: errno %v", send_err)

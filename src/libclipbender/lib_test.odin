@@ -679,7 +679,7 @@ test_resolve_blob_exact :: proc(t: ^testing.T) {
     }
 
     expect_blob(t, &entry, Exact_Mime("image/png"), 1)
-    // An exact miss must not fall back: `'+a=image/gif' fmt=raw > out.gif` would otherwise write the wrong bytes.
+    // An exact miss must not fall back: `+a=image/gif fmt=raw > out.gif` would otherwise write the wrong bytes.
     expect_no_blob(t, &entry, Exact_Mime("image/gif"))
 }
 

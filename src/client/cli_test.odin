@@ -1,5 +1,7 @@
 package main
 
+import "core:fmt"
+import "core:strings"
 import "core:testing"
 
 import lib "src:libclipbender"
@@ -8,7 +10,7 @@ import lib "src:libclipbender"
 
 @(test)
 test_parse_cmd_get_all :: proc(t: ^testing.T) {
-    filter, format, err := parse_cmd_get({"++all"})
+    filter, format, _, err := parse_cmd_get({"++all"})
     testing.expect(t, err == nil)
     testing.expect_value(t, filter, lib.CMD_GET_FILTER_ALL)
     testing.expect_value(t, format, Get_Cmd_Format.TABLE)
@@ -16,7 +18,7 @@ test_parse_cmd_get_all :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_get_all_minus_numbered :: proc(t: ^testing.T) {
-    filter, _, err := parse_cmd_get({"++all", "--numbered"})
+    filter, _, _, err := parse_cmd_get({"++all", "--numbered"})
     testing.expect(t, err == nil)
     expected :=
         lib.CMD_GET_FILTER_NAMED +
@@ -28,7 +30,7 @@ test_parse_cmd_get_all_minus_numbered :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_get_named_group :: proc(t: ^testing.T) {
-    filter, _, err := parse_cmd_get({"+abc"})
+    filter, _, _, err := parse_cmd_get({"+abc"})
     testing.expect(t, err == nil)
     expected: lib.Cmd_Get_Filter
     expected += {10, 11, 12} // a=10, b=11, c=12
@@ -37,7 +39,7 @@ test_parse_cmd_get_named_group :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_get_clipboard_range :: proc(t: ^testing.T) {
-    filter, _, err := parse_cmd_get({"+0:5"})
+    filter, _, _, err := parse_cmd_get({"+0:5"})
     testing.expect(t, err == nil)
     expected: lib.Cmd_Get_Filter
     expected += {0, 1, 2, 3, 4, 5}
@@ -46,7 +48,7 @@ test_parse_cmd_get_clipboard_range :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_get_primary_range :: proc(t: ^testing.T) {
-    filter, _, err := parse_cmd_get({"+@0:3"})
+    filter, _, _, err := parse_cmd_get({"+@0:3"})
     testing.expect(t, err == nil)
     expected: lib.Cmd_Get_Filter
     expected += {36, 37, 38, 39} // PRIMARY_START=36
@@ -56,7 +58,7 @@ test_parse_cmd_get_primary_range :: proc(t: ^testing.T) {
 @(test)
 test_parse_cmd_get_exclusion_wins :: proc(t: ^testing.T) {
     // -a ++named should give all named minus a
-    filter, _, err := parse_cmd_get({"-a", "++named"})
+    filter, _, _, err := parse_cmd_get({"-a", "++named"})
     testing.expect(t, err == nil)
     // bit 10 (a) should not be set
     testing.expect(t, 10 not_in filter)
@@ -66,8 +68,8 @@ test_parse_cmd_get_exclusion_wins :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_get_order_independent :: proc(t: ^testing.T) {
-    filter1, _, err1 := parse_cmd_get({"++all", "-a"})
-    filter2, _, err2 := parse_cmd_get({"-a", "++all"})
+    filter1, _, _, err1 := parse_cmd_get({"++all", "-a"})
+    filter2, _, _, err2 := parse_cmd_get({"-a", "++all"})
     testing.expect(t, err1 == nil)
     testing.expect(t, err2 == nil)
     testing.expect_value(t, filter1, filter2)
@@ -75,39 +77,39 @@ test_parse_cmd_get_order_independent :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_get_format_json :: proc(t: ^testing.T) {
-    _, format, err := parse_cmd_get({"++all", "fmt=json"})
+    _, format, _, err := parse_cmd_get({"++all", "fmt=json"})
     testing.expect(t, err == nil)
     testing.expect_value(t, format, Get_Cmd_Format.JSON)
 }
 
 @(test)
 test_parse_cmd_get_format_raw :: proc(t: ^testing.T) {
-    _, format, err := parse_cmd_get({"++all", "fmt=raw"})
+    _, format, _, err := parse_cmd_get({"++all", "fmt=raw"})
     testing.expect(t, err == nil)
     testing.expect_value(t, format, Get_Cmd_Format.RAW)
 }
 
 @(test)
 test_parse_cmd_get_duplicate_format_error :: proc(t: ^testing.T) {
-    _, _, err := parse_cmd_get({"++all", "fmt=json", "fmt=raw"})
+    _, _, _, err := parse_cmd_get({"++all", "fmt=json", "fmt=raw"})
     testing.expect(t, err != nil)
 }
 
 @(test)
 test_parse_cmd_get_bare_token_error :: proc(t: ^testing.T) {
-    _, _, err := parse_cmd_get({"abc"})
+    _, _, _, err := parse_cmd_get({"abc"})
     testing.expect(t, err != nil)
 }
 
 @(test)
 test_parse_cmd_get_invalid_format_error :: proc(t: ^testing.T) {
-    _, _, err := parse_cmd_get({"++all", "fmt=xml"})
+    _, _, _, err := parse_cmd_get({"++all", "fmt=xml"})
     testing.expect(t, err != nil)
 }
 
 @(test)
 test_parse_cmd_get_incomplete_token_error :: proc(t: ^testing.T) {
-    _, _, err := parse_cmd_get({"+"})
+    _, _, _, err := parse_cmd_get({"+"})
     testing.expect(t, err != nil)
 }
 
@@ -276,7 +278,7 @@ test_parse_cmd_set_source_reg_uppercase_error :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_get_named_range :: proc(t: ^testing.T) {
-    filter, _, err := parse_cmd_get({"+a:f"})
+    filter, _, _, err := parse_cmd_get({"+a:f"})
     testing.expect(t, err == nil)
     // a=10, b=11, c=12, d=13, e=14, f=15
     for bit in 10 ..= 15 {
@@ -286,7 +288,7 @@ test_parse_cmd_get_named_range :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_get_primary_specific :: proc(t: ^testing.T) {
-    filter, _, err := parse_cmd_get({"+@038"})
+    filter, _, _, err := parse_cmd_get({"+@038"})
     testing.expect(t, err == nil)
     // PRIMARY_START=36, so @0=36, @3=39, @8=44
     testing.expect(t, 36 in filter)
@@ -297,7 +299,7 @@ test_parse_cmd_get_primary_specific :: proc(t: ^testing.T) {
 @(test)
 test_parse_cmd_get_fmt_table :: proc(t: ^testing.T) {
     // `table` is the default, but spelling it explicitly must be accepted so the set is discoverable.
-    _, format, err := parse_cmd_get({"++all", "fmt=table"})
+    _, format, _, err := parse_cmd_get({"++all", "fmt=table"})
     testing.expect(t, err == nil)
     testing.expect_value(t, format, Get_Cmd_Format.TABLE)
 }
@@ -305,12 +307,172 @@ test_parse_cmd_get_fmt_table :: proc(t: ^testing.T) {
 @(test)
 test_parse_cmd_get_fmt_table_then_other_rejected :: proc(t: ^testing.T) {
     // `.TABLE` is both the default and an explicit value, so the duplicate check cannot use it as an unset sentinel.
-    _, _, err_mixed := parse_cmd_get({"++all", "fmt=table", "fmt=json"})
+    _, _, _, err_mixed := parse_cmd_get({"++all", "fmt=table", "fmt=json"})
     testing.expect(t, err_mixed != nil, "fmt=table followed by fmt=json should be rejected")
 
-    _, _, err_dup := parse_cmd_get({"++all", "fmt=table", "fmt=table"})
+    _, _, _, err_dup := parse_cmd_get({"++all", "fmt=table", "fmt=table"})
     testing.expect(t, err_dup != nil, "duplicate fmt=table should be rejected")
 
-    _, _, err_after := parse_cmd_get({"++all", "fmt=raw", "fmt=table"})
+    _, _, _, err_after := parse_cmd_get({"++all", "fmt=raw", "fmt=table"})
     testing.expect(t, err_after != nil, "fmt=raw followed by fmt=table should be rejected")
+}
+
+// resolve_mime_groups tests. Each case runs the real arg list through parse_cmd_get first, so the presence mask and the
+// tokens come from the same source they would in `cmd_get`.
+
+resolve :: proc(
+    t: ^testing.T,
+    args: []string,
+    groups: ^[lib.MAX_REGS]lib.Cmd_Get_Group,
+    loc := #caller_location,
+) -> int {
+    filter, _, pref, err := parse_cmd_get(args)
+    testing.expect(t, err == nil, "parse should succeed", loc = loc)
+    count, gerr := resolve_mime_groups(args, filter, pref, groups)
+    testing.expect(t, gerr == nil, "resolve should succeed", loc = loc)
+    return count
+}
+
+// The group covering `reg`, or nil if none does.
+group_for_reg :: proc(groups: []lib.Cmd_Get_Group, reg: lib.Reg_Id) -> ^lib.Cmd_Get_Group {
+    for &g in groups {
+        if int(reg) in g.filter {return &g}
+    }
+    return nil
+}
+
+@(test)
+test_resolve_mime_groups_no_mimes_is_one_group :: proc(t: ^testing.T) {
+    groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+    count := resolve(t, {"++named"}, &groups)
+    testing.expect_value(t, count, 1)
+    testing.expect_value(t, groups[0].pref, lib.Mime_Pref(lib.Ranked_Mime.PRINTABLE))
+    testing.expect_value(t, groups[0].filter, lib.CMD_GET_FILTER_NAMED)
+}
+
+@(test)
+test_resolve_mime_groups_pref_flag_applies_to_unmimed :: proc(t: ^testing.T) {
+    groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+    count := resolve(t, {"++named", "pref=richest"}, &groups)
+    testing.expect_value(t, count, 1)
+    testing.expect_value(t, groups[0].pref, lib.Mime_Pref(lib.Ranked_Mime.RICHEST))
+}
+
+@(test)
+test_resolve_mime_groups_splits_by_mime :: proc(t: ^testing.T) {
+    groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+    count := resolve(t, {"+a=image/png", "+b"}, &groups)
+    testing.expect_value(t, count, 2)
+
+    a := group_for_reg(groups[:count], lib.reg_id_from_named_index(0))
+    b := group_for_reg(groups[:count], lib.reg_id_from_named_index(1))
+    testing.expect(t, a != nil && b != nil, "both registers should be covered")
+    testing.expect_value(t, a.pref, lib.Mime_Pref(lib.Exact_Mime("image/png")))
+    testing.expect_value(t, b.pref, lib.Mime_Pref(lib.Ranked_Mime.PRINTABLE))
+}
+
+@(test)
+test_resolve_mime_groups_partitions_by_mime_not_token :: proc(t: ^testing.T) {
+    // Two tokens naming the same mime must collapse into one group, not two -- the partition keys on the winning mime.
+    groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+    count := resolve(t, {"+a=text/html", "+c=text/html"}, &groups)
+    testing.expect_value(t, count, 1)
+    testing.expect_value(t, groups[0].pref, lib.Mime_Pref(lib.Exact_Mime("text/html")))
+    testing.expect(t, int(lib.reg_id_from_named_index(0)) in groups[0].filter)
+    testing.expect(t, int(lib.reg_id_from_named_index(2)) in groups[0].filter)
+}
+
+@(test)
+test_resolve_mime_groups_strict_nesting_narrower_wins :: proc(t: ^testing.T) {
+    // `++all=text/plain +a=image/png`: PNG for `a`, plain text everywhere else.
+    groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+    count := resolve(t, {"++all=text/plain", "+a=image/png"}, &groups)
+    testing.expect_value(t, count, 2)
+
+    a := group_for_reg(groups[:count], lib.reg_id_from_named_index(0))
+    z := group_for_reg(groups[:count], lib.reg_id_from_named_index(25))
+    testing.expect(t, a != nil && z != nil)
+    testing.expect_value(t, a.pref, lib.Mime_Pref(lib.Exact_Mime("image/png")))
+    testing.expect_value(t, z.pref, lib.Mime_Pref(lib.Exact_Mime("text/plain")))
+}
+
+@(test)
+test_resolve_mime_groups_order_independent :: proc(t: ^testing.T) {
+    // Same two tokens written the other way round must resolve identically.
+    a_first: [lib.MAX_REGS]lib.Cmd_Get_Group
+    n1 := resolve(t, {"++all=text/plain", "+a=image/png"}, &a_first)
+    b_first: [lib.MAX_REGS]lib.Cmd_Get_Group
+    n2 := resolve(t, {"+a=image/png", "++all=text/plain"}, &b_first)
+    testing.expect_value(t, n1, n2)
+
+    reg := lib.reg_id_from_named_index(0)
+    testing.expect_value(t, group_for_reg(a_first[:n1], reg).pref, group_for_reg(b_first[:n2], reg).pref)
+}
+
+@(test)
+test_resolve_mime_groups_partial_overlap_errors :: proc(t: ^testing.T) {
+    // `a:c` and `c:z` both claim `c` with different mimes, and neither set contains the other.
+    filter, _, pref, err := parse_cmd_get({"+a:c=text/plain", "+c:z=text/html"})
+    testing.expect(t, err == nil)
+
+    groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+    _, gerr := resolve_mime_groups({"+a:c=text/plain", "+c:z=text/html"}, filter, pref, &groups)
+    testing.expect(t, gerr != nil, "partial overlap should be rejected")
+    testing.expect(t, strings.contains(gerr.?, "`c`"), "error should name the contested register")
+}
+
+@(test)
+test_resolve_mime_groups_identical_sets_differing_mimes_errors :: proc(t: ^testing.T) {
+    // Identical sets are not nesting: without the `inter != b.set` guard this would look like one nested in the other.
+    filter, _, pref, err := parse_cmd_get({"+a=text/plain", "+a=text/html"})
+    testing.expect(t, err == nil)
+
+    groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+    _, gerr := resolve_mime_groups({"+a=text/plain", "+a=text/html"}, filter, pref, &groups)
+    testing.expect(t, gerr != nil, "identical sets with different mimes should be rejected")
+}
+
+@(test)
+test_resolve_mime_groups_excluded_register_drops_its_mime :: proc(t: ^testing.T) {
+    // `-a` removes `a` from presence, so its mime token covers nothing and must not resurrect it.
+    groups: [lib.MAX_REGS]lib.Cmd_Get_Group
+    count := resolve(t, {"++named", "+a=image/png", "-a"}, &groups)
+    testing.expect(t, count >= 1)
+    testing.expect(t, group_for_reg(groups[:count], lib.reg_id_from_named_index(0)) == nil)
+    for g in groups[:count] {
+        testing.expect_value(t, g.pref, lib.Mime_Pref(lib.Ranked_Mime.PRINTABLE))
+    }
+}
+
+@(test)
+test_parse_cmd_get_rejects_bad_mimes :: proc(t: ^testing.T) {
+    _, _, _, err_no_slash := parse_cmd_get({"+a=text"})
+    testing.expect(t, err_no_slash != nil, "mime without `/` should be rejected")
+
+    _, _, _, err_empty := parse_cmd_get({"+a="})
+    testing.expect(t, err_empty != nil, "empty mime should be rejected")
+
+    long: [lib.MAX_MIME_LEN + 1]byte
+    for &c in long {c = 'x'}
+    _, _, _, err_long := parse_cmd_get({fmt.tprintf("+a=%s", string(long[:]))})
+    testing.expect(t, err_long != nil, "over-long mime should be rejected")
+
+    _, _, _, err_excl := parse_cmd_get({"-a=text/plain"})
+    testing.expect(t, err_excl != nil, "mime on an exclusion token should be rejected")
+
+    _, _, _, err_bare := parse_cmd_get({"a=text/plain"})
+    testing.expect(t, err_bare != nil, "bare `a=mime` is the flag namespace, not a register")
+}
+
+@(test)
+test_parse_cmd_get_pref_flag :: proc(t: ^testing.T) {
+    _, _, pref, err := parse_cmd_get({"++all", "pref=richest"})
+    testing.expect(t, err == nil)
+    testing.expect_value(t, pref, lib.Ranked_Mime.RICHEST)
+
+    _, _, _, err_bad := parse_cmd_get({"++all", "pref=fastest"})
+    testing.expect(t, err_bad != nil, "unknown pref value should be rejected")
+
+    _, _, _, err_dup := parse_cmd_get({"++all", "pref=richest", "pref=printable"})
+    testing.expect(t, err_dup != nil, "duplicate pref flag should be rejected")
 }
