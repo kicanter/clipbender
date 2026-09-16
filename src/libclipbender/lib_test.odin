@@ -118,9 +118,10 @@ test_marshal_unmarshal_cmd_set_inline :: proc(t: ^testing.T) {
     testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.INLINE)
 
     // decode_cmd_set_inline expects buf starting after Source_Kind byte
-    dec_mime, dec_data := unmarshal_cmd_set_inline(buf[4:n])
+    dec_mime, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
     defer delete(dec_mime)
     defer delete(dec_data)
+    testing.expect_value(t, dec_err, nil)
 
     testing.expect_value(t, dec_mime, mime)
     testing.expect(t, slice.equal(dec_data, data))
@@ -531,9 +532,10 @@ test_marshal_unmarshal_cmd_set_inline_empty_data :: proc(t: ^testing.T) {
     data := []byte{}
 
     n := marshal_cmd_set_inline(dest, mode, mime, data, buf[:])
-    dec_mime, dec_data := unmarshal_cmd_set_inline(buf[4:n])
+    dec_mime, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
     defer delete(dec_mime)
     defer delete(dec_data)
+    testing.expect_value(t, dec_err, nil)
 
     testing.expect_value(t, dec_mime, mime)
     testing.expect_value(t, len(dec_data), 0)
@@ -552,9 +554,10 @@ test_marshal_unmarshal_cmd_set_inline_max_mime :: proc(t: ^testing.T) {
     data := transmute([]byte)string("test")
 
     n := marshal_cmd_set_inline(dest, mode, mime, data, buf[:])
-    dec_mime, dec_data := unmarshal_cmd_set_inline(buf[4:n])
+    dec_mime, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
     defer delete(dec_mime)
     defer delete(dec_data)
+    testing.expect_value(t, dec_err, nil)
 
     testing.expect_value(t, dec_mime, mime)
     testing.expect(t, slice.equal(dec_data, data))
@@ -745,4 +748,22 @@ test_state_size_matches_marshal :: proc(t: ^testing.T) {
 test_state_size_empty :: proc(t: ^testing.T) {
     regs: [MAX_REGS]^Reg_Entry
     testing.expect_value(t, state_size(regs), size_of(u8)) // just the entry count
+}
+
+@(test)
+test_unmarshal_cmd_set_inline_rejects_truncated :: proc(t: ^testing.T) {
+    // Reachable from the daemon's reused `data_buf`: a short SET would otherwise read whatever the previous message left
+    // behind, or slice past the end.
+    _, _, err_empty := unmarshal_cmd_set_inline([]byte{})
+    testing.expect(t, err_empty != nil, "empty buffer should be rejected")
+
+    // mime_len says 10 but only 3 bytes follow
+    short := [?]byte{10, 'a', 'b', 'c'}
+    _, _, err_short := unmarshal_cmd_set_inline(short[:])
+    testing.expect(t, err_short != nil, "mime longer than the buffer should be rejected")
+
+    // mime_len 255 used to wrap `1 + mime_len` to 0 and produce invalid slice indices
+    max_len := [?]byte{255, 'a'}
+    _, _, err_wrap := unmarshal_cmd_set_inline(max_len[:])
+    testing.expect(t, err_wrap != nil, "over-long mime length should be rejected, not wrap")
 }

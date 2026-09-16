@@ -203,6 +203,9 @@ Command_Type :: enum u8 {
 CMD_SET_REG_SIZE :: size_of(Command_Type) + (2 * size_of(Reg_Id)) + size_of(Set_Mode) + size_of(Source_Kind)
 CMD_CLEAR_SIZE :: size_of(Command_Type) + size_of(Reg_Id)
 CMD_SHUTDOWN_SIZE :: size_of(Command_Type)
+// Bytes every SET carries before its source-specific tail: REGISTER adds a source Reg_Id, INLINE adds a mime length.
+// Both tails are at least one byte, so `CMD_SET_HEADER_SIZE + 1` is the shortest legal SET.
+CMD_SET_HEADER_SIZE :: size_of(Command_Type) + size_of(Reg_Id) + size_of(Set_Mode) + size_of(Source_Kind)
 
 // For SET operations, whether the register should be overwritten or appended
 Set_Mode :: enum u8 {
@@ -772,11 +775,22 @@ unmarshal_cmd_set_reg :: proc(buf: []byte) -> Reg_Id {
 
 // SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
 // buf starts after Source_Kind byte
-unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mime: string, data: []byte) {
-    mime_len := u8(buf[0])
-    mime = strings.clone(string(buf[1:1 + mime_len]))
-    data = slice.clone(buf[1 + mime_len:])
-    return mime, data
+unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mime: string, data: []byte, err: Maybe(string)) {
+    if len(buf) == 0 {
+        return "", nil, "SET request truncated: missing mime length"
+    }
+    mime_len := int(buf[0])
+    if size_of(u8) + mime_len > len(buf) {
+        return "", nil, fmt.tprintf(
+            "SET request truncated: mime needs %d bytes, %d remain",
+            mime_len,
+            len(buf) - size_of(u8),
+        )
+    }
+
+    mime = strings.clone(string(buf[size_of(u8):][:mime_len]))
+    data = slice.clone(buf[size_of(u8) + mime_len:])
+    return mime, data, nil
 }
 
 // GET: `[1b Message_Type][1b group_count]` then per group:

@@ -122,6 +122,17 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
     case lib.Command_Type.SET:
         // Client is not allowed to overwrite numbered registers
         log.debugf("Got set message: %v", data_buf[:bytes_read])
+
+        // Validate before reading the header: any local process can write to this socket, and `data_buf` is a reused
+        // global, so a short message would otherwise parse whatever the previous one left behind -- and a SET shorter
+        // than 5 bytes would panic on the INLINE branch's `data_buf[4:bytes_read]` slice.
+        if bytes_read < lib.CMD_SET_HEADER_SIZE + 1 {
+            errmsg := fmt.tprintf("SET request truncated: %d bytes, need at least %d", bytes_read, lib.CMD_SET_HEADER_SIZE + 1)
+            resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
+            send_resp(client_fd, resp_buf[:resp_written])
+            return running, dirty
+        }
+
         dest_reg := lib.Reg_Id(data_buf[1])
         set_mode := lib.Set_Mode(data_buf[2])
         source_kind := lib.Source_Kind(data_buf[3])
@@ -153,7 +164,13 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 move_recency_reg_to_front(store, .PRIMARY, lib.reg_id_to_primary_index(source_reg))
             }
         case .INLINE:
-            mime, data = lib.unmarshal_cmd_set_inline(data_buf[4:bytes_read])
+            inline_err: Maybe(string)
+            mime, data, inline_err = lib.unmarshal_cmd_set_inline(data_buf[lib.CMD_SET_HEADER_SIZE:bytes_read])
+            if inline_err != nil {
+                resp_written := lib.marshal_resp_error(inline_err.?, resp_buf[:])
+                send_resp(client_fd, resp_buf[:resp_written])
+                return running, dirty
+            }
             log.debug("INLINE:")
         }
 
@@ -232,6 +249,13 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         send_resp(client_fd, resp_buf[:resp_written])
     case lib.Command_Type.CLEAR:
         log.debugf("Got clear message: %v", data_buf[:bytes_read])
+        if bytes_read < lib.CMD_CLEAR_SIZE {
+            errmsg := fmt.tprintf("CLEAR request truncated: %d bytes, need %d", bytes_read, lib.CMD_CLEAR_SIZE)
+            resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
+            send_resp(client_fd, resp_buf[:resp_written])
+            return running, dirty
+        }
+
         reg := lib.Reg_Id(data_buf[1])
 
         resp_written: int
