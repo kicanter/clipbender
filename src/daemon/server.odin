@@ -124,8 +124,8 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         log.debugf("Got set message: %v", data_buf[:bytes_read])
 
         // Validate before reading the header: any local process can write to this socket, and `data_buf` is a reused
-        // global, so a short message would otherwise parse whatever the previous one left behind -- and a SET shorter
-        // than 5 bytes would panic on the INLINE branch's `data_buf[4:bytes_read]` slice.
+        // global, so a short message would otherwise parse whatever the previous one left behind and a SET shorter than
+        // 5 bytes would panic on the INLINE branch's `data_buf[4:bytes_read]` slice.
         if bytes_read < lib.CMD_SET_HEADER_SIZE + 1 {
             errmsg := fmt.tprintf("SET request truncated: %d bytes, need at least %d", bytes_read, lib.CMD_SET_HEADER_SIZE + 1)
             resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
