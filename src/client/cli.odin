@@ -444,10 +444,10 @@ parse_cmd_get :: proc(
     incl: lib.Cmd_Get_Filter
     excl: lib.Cmd_Get_Filter
 
-    // Flags
-    format = .TABLE // fmt= default TODO: make user-configurable
+    // Flag defaults
+    format = .TABLE // fmt= default TODO (config): allow user to set default format
     format_set := false
-    pref = .PRINTABLE // pref= default TODO: make user-configurable
+    pref = .PRINTABLE // pref= default TODO (config): allow user to set default mime preference
     pref_set := false
 
     for &arg in filter_args {

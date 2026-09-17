@@ -31,7 +31,9 @@ Server_State :: struct {
     backend:    lib.Clipboard_Backend,
     registers:  Register_Store,
     debounces:  [Debounce_Event]Debounce,
-    state_path: string,
+    // `nil` when no usable state directory exists, in which case registers live in memory only and are lost on
+    // daemon restart. See `clipbender_state_path`. Owned by `main`, which frees it when set.
+    state_path: Maybe(string),
 }
 
 // Initialize the debounce timers with their configured durations.
@@ -307,14 +309,18 @@ arm_debounce :: proc(server: ^Server_State, ring: ^uring.Ring, debounce_event: D
 
 // Serialize the current register state (recency rings + named registers, excluding live selections) to the state file.
 save_state :: proc(server: ^Server_State) {
+    // No resolvable state directory. Registers stay in memory only.
+    path, ok := server.state_path.?
+    if !ok {return}
+
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
     regs := get_registers(&server.registers, filter)
 
-    written, err := save_registers_state(server.state_path, regs)
+    written, err := save_registers_state(path, regs)
     if err != os.General_Error.None {
-        log.errorf("Failed to save register state to %s: errno %v", server.state_path, err)
+        log.errorf("Failed to save register state to %s: errno %v", path, err)
     } else {
-        log.debugf("Saved state, wrote %d bytes to %s", written, server.state_path)
+        log.debugf("Saved state, wrote %d bytes to %s", written, path)
     }
 }
 

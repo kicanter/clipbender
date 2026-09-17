@@ -141,26 +141,64 @@ get_session_type :: proc() -> Session_Type {
 
 // Protocol/IPC
 
+// A register can hold anything the user copied, including password-manager contents, so every path clipbender
+// creates is owner-only.
+CLIPBENDER_DIR_PERMS :: os.Permissions{.Read_User, .Write_User, .Execute_User} // 0700
+CLIPBENDER_FILE_PERMS :: os.Permissions{.Read_User, .Write_User} // 0600
+
+// Create `dir` and any missing parents, owner-only.
+make_private_directory :: proc(dir: string) {
+    os.make_directory_all(dir, CLIPBENDER_DIR_PERMS)
+    // chmod the directory in case it already existed with different perms
+    if err := os.chmod(dir, CLIPBENDER_DIR_PERMS); err != nil {
+        log.warnf("Failed to restrict permissions on %s (do we own it?): %v", dir, err)
+    }
+}
+
+// Return `<dir>/<subdir>/<filename>`, creating the directory owner-only.
+// Caller is responsible for freeing returned string.
+private_dir_path :: proc(dir: string, subdir: string, filename: string) -> string {
+    full_dir := fmt.tprintf("%s/%s", dir, subdir)
+    make_private_directory(full_dir)
+    return fmt.aprintf("%s/%s", full_dir, filename)
+}
+
+// Return `<$env_var>/<subdir>/<filename>`, with `ok` false if the env var does not resolve to a directory. Unlike
+// `env_path_with_fallback` there is deliberately no fallback.
+//
+// Caller is responsible for freeing the returned string but only when `ok`.
+env_path_or_none :: proc(env_var: string, subdir: string, filename: string) -> (path: string, ok: bool) {
+    env_var_dir := os.get_env(env_var, context.allocator)
+    defer delete(env_var_dir)
+
+    if len(env_var_dir) == 0 || !os.is_directory(env_var_dir) {
+        if len(env_var_dir) > 0 {
+            log.warnf("%s env var is not a directory, you should probably fix this (got %s)", env_var, env_var_dir)
+        }
+        return "", false
+    }
+
+    return private_dir_path(env_var_dir, subdir, filename), true
+}
+
 // Return a path built from an env var directory, using a fallback if the env var doesn't exist or isn't a directory.
 // Fallback to using `fallback_dir` if the `env_var` doesn't exist or isn't a directory.
+//
 // Caller is responsible for freeing returned string.
 env_path_with_fallback :: proc(env_var: string, subdir: string, filename: string, fallback_dir: string) -> string {
     env_var_dir := os.get_env(env_var, context.allocator)
     defer delete(env_var_dir)
 
-    dir: string
+    dir := env_var_dir
     if len(env_var_dir) == 0 || !os.is_directory(env_var_dir) {
         if len(env_var_dir) > 0 {
             log.warnf("%s env var is not a directory, you should probably fix this (got %s)", env_var, env_var_dir)
         }
         // Use fallback if we can't build a path from the env var
-        dir = fmt.tprintf("%s/%s", fallback_dir, subdir)
-    } else {
-        dir = fmt.tprintf("%s/%s", env_var_dir, subdir)
+        dir = fallback_dir
     }
 
-    os.make_directory_all(dir)
-    return fmt.aprintf("%s/%s", dir, filename)
+    return private_dir_path(dir, subdir, filename)
 }
 
 RUNTIME_ENV_VAR :: "XDG_RUNTIME_DIR"

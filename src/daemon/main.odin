@@ -65,13 +65,27 @@ main :: proc() {
     // Load the persisted state
     // HACK: make a config option or maybe a flag or something?
     persist_state := false
-    server.state_path = clipbender_state_path(persist_state)
-    defer delete(server.state_path)
-    {     // new block so we can release the pointers in `regs` after we load them
+    // The two modes fail differently by design: persistence was explicitly requested, so an unresolvable durable
+    // location is fatal, whereas ephemeral state is expendable and we simply stop persisting.
+    if persist_state {
+        path, err := persistent_state_path()
+        if err != nil {
+            fmt.eprintfln("Error: persistence is enabled but %s", err.?)
+            os.exit(1)
+        }
+        server.state_path = path
+    } else {
+        server.state_path = ephemeral_state_path()
+    }
+
+    defer if server.state_path != nil {delete(server.state_path.?)}
+    if path, ok := server.state_path.?; ok {
         regs: [lib.MAX_REGS]lib.Reg_Entry
-        err := load_registers_state(server.state_path, &regs)
+        err := load_registers_state(path, &regs)
         if err != os.General_Error.None {
-            log.warnf("Failed to load registers state from path %s: errno %v", server.state_path, err)
+            // TODO: free any entries `regs` picked up once `unmarshal_state` can fail partway. It currently only
+            // errors before allocating anything (the `read_entire_file` call), so dropping `regs` here leaks nothing.
+            log.warnf("Failed to load registers state from path %s: errno %v", path, err)
         } else {
             load_registers(&server.registers, &regs)
         }
