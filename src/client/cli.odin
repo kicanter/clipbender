@@ -209,7 +209,7 @@ parse_cmd_set_inline :: proc(
 ) -> (
     dest: lib.Reg_Id,
     set_mode: lib.Set_Mode,
-    mime: string,
+    mimes: []string,
     data: []byte,
     err: Maybe(string),
 ) {
@@ -225,9 +225,12 @@ parse_cmd_set_inline :: proc(
         return {}, {}, {}, {}, fmt.tprintf("could not read stdin: %v", os_err)
     }
 
-    // Derived from the bytes, so necessarily after the read.
-    mime = strings.clone(lib.resolve_mime(data))
-    return dest, set_mode, mime, data, {}
+    // Derive mimes from magic bytes, so necessarily after the read. `resolve_mimes()` borrows from `.rodata`, so clone
+    // before returning ownership to the caller.
+    ro_mimes := lib.resolve_mimes(data)
+    mimes = make([]string, len(ro_mimes))
+    for mime, i in ro_mimes {mimes[i] = strings.clone(mime)}
+    return dest, set_mode, mimes, data, {}
 }
 
 // `args` includes everything after the `clipbender set` subcommand
@@ -254,25 +257,30 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
             lib.reg_id_to_string(source_reg),
         )
     } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is passed inline by client
-        dest_reg, set_mode, mime, data, err := parse_cmd_set_inline(args[0], os.stdin)
+        dest_reg, set_mode, mimes, data, err := parse_cmd_set_inline(args[0], os.stdin)
         if err != nil {
             fmt.eprintfln("Error: %v", err.?)
             print_cmd_usage_and_exit(.SET)
         }
+        defer {
+            for mime in mimes {delete(mime)}
+            delete(mimes)
+        }
         defer delete(data)
-        msg := make([]byte, 5 + len(mime) + len(data)) // SET with inline data is N-byte message, allocate to fit
+        // SET with inline data is an N-byte message; size it to the content rather than guessing.
+        msg := make([]byte, lib.cmd_set_inline_size(mimes, data))
         defer delete(msg)
-        written := lib.marshal_cmd_set_inline(dest_reg, set_mode, mime, data, msg[:])
+        written := lib.marshal_cmd_set_inline(dest_reg, set_mode, mimes, data, msg[:])
         _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
         if send_err != nil {
             fmt.eprintfln("Error: failed sending SET (inline) to daemon: errno %v", send_err)
             os.exit(1)
         }
         success_msg = fmt.tprintf(
-            "%s dest reg `%s` with inline `%s` data `%s`",
+            "%s dest reg `%s` with inline `%v` data `%s`",
             "overwrote" if set_mode == .OVERWRITE else "appended",
             lib.reg_id_to_string(dest_reg),
-            mime,
+            mimes,
             string(data),
         )
     } else {

@@ -465,14 +465,148 @@ free_resp_reg :: proc(reg: ^Resp_Reg) {
     reg^ = {}
 }
 
-// The mime that best describes `data`, for input arriving without one -- stdin and inline `set`.
+// Magic bytes and their respective mime types
+// A byte signature and every mime the matched content legitimately claims. Plural because text-based formats are
+// genuinely more than one thing e.g. an RTF document is `application/rtf` *and* `text/plain`, while binary formats
+// carry a single name. Ordered most-specific-first.
+Magic :: struct {
+    bytes: []byte,
+    mimes: []string,
+}
+MAGIC_PNG :: Magic{{'\x89', 'P', 'N', 'G'}, {"image/png"}}
+MAGIC_JPEG :: Magic{{'\xFF', '\xD8'}, {"image/jpeg"}}
+MAGIC_BMP :: Magic{{'B', 'M'}, {"image/bmp"}}
+MAGIC_GIF :: Magic{{'G', 'I', 'F', '8'}, {"image/gif"}}
+MAGIC_TIFF_LE :: Magic{{'I', 'I', '*', '\x00'}, {"image/tiff"}}
+MAGIC_TIFF_BE :: Magic{{'M', 'M', '\x00', '*'}, {"image/tiff"}}
+MAGIC_RTF :: Magic{{'{', '\\', 'r', 't', 'f', '1'}, {"application/rtf", "text/plain"}}
+MAGIC_PDF :: Magic{{'%', 'P', 'D', 'F'}, {"application/pdf"}}
+MAGIC_ZIP :: Magic{{'P', 'K', '\x03', '\x04'}, {"application/zip"}}
+MAGIC_ZIP_EMPTY :: Magic{{'P', 'K', '\x05', '\x06'}, {"application/zip"}}
+MAGIC_ZIP_SPANNED :: Magic{{'P', 'K', '\x07', '\x08'}, {"application/zip"}}
+MAGIC_GZIP :: Magic{{'\x1F', '\x8B'}, {"application/gzip"}}
+MAGIC_ZSTD :: Magic{{'(', '\xB5', '/', '\xFD'}, {"application/zstd"}}
+MAGIC_XZ :: Magic{{'\xFD', '7', 'z', 'X', 'Z', '\x00'}, {"application/x-xz"}}
+MAGIC_BZIP2 :: Magic{{'B', 'Z', 'h'}, {"application/x-bzip2"}}
+MAGIC_7ZIP :: Magic{{'7', 'z', '\xBC', '\xAF', '\'', '\x1C'}, {"application/x-7z-compressed"}}
+MAGIC_RAR :: Magic{{'R', 'a', 'r', '!', '\x1A', '\x07'}, {"application/vnd.rar"}}
+MAGIC_POSTSCRIPT :: Magic{{'%', '!', 'P', 'S'}, {"application/postscript"}}
+MAGIC_JPEG_XL_RAW :: Magic{{'\xFF', '\x0A'}, {"image/jxl"}}
+MAGIC_JPEG_XL_BOX :: Magic {
+    {'\x00', '\x00', '\x00', '\x0C', 'J', 'X', 'L', '\x20', '\x0D', '\x0A', '\x87', '\x0A'},
+    {"image/jxl"},
+}
+MAGIC_OGG :: Magic{{'O', 'g', 'g', 'S'}, {"audio/ogg"}}
+MAGIC_FLAC :: Magic{{'f', 'L', 'a', 'C'}, {"audio/flac"}}
+MAGIC_MP3 :: Magic{{'I', 'D', '3'}, {"audio/mpeg"}}
+MAGIC_MKV_WEBM :: Magic{{'\x1A', 'E', '\xDF', '\xA3'}, {"video/x-matroska"}}
+@(rodata)
+MAGICS := [?]Magic {
+    MAGIC_PNG,
+    MAGIC_JPEG,
+    MAGIC_BMP,
+    MAGIC_GIF,
+    MAGIC_TIFF_LE,
+    MAGIC_TIFF_BE,
+    MAGIC_RTF,
+    MAGIC_PDF,
+    MAGIC_ZIP,
+    MAGIC_ZIP_EMPTY,
+    MAGIC_ZIP_SPANNED,
+    MAGIC_GZIP,
+    MAGIC_ZSTD,
+    MAGIC_XZ,
+    MAGIC_BZIP2,
+    MAGIC_7ZIP,
+    MAGIC_RAR,
+    MAGIC_POSTSCRIPT,
+    MAGIC_JPEG_XL_RAW,
+    MAGIC_JPEG_XL_BOX,
+    MAGIC_OGG,
+    MAGIC_FLAC,
+    MAGIC_MP3,
+    MAGIC_MKV_WEBM,
+}
+
+// For 2-part container magics that use some sort of first magic followed by a second magic
+Container_Magic :: struct {
+    marker_offset: int,
+    marker_bytes:  []byte,
+    magic_offset:  int,
+    magic_size:    int,
+    magics:        []Magic,
+}
+
+// RIFF magics
+MAGIC_WEBP :: Magic{{'W', 'E', 'B', 'P'}, {"image/webp"}}
+MAGIC_WAV :: Magic{{'W', 'A', 'V', 'E'}, {"audio/wav"}}
+MAGIC_AVI :: Magic{{'A', 'V', 'I', '\x20'}, {"video/x-msvideo"}}
+@(rodata)
+RIFF_CONTAINER := Container_Magic {
+    marker_offset = 0,
+    marker_bytes  = []byte{'R', 'I', 'F', 'F'},
+    magic_offset  = 8,
+    magic_size    = 4,
+    magics        = []Magic{MAGIC_WEBP, MAGIC_WAV, MAGIC_AVI},
+}
+
+// ftyp magics
+MAGIC_AVIF :: Magic{{'a', 'v', 'i', 'f'}, {"image/avif"}}
+MAGIC_HEIC :: Magic{{'h', 'e', 'i', 'c'}, {"image/heic"}}
+MAGIC_MP4 :: Magic{{'i', 's', 'o', 'm'}, {"video/mp4"}}
+MAGIC_MP42 :: Magic{{'m', 'p', '4', '2'}, {"video/mp4"}}
+@(rodata)
+FTYP_CONTAINER := Container_Magic {
+    marker_offset = 4,
+    marker_bytes  = []byte{'f', 't', 'y', 'p'},
+    magic_offset  = 8,
+    magic_size    = 4,
+    magics        = []Magic{MAGIC_AVIF, MAGIC_HEIC, MAGIC_MP4, MAGIC_MP42},
+}
+
+// Fallback results, as `@(rodata)` arrays rather than `::` slice constants: a `::` compound literal is backed by the
+// caller's stack frame, so returning a slice of one would dangle (Odin rejects it outright).
+@(rodata)
+PLAINTEXT_RESULT := [?]string{"text/plain;charset=utf-8", "text/plain"}
+@(rodata)
+BINARY_RESULT := [?]string{"application/octet-stream"}
+
+// Mimes resolved from magic bytes in binary header or fallback to text if UTF-8 or octet-stream otherwise, for input
+// arriving without one (stdin / inline `SET`). Most specific first.
 //
-// TODO: magic-byte detection for PNG (`\x89PNG`), GIF (`GIF8`), JPEG (`\xFF\xD8`), PDF (`%PDF`),
-// WEBP (`RIFF....WEBP`), plus SVG/HTML heuristics. Until then `clipbender set a < image.png` is stored as
-// `application/octet-stream`, so `get +a=image/png` will not match it.
-resolve_mime :: proc(data: []byte) -> string {
-    if utf8.valid_string(string(data)) {return "text/plain"}
-    return "application/octet-stream"
+// **Borrowed, not owned:** every string is a `.rodata` literal and the slices point into static storage, so this
+// allocates nothing and the result outlives any caller. Callers that *store* the mimes must clone each one.
+resolve_mimes :: proc(data: []byte) -> []string {
+    for magic in MAGICS {
+        if slice.has_prefix(data, magic.bytes) {
+            return magic.mimes
+        }
+    }
+    // RIFF and ISO-BMFF put a length field between their two markers, so neither is a contiguous prefix.
+    if mimes, ok := container_mimes(data, RIFF_CONTAINER); ok {return mimes}
+    if mimes, ok := container_mimes(data, FTYP_CONTAINER); ok {return mimes}
+
+    // Last, so ASCII-but-structured formats (RTF, PostScript) claim their specific mime before falling back to text.
+    if utf8.valid_string(string(data)) {return PLAINTEXT_RESULT[:]}
+    return BINARY_RESULT[:]
+}
+
+container_mimes :: proc(data: []byte, container: Container_Magic) -> (mimes: []string, ok: bool) {
+    needed_bytes := max(
+        container.marker_offset + len(container.marker_bytes),
+        container.magic_offset + container.magic_size,
+    )
+    if len(data) < needed_bytes {return nil, false}
+    if !slice.equal(
+        data[container.marker_offset:][:len(container.marker_bytes)],
+        container.marker_bytes,
+    ) {return nil, false}
+
+    magic := data[container.magic_offset:][:container.magic_size]
+    for candidate in container.magics {
+        if slice.equal(magic, candidate.bytes) {return candidate.mimes, true}
+    }
+    return nil, false
 }
 
 // Heap-allocate a one-representation slice, taking ownership of `data` and `mime` (both must be heap-allocated).
@@ -548,20 +682,32 @@ marshal_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, bu
     return CMD_SET_REG_SIZE
 }
 
-// SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
-marshal_cmd_set_inline :: proc(dest: Reg_Id, set_mode: Set_Mode, mime: string, data: []byte, buf: []byte) -> int {
+// SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime count]`
+//               then `[1b mime len][M mime]` per mime, then `[N data]`.
+//
+// Callers must reject mimes longer than MAX_MIME_LEN beforehand; `write_resp_mime` clamps rather than failing.
+marshal_cmd_set_inline :: proc(dest: Reg_Id, set_mode: Set_Mode, mimes: []string, data: []byte, buf: []byte) -> int {
     buf[0] = byte(Command_Type.SET)
     buf[1] = byte(dest)
     buf[2] = byte(set_mode)
     buf[3] = byte(Source_Kind.INLINE)
-    mime_len := u8(len(mime))
-    buf[4] = byte(mime_len)
-    written := size_of(Command_Type) + size_of(Reg_Id) + size_of(Set_Mode) + size_of(Source_Kind) + size_of(mime_len)
-    copy(buf[written:][:int(mime_len)], mime)
-    written += int(mime_len)
+    buf[4] = u8(min(len(mimes), int(max(u8))))
+    written := CMD_SET_HEADER_SIZE + size_of(u8)
+    for mime in mimes[:int(buf[4])] {
+        written += write_resp_mime(buf[written:], mime)
+    }
     copy(buf[written:][:len(data)], data)
     written += len(data)
     return written
+}
+
+// Bytes `marshal_cmd_set_inline` will write, so the caller can size its buffer exactly.
+cmd_set_inline_size :: proc(mimes: []string, data: []byte) -> int {
+    size := CMD_SET_HEADER_SIZE + size_of(u8) + len(data)
+    for mime in mimes {
+        size += size_of(u8) + min(len(mime), MAX_MIME_LEN)
+    }
+    return size
 }
 
 // GET: `[1b Message_Type][1b group_count]` then per group:
@@ -855,22 +1001,40 @@ unmarshal_cmd_set_reg :: proc(buf: []byte) -> Reg_Id {
 
 // SET (INLINE): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
 // buf starts after Source_Kind byte
-unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mime: string, data: []byte, err: Maybe(string)) {
+//
+// Returns owned `mimes` and `data`; the caller frees both. On error nothing is allocated.
+unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mimes: []string, data: []byte, err: Maybe(string)) {
     if len(buf) == 0 {
-        return "", nil, "SET request truncated: missing mime length"
+        return nil, nil, "SET request truncated: missing mime count"
     }
-    mime_len := int(buf[0])
-    if size_of(u8) + mime_len > len(buf) {
-        return "", nil, fmt.tprintf(
-            "SET request truncated: mime needs %d bytes, %d remain",
-            mime_len,
-            len(buf) - size_of(u8),
-        )
+    mime_count := int(buf[0])
+    if mime_count == 0 {
+        return nil, nil, "SET request carries no mime"
     }
 
-    mime = strings.clone(string(buf[size_of(u8):][:mime_len]))
-    data = slice.clone(buf[size_of(u8) + mime_len:])
-    return mime, data, nil
+    offset := size_of(u8)
+    mimes = make([]string, mime_count)
+    decoded := 0
+    // Clears `mimes` itself, so the error paths must *not* `return nil` for it -- a defer runs after the return values
+    // are assigned, so nilling it at the return site would leave this loop indexing a nil slice.
+    defer if err != nil {
+        for mime in mimes[:decoded] {delete(mime)}
+        delete(mimes)
+        mimes = nil
+    }
+
+    for i in 0 ..< mime_count {
+        mime, mime_err := read_resp_mime(buf, &offset)
+        if mime_err != nil {
+            err = fmt.tprintf("SET request truncated: mime %d %s", i, mime_err.?)
+            return
+        }
+        mimes[i] = mime
+        decoded += 1
+    }
+
+    data = slice.clone(buf[offset:])
+    return mimes, data, nil
 }
 
 // GET: `[1b Message_Type][1b group_count]` then per group:

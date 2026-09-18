@@ -101,29 +101,28 @@ test_marshal_unmarshal_cmd_set_inline :: proc(t: ^testing.T) {
     buf: [256]byte
     dest := reg_id_from_named_index(0)
     mode := Set_Mode.APPEND
-    mime := "text/plain"
+    mimes := []string{"application/rtf", "text/plain"}
     data := transmute([]byte)string("hello world")
 
-    n := marshal_cmd_set_inline(dest, mode, mime, data, buf[:])
-    expected_size :=
-        size_of(Command_Type) +
-        size_of(Reg_Id) +
-        size_of(Set_Mode) +
-        size_of(Source_Kind) +
-        size_of(u8) +
-        len(mime) +
-        len(data)
-    testing.expect_value(t, n, expected_size)
+    n := marshal_cmd_set_inline(dest, mode, mimes, data, buf[:])
+    testing.expect_value(t, n, cmd_set_inline_size(mimes, data))
     testing.expect_value(t, Set_Mode(buf[2]), mode)
     testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.INLINE)
+    testing.expect_value(t, int(buf[4]), len(mimes))
 
-    // decode_cmd_set_inline expects buf starting after Source_Kind byte
-    dec_mime, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
-    defer delete(dec_mime)
+    // unmarshal_cmd_set_inline expects buf starting after the Source_Kind byte
+    dec_mimes, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
+    defer {
+        for mime in dec_mimes {delete(mime)}
+        delete(dec_mimes)
+    }
     defer delete(dec_data)
     testing.expect_value(t, dec_err, nil)
 
-    testing.expect_value(t, dec_mime, mime)
+    testing.expect_value(t, len(dec_mimes), len(mimes))
+    for mime, i in mimes {
+        testing.expect_value(t, dec_mimes[i], mime)
+    }
     testing.expect(t, slice.equal(dec_data, data))
 }
 
@@ -528,16 +527,20 @@ test_marshal_unmarshal_cmd_set_inline_empty_data :: proc(t: ^testing.T) {
     buf: [256]byte
     dest := reg_id_from_named_index(0)
     mode := Set_Mode.OVERWRITE
-    mime := "text/plain"
+    mimes := []string{"text/plain"}
     data := []byte{}
 
-    n := marshal_cmd_set_inline(dest, mode, mime, data, buf[:])
-    dec_mime, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
-    defer delete(dec_mime)
+    n := marshal_cmd_set_inline(dest, mode, mimes, data, buf[:])
+    dec_mimes, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
+    defer {
+        for mime in dec_mimes {delete(mime)}
+        delete(dec_mimes)
+    }
     defer delete(dec_data)
     testing.expect_value(t, dec_err, nil)
 
-    testing.expect_value(t, dec_mime, mime)
+    testing.expect_value(t, len(dec_mimes), 1)
+    testing.expect_value(t, dec_mimes[0], mimes[0])
     testing.expect_value(t, len(dec_data), 0)
 }
 
@@ -546,20 +549,24 @@ test_marshal_unmarshal_cmd_set_inline_max_mime :: proc(t: ^testing.T) {
     buf: [512]byte
     dest := reg_id_from_named_index(0)
     mode := Set_Mode.OVERWRITE
-    // 254 characters: the practical max before u8 arithmetic overflow in unmarshal_cmd_set_inline
-    // (255 triggers a bug where `1 + u8(255)` wraps to 0, causing invalid slice indices)
-    max_mime: [254]byte
+    // `MAX_MIME_LEN` is the widest a single length byte can describe; both sides use `int` arithmetic now, so the
+    // full 255 round-trips rather than wrapping.
+    max_mime: [MAX_MIME_LEN]byte
     for &b in max_mime {b = 'x'}
-    mime := string(max_mime[:])
+    mimes := []string{string(max_mime[:])}
     data := transmute([]byte)string("test")
 
-    n := marshal_cmd_set_inline(dest, mode, mime, data, buf[:])
-    dec_mime, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
-    defer delete(dec_mime)
+    n := marshal_cmd_set_inline(dest, mode, mimes, data, buf[:])
+    dec_mimes, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
+    defer {
+        for mime in dec_mimes {delete(mime)}
+        delete(dec_mimes)
+    }
     defer delete(dec_data)
     testing.expect_value(t, dec_err, nil)
 
-    testing.expect_value(t, dec_mime, mime)
+    testing.expect_value(t, len(dec_mimes), 1)
+    testing.expect_value(t, dec_mimes[0], mimes[0])
     testing.expect(t, slice.equal(dec_data, data))
 }
 
@@ -745,13 +752,136 @@ test_unmarshal_cmd_set_inline_rejects_truncated :: proc(t: ^testing.T) {
     _, _, err_empty := unmarshal_cmd_set_inline([]byte{})
     testing.expect(t, err_empty != nil, "empty buffer should be rejected")
 
-    // mime_len says 10 but only 3 bytes follow
-    short := [?]byte{10, 'a', 'b', 'c'}
+    // Byte 0 is the mime *count*. Zero mimes leaves the payload unlabelled, which nothing downstream can resolve.
+    no_mimes := [?]byte{0, 'h', 'i'}
+    _, _, err_none := unmarshal_cmd_set_inline(no_mimes[:])
+    testing.expect(t, err_none != nil, "zero mimes should be rejected")
+
+    // count 1, then a mime length of 10 with only 3 bytes following
+    short := [?]byte{1, 10, 'a', 'b', 'c'}
     _, _, err_short := unmarshal_cmd_set_inline(short[:])
     testing.expect(t, err_short != nil, "mime longer than the buffer should be rejected")
 
-    // mime_len 255 used to wrap `1 + mime_len` to 0 and produce invalid slice indices
-    max_len := [?]byte{255, 'a'}
+    // count 255 but only one mime present: the loop must fail on a later mime, not read past the end.
+    over_count := [?]byte{255, 1, 'a'}
+    _, _, err_count := unmarshal_cmd_set_inline(over_count[:])
+    testing.expect(t, err_count != nil, "count exceeding the mimes present should be rejected")
+
+    // A mime length of 255 with nothing after it: `int` arithmetic must catch this rather than wrapping.
+    max_len := [?]byte{1, 255, 'a'}
     _, _, err_wrap := unmarshal_cmd_set_inline(max_len[:])
     testing.expect(t, err_wrap != nil, "over-long mime length should be rejected, not wrap")
+}
+
+// resolve_mimes tests. Pure byte inspection, so every case is a literal -- no compositor or filesystem needed, which
+// is the point: this is the one part of the capture path that is cheap to pin down.
+
+@(test)
+test_resolve_mimes_binary_magics :: proc(t: ^testing.T) {
+    png := [?]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0}
+    testing.expect_value(t, resolve_mimes(png[:])[0], "image/png")
+
+    jpeg := [?]byte{0xFF, 0xD8, 0xFF, 0xE0}
+    testing.expect_value(t, resolve_mimes(jpeg[:])[0], "image/jpeg")
+
+    gif := [?]byte{'G', 'I', 'F', '8', '9', 'a'}
+    testing.expect_value(t, resolve_mimes(gif[:])[0], "image/gif")
+
+    pdf := [?]byte{'%', 'P', 'D', 'F', '-', '1', '.', '4'}
+    testing.expect_value(t, resolve_mimes(pdf[:])[0], "application/pdf")
+
+    // Both TIFF byte orders are valid TIFF and share one mime.
+    tiff_le := [?]byte{'I', 'I', '*', 0x00}
+    tiff_be := [?]byte{'M', 'M', 0x00, '*'}
+    testing.expect_value(t, resolve_mimes(tiff_le[:])[0], "image/tiff")
+    testing.expect_value(t, resolve_mimes(tiff_be[:])[0], "image/tiff")
+}
+
+@(test)
+test_resolve_mimes_rtf_is_also_plaintext :: proc(t: ^testing.T) {
+    // RTF is ASCII, so it would satisfy the UTF-8 check too -- the magic must win, and both names must be claimed.
+    rtf := transmute([]byte)string(`{\rtf1\ansi hello}`)
+    mimes := resolve_mimes(rtf)
+    testing.expect_value(t, len(mimes), 2)
+    testing.expect_value(t, mimes[0], "application/rtf")
+    testing.expect_value(t, mimes[1], "text/plain")
+}
+
+@(test)
+test_resolve_mimes_text_and_binary_fallbacks :: proc(t: ^testing.T) {
+    text := resolve_mimes(transmute([]byte)string("hello world"))
+    testing.expect_value(t, len(text), 2)
+    testing.expect_value(t, text[0], "text/plain;charset=utf-8")
+    testing.expect_value(t, text[1], "text/plain")
+
+    // Lone continuation byte: not valid UTF-8, matches no magic.
+    binary := [?]byte{0x80, 0x01, 0x02}
+    testing.expect_value(t, resolve_mimes(binary[:])[0], "application/octet-stream")
+}
+
+@(test)
+test_resolve_mimes_short_input_does_not_panic :: proc(t: ^testing.T) {
+    // Every magic is longer than these, and a clipboard holds two-byte selections routinely. An earlier version
+    // sliced `data[:4]` unconditionally and panicked here.
+    testing.expect_value(t, resolve_mimes([]byte{})[0], "text/plain;charset=utf-8")
+    testing.expect_value(t, resolve_mimes(transmute([]byte)string("h"))[0], "text/plain;charset=utf-8")
+    testing.expect_value(t, resolve_mimes(transmute([]byte)string("hi"))[0], "text/plain;charset=utf-8")
+
+    // A prefix of a real magic must not match it.
+    partial := [?]byte{0x89, 'P'}
+    testing.expect_value(t, resolve_mimes(partial[:])[0], "application/octet-stream")
+}
+
+@(test)
+test_resolve_mimes_containers :: proc(t: ^testing.T) {
+    // RIFF: marker at 0, 4-byte size, form type at 8.
+    webp := [?]byte{'R', 'I', 'F', 'F', 0x24, 0x01, 0, 0, 'W', 'E', 'B', 'P', 'V', 'P', '8', ' '}
+    testing.expect_value(t, resolve_mimes(webp[:])[0], "image/webp")
+
+    wav := [?]byte{'R', 'I', 'F', 'F', 0x24, 0x01, 0, 0, 'W', 'A', 'V', 'E'}
+    testing.expect_value(t, resolve_mimes(wav[:])[0], "audio/wav")
+
+    // ISO-BMFF: 4-byte box size first, so the marker sits at offset 4 and the brand at 8.
+    avif := [?]byte{0, 0, 0, 0x1C, 'f', 't', 'y', 'p', 'a', 'v', 'i', 'f', 0, 0, 0, 0}
+    testing.expect_value(t, resolve_mimes(avif[:])[0], "image/avif")
+
+    mp4 := [?]byte{0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}
+    testing.expect_value(t, resolve_mimes(mp4[:])[0], "video/mp4")
+}
+
+@(test)
+test_resolve_mimes_container_edge_cases :: proc(t: ^testing.T) {
+    // These all fall through the container check. They then land on `text/plain` rather than octet-stream because
+    // NUL is valid UTF-8, so the bytes are technically valid text -- what matters is that no container mime is
+    // claimed and the result is never the empty "nothing matched" sentinel.
+    not_a_container :: proc(t: ^testing.T, data: []byte, why: string, loc := #caller_location) {
+        mimes := resolve_mimes(data)
+        testing.expect(t, len(mimes) > 0, why, loc = loc)
+        for mime in mimes {
+            testing.expect(t, mime != "", "a resolved mime must never be empty", loc = loc)
+            testing.expect(t, mime != "image/webp" && mime != "audio/wav", why, loc = loc)
+        }
+    }
+
+    // The marker must not be a candidate for its own discriminator: `RIFF....RIFF` once returned ok with an empty
+    // mime, which would have stored a register labelled with the "nothing matched" sentinel.
+    nested := [?]byte{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'R', 'I', 'F', 'F'}
+    not_a_container(t, nested[:], "RIFF as its own form type must not resolve as a container")
+
+    // Truncated mid-discriminator: 10 bytes, so the form type at 8..12 is not fully present.
+    truncated := [?]byte{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E'}
+    not_a_container(t, truncated[:], "a truncated form type must not match")
+
+    // A RIFF container of an unknown form type falls through rather than guessing.
+    unknown := [?]byte{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'Z', 'Z', 'Z', 'Z'}
+    not_a_container(t, unknown[:], "an unknown form type must not match")
+}
+
+@(test)
+test_resolve_mimes_result_is_borrowed_not_owned :: proc(t: ^testing.T) {
+    // The contract is that results point into `.rodata`, so repeated calls hand back the identical backing array.
+    // If this ever starts allocating, callers that only clone the strings would leak the slice.
+    a := resolve_mimes(transmute([]byte)string("hello"))
+    b := resolve_mimes(transmute([]byte)string("world"))
+    testing.expect(t, raw_data(a) == raw_data(b), "plaintext results should share static storage")
 }

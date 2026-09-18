@@ -169,14 +169,18 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 move_recency_reg_to_front(store, .PRIMARY, lib.reg_id_to_primary_index(source_reg))
             }
         case .INLINE:
-            mime, data, inline_err := lib.unmarshal_cmd_set_inline(data_buf[lib.CMD_SET_HEADER_SIZE:bytes_read])
+            mimes, data, inline_err := lib.unmarshal_cmd_set_inline(data_buf[lib.CMD_SET_HEADER_SIZE:bytes_read])
             if inline_err != nil {
                 resp_written := lib.marshal_resp_error(inline_err.?, resp_buf[:])
                 send_resp(client_fd, resp_buf[:resp_written])
                 return running, dirty
             }
-            // SET INLINE carries a single mime, so this is always one representation.
-            reprs = lib.data_repr_single(data, mime)
+            // SET INLINE carries one payload under possibly several names, so it is one repr with every mime.
+            reprs = make([]lib.Data_Repr, 1)
+            reprs[0] = lib.Data_Repr {
+                data  = data,
+                mimes = mimes,
+            }
             log.debug("INLINE:")
         }
 
