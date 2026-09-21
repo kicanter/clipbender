@@ -512,3 +512,77 @@ test_parse_cmd_get_pref_flag :: proc(t: ^testing.T) {
     _, _, _, err_dup := parse_cmd_get({"++all", "pref=richest", "pref=printable"})
     testing.expect(t, err_dup != nil, "duplicate pref flag should be rejected")
 }
+
+// parse_set_mime_flags tests
+
+@(test)
+test_parse_set_mime_flags_none :: proc(t: ^testing.T) {
+    mimes, err := parse_set_mime_flags({"a"})
+    defer delete(mimes)
+    testing.expect(t, err == nil)
+    testing.expect_value(t, len(mimes), 0)
+}
+
+@(test)
+test_parse_set_mime_flags_repeatable_and_ordered :: proc(t: ^testing.T) {
+    // Order is the point: most-specific-first is what drives resolution on the daemon side.
+    mimes, err := parse_set_mime_flags({"a", "mime=application/rtf", "mime=text/plain"})
+    defer {
+        for mime in mimes {delete(mime)}
+        delete(mimes)
+    }
+    testing.expect(t, err == nil)
+    testing.expect_value(t, len(mimes), 2)
+    testing.expect_value(t, mimes[0], "application/rtf")
+    testing.expect_value(t, mimes[1], "text/plain")
+}
+
+@(test)
+test_parse_set_mime_flags_dedupes :: proc(t: ^testing.T) {
+    // Repeats are redundant rather than contradictory, so they are dropped rather than rejected.
+    mimes, err := parse_set_mime_flags({"a", "mime=text/plain", "mime=text/plain"})
+    defer {
+        for mime in mimes {delete(mime)}
+        delete(mimes)
+    }
+    testing.expect(t, err == nil)
+    testing.expect_value(t, len(mimes), 1)
+}
+
+@(test)
+test_parse_set_mime_flags_rejects_invalid :: proc(t: ^testing.T) {
+    // Shares `validate_exact_mime` with GET, so SET rejects exactly what `+a=` rejects.
+    _, err_empty := parse_set_mime_flags({"a", "mime="})
+    testing.expect(t, err_empty != nil, "empty mime should be rejected")
+
+    _, err_no_slash := parse_set_mime_flags({"a", "mime=text"})
+    testing.expect(t, err_no_slash != nil, "mime without `/` should be rejected")
+
+    long: [lib.MAX_MIME_LEN + 1]byte
+    for &c in long {c = 'x'}
+    _, err_long := parse_set_mime_flags({"a", fmt.tprintf("mime=%s", string(long[:]))})
+    testing.expect(t, err_long != nil, "over-long mime should be rejected")
+}
+
+@(test)
+test_parse_set_mime_flags_rejects_over_count :: proc(t: ^testing.T) {
+    // The wire format's count is one byte; refusing beats letting the marshal clamp silently.
+    args := make([dynamic]string)
+    defer delete(args)
+    append(&args, "a")
+    for i in 0 ..< lib.MAX_MIME_COUNT + 1 {
+        append(&args, fmt.tprintf("mime=text/x-%d", i))
+    }
+    _, err := parse_set_mime_flags(args[:])
+    testing.expect(t, err != nil, "more than MAX_MIME_COUNT mimes should be rejected")
+}
+
+@(test)
+test_is_set_mime_flag :: proc(t: ^testing.T) {
+    testing.expect(t, is_set_mime_flag("mime=text/plain"))
+    testing.expect(t, is_set_mime_flag("mime="))
+    // Positional args and other flags must not be mistaken for it, or the SET form dispatch breaks.
+    testing.expect(t, !is_set_mime_flag("a"))
+    testing.expect(t, !is_set_mime_flag("selection"))
+    testing.expect(t, !is_set_mime_flag("fmt=json"))
+}

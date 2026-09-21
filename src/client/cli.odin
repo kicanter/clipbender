@@ -48,9 +48,13 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
     switch cmd_type {
     case .SET:
         fmt.eprintln(
-            "Usage: clipbender set <dest-reg> [source-reg]\n\n" +
+            "Usage: clipbender set <dest-reg> [source-reg] [mime=<type/subtype>]...\n\n" +
             "Set the contents of `dest-reg` to the contents of `source-reg`. If no `source-reg` is passed, stdin is\n" +
             "used. This allows the user to pipe or stdin redirect data inline to a register.\n\n" +
+            "`mime=` labels stdin explicitly and may be repeated, because one payload can legitimately carry several\n" +
+            "names (an RTF document is both `application/rtf` and `text/plain`). Listed most-specific-first. When given,\n" +
+            "it replaces magic-byte detection rather than adding to it, so name every mime you want the register to\n" +
+            "claim. Applies to stdin only, not to a `source-reg`.\n\n" +
             "Registers:\n" +
             "\t0-9                                Numbered clipboard registers: clipboard selection recency (source-only).\n" +
             "\t@0-@9                              Numbered primary registers: primary selection recency (source-only).\n" +
@@ -65,7 +69,9 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
             "\tclipbender set A selection         Append the live clipboard selection to register `a`\n" +
             "\tclipbender set @selection @5       Set the live primary selection from primary register `5`\n" +
             "\t<cmd> | clipbender set a           Set register `a` from stdin pipe\n" +
-            "\tclipbender set a < <file>          Set register `a` from stdin redirection\n",
+            "\tclipbender set a < <file>          Set register `a` from stdin redirection\n" +
+            "\tclipbender set a mime=text/markdown mime=text/plain < notes.md\n" +
+            "\t                                   Label stdin explicitly instead of detecting it\n",
         )
     case .GET:
         fmt.eprintln(
@@ -203,9 +209,12 @@ parse_cmd_set_reg :: proc(
     return dest, set_mode, source, {}
 }
 
+// `explicit_mimes` comes from `mime=` flags and takes ownership: non-empty means detection is skipped entirely and
+// these are returned verbatim, so the caller frees the same list either way.
 parse_cmd_set_inline :: proc(
     dest_arg: string,
     stdin: ^os.File,
+    explicit_mimes: []string = nil,
 ) -> (
     dest: lib.Reg_Id,
     set_mode: lib.Set_Mode,
@@ -225,6 +234,10 @@ parse_cmd_set_inline :: proc(
         return {}, {}, {}, {}, fmt.tprintf("could not read stdin: %v", os_err)
     }
 
+    if len(explicit_mimes) > 0 {
+        return dest, set_mode, explicit_mimes, data, {}
+    }
+
     // Derive mimes from magic bytes, so necessarily after the read. `resolve_mimes()` borrows from `.rodata`, so clone
     // before returning ownership to the caller.
     ro_mimes := lib.resolve_mimes(data)
@@ -235,10 +248,28 @@ parse_cmd_set_inline :: proc(
 
 // `args` includes everything after the `clipbender set` subcommand
 cmd_set :: proc(args: []string, client_fd: linux.Fd) {
-    // TODO: maybe add a `mime=` flag similar to GET's `fmt=`
+    // Flags are partitioned out before dispatch: the form is chosen by *positional* count, so a `mime=` token would
+    // otherwise make `set a mime=text/plain` look like the two-argument register form.
+    explicit_mimes, mime_err := parse_set_mime_flags(args)
+    if mime_err != nil {
+        fmt.eprintfln("Error: %v", mime_err.?)
+        print_cmd_usage_and_exit(.SET)
+    }
+    positional := make([dynamic]string, 0, len(args))
+    defer delete(positional)
+    for arg in args {
+        if !is_set_mime_flag(arg) {append(&positional, arg)}
+    }
+
     success_msg: string
-    if len(args) == 2 {     // source reg was passed as an arg by client
-        dest_reg, set_mode, source_reg, err := parse_cmd_set_reg(args[0], args[1])
+    if len(positional) == 2 {     // source reg was passed as an arg by client
+        // Relabelling a register's stored data is a different operation from labelling new input, and the source's own
+        // mimes already describe it -- so silently ignoring the flag here would be worse than refusing.
+        if len(explicit_mimes) > 0 {
+            fmt.eprintln("Error: `mime=` applies to inline/stdin input, not to a source register")
+            print_cmd_usage_and_exit(.SET)
+        }
+        dest_reg, set_mode, source_reg, err := parse_cmd_set_reg(positional[0], positional[1])
         if err != nil {
             fmt.eprintfln("Error: %v", err.?)
             print_cmd_usage_and_exit(.SET)
@@ -256,8 +287,8 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
             lib.reg_id_to_string(dest_reg),
             lib.reg_id_to_string(source_reg),
         )
-    } else if len(args) == 1 && !os.is_tty(os.stdin) {     // source data is passed inline by client
-        dest_reg, set_mode, mimes, data, err := parse_cmd_set_inline(args[0], os.stdin)
+    } else if len(positional) == 1 && !os.is_tty(os.stdin) {     // source data is passed inline by client
+        dest_reg, set_mode, mimes, data, err := parse_cmd_set_inline(positional[0], os.stdin, explicit_mimes)
         if err != nil {
             fmt.eprintfln("Error: %v", err.?)
             print_cmd_usage_and_exit(.SET)
@@ -546,6 +577,57 @@ split_mime_suffix :: proc(arg: string) -> (token: string, mime: string, has_mime
     eq_idx := strings.index_byte(arg, '=')
     if eq_idx < 0 {return arg, "", false}
     return arg[:eq_idx], arg[eq_idx + 1:], true
+}
+
+SET_MIME_FLAG :: "mime="
+
+// True for a `mime=` token, which is a flag rather than a positional argument.
+is_set_mime_flag :: proc(arg: string) -> bool {
+    return strings.has_prefix(arg, SET_MIME_FLAG)
+}
+
+// Collect the `mime=` flags from `args`, cloned so the caller owns them exactly as it owns `resolve_mimes`' output.
+//
+// **Repeatable on purpose.** One payload legitimately carries several names -- an RTF document is `application/rtf`
+// *and* `text/plain` -- which is why `resolve_mimes` returns a list. An override able to name only one would be less
+// expressive than the detection it overrides. Order is preserved: most-specific-first is what drives resolution.
+//
+// **Replaces detection, never augments it.** Naming mimes asserts what the payload is, so appending `text/plain`
+// behind the user's back would relabel data they deliberately described. `mime=application/rtf` alone therefore
+// yields a register claiming only RTF -- which reads as `[no printable mime]` under the default `pref=printable`.
+// Honest rather than surprising, and `mime=application/rtf mime=text/plain` is how you ask for both.
+parse_set_mime_flags :: proc(args: []string) -> (mimes: []string, err: Maybe(string)) {
+    collected := make([dynamic]string)
+    defer if err != nil {
+        for mime in collected {delete(mime)}
+        delete(collected)
+    }
+
+    for arg in args {
+        if !is_set_mime_flag(arg) {continue}
+        mime := arg[len(SET_MIME_FLAG):]
+        if mime_err := validate_exact_mime(mime); mime_err != nil {
+            err = fmt.tprintf("`%s`: %s", arg, mime_err.?)
+            return
+        }
+
+        // Repeats are redundant rather than contradictory -- unlike `fmt=`/`pref=`, accumulating is the whole point --
+        // so drop them silently, matching how the Wayland layer dedupes advertised mimes on append.
+        already := false
+        for existing in collected {
+            if existing == mime {already = true; break}
+        }
+        if already {continue}
+
+        // The wire format's mime count is one byte, so refuse rather than let `marshal_cmd_set_inline` clamp silently.
+        if len(collected) == lib.MAX_MIME_COUNT {
+            err = fmt.tprintf("too many `mime=` flags, the maximum is %d", lib.MAX_MIME_COUNT)
+            return
+        }
+        append(&collected, strings.clone(mime))
+    }
+
+    return collected[:], nil
 }
 
 validate_exact_mime :: proc(mime: string) -> Maybe(string) {

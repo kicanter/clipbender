@@ -198,8 +198,15 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         errmsg := ""
         if lib.reg_id_is_named(dest_reg) {
             // ownership of reprs transferred
-            set_named_reg(store, dest_reg, reprs, set_mode)
+            stored := set_named_reg(store, dest_reg, reprs, set_mode)
             reprs = nil
+            // An APPEND fails when neither side has a plaintext representation.
+            if !stored {
+                errmsg = fmt.tprintf(
+                    "cannot append to register `%s`: append requires plaintext on both sides",
+                    lib.reg_id_to_string(dest_reg),
+                )
+            }
         } else if lib.reg_id_is_selection(dest_reg) {
             // ownership of reprs transferred
             set_selection_reg(&server.backend, dest_reg, reprs)
