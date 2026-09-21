@@ -1,5 +1,6 @@
 package libclipbender
 
+import "core:fmt"
 import "core:slice"
 import "core:testing"
 
@@ -884,4 +885,60 @@ test_resolve_mimes_result_is_borrowed_not_owned :: proc(t: ^testing.T) {
     a := resolve_mimes(transmute([]byte)string("hello"))
     b := resolve_mimes(transmute([]byte)string("world"))
     testing.expect(t, raw_data(a) == raw_data(b), "plaintext results should share static storage")
+}
+
+// Table-level invariants. These walk the tables themselves rather than hand-picked inputs, so a newly added entry is
+// covered without anyone remembering to write a case for it.
+
+@(test)
+test_magic_table_invariants :: proc(t: ^testing.T) {
+    check :: proc(t: ^testing.T, m: Magic, what: string, loc := #caller_location) {
+        testing.expect(t, len(m.bytes) > 0, "a magic with no bytes matches everything", loc = loc)
+        testing.expect(t, len(m.mimes) > 0, "a magic must name at least one mime", loc = loc)
+        for mime in m.mimes {
+            // `""` is the "nothing matched" sentinel in `Resp_Reg`, so it must never reach a register as a label.
+            testing.expect(t, mime != "", "a magic's mimes must never be empty", loc = loc)
+        }
+    }
+
+    for m in MAGICS {check(t, m, "MAGICS")}
+
+    // A container's discriminators are compared with `slice.equal` against exactly `magic_size` bytes, so an entry of
+    // any other length can never match -- a mistake the compiler cannot catch.
+    for container in ([?]Container_Magic{RIFF_CONTAINER, FTYP_CONTAINER}) {
+        for m in container.magics {
+            check(t, m, "container")
+            testing.expect_value(t, len(m.bytes), container.magic_size)
+        }
+    }
+}
+
+@(test)
+test_magic_table_no_shadowing :: proc(t: ^testing.T) {
+    // Order in `MAGICS` is precedence, so an earlier entry that is a prefix of a later one makes the later one
+    // unreachable. Only that direction shadows: a later, shorter entry still wins for input too short to match the
+    // earlier, longer one.
+    for earlier, i in MAGICS {
+        for later in MAGICS[i + 1:] {
+            testing.expect(
+                t,
+                !slice.has_prefix(later.bytes, earlier.bytes),
+                fmt.tprintf("`%v` shadows the later `%v`", earlier.mimes[0], later.mimes[0]),
+            )
+        }
+    }
+}
+
+@(test)
+test_resolve_mimes_every_magic_self_matches :: proc(t: ^testing.T) {
+    // Feeding an entry's own signature back in must yield that entry's mimes. Catches a transcription error in any
+    // byte literal, including the entries no hand-written case above exercises.
+    for m in MAGICS {
+        got := resolve_mimes(m.bytes)
+        testing.expect(
+            t,
+            slice.equal(got, m.mimes),
+            fmt.tprintf("`%v` did not resolve to itself, got `%v`", m.mimes, got),
+        )
+    }
 }
