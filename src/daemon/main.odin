@@ -34,32 +34,20 @@ main :: proc() {
             fmt.eprintln("Error: failed to connect to Wayland compositor")
             os.exit(1)
         }
-        wl_fd := wayland_get_fd(&wl_state)
-
-        server.backend = {
-            fd = wl_fd,
-            dispatch = proc(state: rawptr) -> bool {return wayland_dispatch(cast(^Wayland_State)state)},
-            cleanup = proc(state: rawptr) {wayland_cleanup(cast(^Wayland_State)state)},
-            set_selection = proc(
-                state: rawptr,
-                reprs: []lib.Data_Repr,
-                type: lib.Selection_Type,
-            ) {wayland_set_selection(cast(^Wayland_State)state, reprs, type)},
-            state = rawptr(&wl_state),
-        }
+        server.backend = &wl_state
     case .X11:
         log.warn("X11 is currently unsupported for clipboard monitoring, named registers are still functional")
-    case .OTHER:
+    case:
         log.warn("Only Wayland and X11 are supported for clipboard monitoring, named registers are still functional")
     }
 
-    if server.backend.state != nil {
-        log.debugf("Clipboard backend initialized (fd=%d)", int(server.backend.fd))
+    if server.backend != nil {
+        log.debugf("Clipboard backend initialized (fd=%d)", int(backend_fd(server.backend)))
     } else {
         log.debug("No clipboard backend active, named registers are still functional")
     }
     // Cleanup backend if using supported backend
-    defer if server.backend.state != nil {server.backend.cleanup(server.backend.state)}
+    defer backend_cleanup(&server.backend)
     defer cleanup_registers(&server.registers)
 
     // Load the persisted state

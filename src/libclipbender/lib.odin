@@ -5,7 +5,6 @@ import "core:log"
 import "core:os"
 import "core:slice"
 import "core:strings"
-import "core:sys/linux"
 import "core:unicode/utf8"
 
 // Max data allowed to pass over IPC
@@ -108,20 +107,9 @@ Selection_Type :: enum u8 {
     PRIMARY,
 }
 
-// Runtime polymoprhic struct to dynamically dispatch to Wayland or X11.
-Clipboard_Backend :: struct {
-    fd:            linux.Fd,
-    dispatch:      proc(state: rawptr) -> bool,
-    cleanup:       proc(state: rawptr),
-    set_selection: proc(state: rawptr, reprs: []Data_Repr, type: Selection_Type),
-    state:         rawptr,
-}
-
-// `OTHER` is unused.
 Session_Type :: enum u8 {
     WAYLAND,
     X11,
-    OTHER,
 }
 
 get_session_type :: proc() -> Session_Type {
@@ -135,7 +123,7 @@ get_session_type :: proc() -> Session_Type {
     case "x11":
         return .X11
     case:
-        return .OTHER
+        return nil
     }
 }
 

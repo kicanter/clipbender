@@ -26,9 +26,109 @@ Debounce :: struct {
     generation: u64, // id-like field, bumped on each arm so only the timer matching the current generation commits
 }
 
+// The active clipboard backend, chosen once at startup from the session type and never reassigned. `nil` means no
+// backend is active; named registers still work; clipboard monitoring does not.
+Clipboard_Backend :: union {
+    ^Wayland_State,
+    ^X11_State, // TODO: implement X11 support
+}
+
+// The fd the event loop polls for backend events. Derived rather than cached so it cannot go stale when the backend is
+// torn down mid-run.
+backend_fd :: proc(backend: Clipboard_Backend) -> linux.Fd {
+    switch b in backend {
+    case ^Wayland_State:
+        return wayland_get_fd(b)
+    case ^X11_State:
+        return -1
+    case:
+        return -1
+    }
+}
+
+// False if the backend hit an unrecoverable error and should be torn down.
+backend_dispatch :: proc(backend: Clipboard_Backend) -> bool {
+    switch b in backend {
+    case ^Wayland_State:
+        return wayland_dispatch(b)
+    case ^X11_State:
+        return false
+    case:
+        return false
+    }
+}
+
+// Tear down the backend and mark it inactive, so `backend == nil` is the single "no monitoring" test everywhere else.
+backend_cleanup :: proc(backend: ^Clipboard_Backend) {
+    switch b in backend^ {
+    case ^Wayland_State:
+        wayland_cleanup(b)
+    case ^X11_State:
+        backend^ = nil
+        return
+    case:
+        backend^ = nil
+        return
+    }
+}
+
+// Advertise `reprs` as the `type` selection, taking ownership either way, including when no backend is active, since
+// the caller has already cloned them and has no way to reclaim them afterwards.
+backend_set_selection :: proc(backend: Clipboard_Backend, reprs: []lib.Data_Repr, type: lib.Selection_Type) {
+    switch b in backend {
+    case ^Wayland_State:
+        wayland_set_selection(b, reprs, type)
+        return
+    case ^X11_State:
+        log.error("No active clipboard backend, can't set selection")
+        lib.free_data_reprs(reprs)
+    case:
+        log.error("No active clipboard backend, can't set selection")
+        lib.free_data_reprs(reprs)
+    }
+}
+
+// True if `type`'s offer was staged since the last check, clearing the flag as it reports it. Staging happens in the
+// backend's event callbacks; the event loop uses this to decide whether to (re)arm the debounce timer.
+backend_take_staged :: proc(backend: Clipboard_Backend, type: lib.Selection_Type) -> bool {
+    switch b in backend {
+    case ^Wayland_State:
+        selection: ^Selection_State
+        switch type {
+        case .CLIPBOARD:
+            selection = &b.clipboard_state
+        case .PRIMARY:
+            selection = &b.primary_state
+        }
+        if !selection.offer.staged {return false}
+        selection.offer.staged = false
+        return true
+    case ^X11_State:
+        return false
+    case:
+        return false
+    }
+}
+
+// Commit the staged offer for `type` into `store`. True if a register changed, so state is worth saving.
+backend_commit_selection :: proc(
+    backend: Clipboard_Backend,
+    store: ^Register_Store,
+    type: lib.Selection_Type,
+) -> bool {
+    switch b in backend {
+    case ^Wayland_State:
+        return wayland_commit_selection(b, store, type)
+    case ^X11_State:
+        return false
+    case:
+        return false
+    }
+}
+
 // All otherwise-global daemon state, threaded explicitly through the event loop and its handlers.
 Server_State :: struct {
-    backend:    lib.Clipboard_Backend,
+    backend:    Clipboard_Backend,
     registers:  Register_Store,
     debounces:  [Debounce_Event]Debounce,
     // `nil` when no usable state directory exists, in which case registers live in memory only and are lost on
@@ -209,7 +309,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             }
         } else if lib.reg_id_is_selection(dest_reg) {
             // ownership of reprs transferred
-            set_selection_reg(&server.backend, dest_reg, reprs)
+            set_selection_reg(server.backend, dest_reg, reprs)
             reprs = nil
         } else {
             errmsg = fmt.tprintf(
@@ -382,27 +482,19 @@ dispatch_cqe :: proc(
     case .WAYLAND:
         log.debug("Wayland event received")
         // `dispatch` returns false if error occurs
-        if server.backend.dispatch(server.backend.state) {
+        if backend_dispatch(server.backend) {
             // Successful dispatch, re-arm the poll
-            uring.poll_add(ring, u64(Event.WAYLAND), server.backend.fd, {.IN}, {})
+            uring.poll_add(ring, u64(Event.WAYLAND), backend_fd(server.backend), {.IN}, {})
 
             // Check if either selection needs a debounce timer (re)armed
-            wl_state := cast(^Wayland_State)server.backend.state
-            if wl_state.clipboard_state.offer.staged {
-                wl_state.clipboard_state.offer.staged = false
-                arm_debounce(server, ring, .CLIPBOARD)
-            }
-            if wl_state.primary_state.offer.staged {
-                wl_state.primary_state.offer.staged = false
-                arm_debounce(server, ring, .PRIMARY)
-            }
+            if backend_take_staged(server.backend, .CLIPBOARD) {arm_debounce(server, ring, .CLIPBOARD)}
+            if backend_take_staged(server.backend, .PRIMARY) {arm_debounce(server, ring, .PRIMARY)}
         } else {
             log.warn(
                 "Clipboard backend disabled, dropping clipboard monitoring (named registers still functional). " +
                 "You'll probably want to restart `clipbenderd`.",
             )
-            server.backend.cleanup(server.backend.state)
-            server.backend.state = nil
+            backend_cleanup(&server.backend)
         }
     case .DEBOUNCE:
         // A debounce timer fired. Only commit if it matches the current generation, otherwise a newer selection event
@@ -413,13 +505,11 @@ dispatch_cqe :: proc(
         log.debugf("%v debounce timer fired, processing event", debounce_event)
         switch debounce_event {
         case .CLIPBOARD:
-            if server.backend.state != nil &&
-               wayland_commit_selection(cast(^Wayland_State)server.backend.state, &server.registers, .CLIPBOARD) {
+            if backend_commit_selection(server.backend, &server.registers, .CLIPBOARD) {
                 arm_debounce(server, ring, .SAVE_STATE)
             }
         case .PRIMARY:
-            if server.backend.state != nil &&
-               wayland_commit_selection(cast(^Wayland_State)server.backend.state, &server.registers, .PRIMARY) {
+            if backend_commit_selection(server.backend, &server.registers, .PRIMARY) {
                 arm_debounce(server, ring, .SAVE_STATE)
             }
         case .SAVE_STATE:
@@ -470,8 +560,8 @@ uds_serve :: proc(server: ^Server_State, socket_path: string) {
     fmt.assertf(ok, "Failed to submit original accept SQE, Submission queue for io_uring is full")
     _, ok = uring.read(&ring, u64(Event.SIGNAL), sig_fd, sig_buf[:], 0)
     fmt.assertf(ok, "Failed to submit original SIGNAL read SQE, submission queue for io_uring is full")
-    if server.backend.state != nil {
-        _, ok = uring.poll_add(&ring, u64(Event.WAYLAND), server.backend.fd, {.IN}, {})
+    if server.backend != nil {
+        _, ok = uring.poll_add(&ring, u64(Event.WAYLAND), backend_fd(server.backend), {.IN}, {})
         fmt.assertf(ok, "Failed to submit original WAYLAND poll SQE, submission queue for io_uring is full")
     }
 

@@ -262,16 +262,15 @@ set_named_reg :: proc(
 }
 
 // Hand `reprs` to the backend to advertise, taking ownership either way.
-set_selection_reg :: proc(backend: ^lib.Clipboard_Backend, reg_id: lib.Reg_Id, reprs: []lib.Data_Repr) {
-    if backend.state == nil {
-        log.error("No backend state, can't set selection register")
-        lib.free_data_reprs(reprs)
-        return
-    }
+set_selection_reg :: proc(backend: Clipboard_Backend, reg_id: lib.Reg_Id, reprs: []lib.Data_Repr) {
     if reg_id == lib.SELECTION_CLIPBOARD {
-        backend.set_selection(backend.state, reprs, .CLIPBOARD)
+        backend_set_selection(backend, reprs, .CLIPBOARD)
     } else if reg_id == lib.SELECTION_PRIMARY {
-        backend.set_selection(backend.state, reprs, .PRIMARY)
+        backend_set_selection(backend, reprs, .PRIMARY)
+    } else {
+        // Not a selection register, so there is nothing to advertise and nobody else owns `reprs`.
+        log.errorf("`%s` is not a selection register", lib.reg_id_to_string(reg_id))
+        lib.free_data_reprs(reprs)
     }
 }
 

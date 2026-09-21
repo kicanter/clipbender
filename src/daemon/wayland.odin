@@ -80,6 +80,8 @@ Wayland_State :: struct {
     advertised_mimes:          [dynamic]string,
 }
 
+X11_State :: struct {}
+
 // ============================== Connection Lifecycle ==============================
 
 wayland_init :: proc(wl_state: ^Wayland_State) -> (ok: bool) {
