@@ -942,3 +942,149 @@ test_resolve_mimes_every_magic_self_matches :: proc(t: ^testing.T) {
         )
     }
 }
+
+// unmarshal_state hardening. The state file is untrusted input e.g. hand-written, truncated by a crash mid-save, left
+// over from an older format, or crafted by another local user if the state directory is ever reachable.
+
+// Round-trip a single entry so the tests below can truncate and corrupt a *valid* encoding rather than a guess at one.
+state_fixture :: proc(buf: []byte) -> int {
+    data := transmute([]byte)string("hello")
+    mimes := []string{"text/plain"}
+    reprs := []Data_Repr{{data = data, mimes = mimes}}
+    entry := Reg_Entry {
+        reprs     = reprs,
+        timestamp = 1234,
+    }
+    regs: [MAX_REGS]^Reg_Entry
+    regs[reg_id_from_named_index(0)] = &entry
+    return marshal_state(regs, buf)
+}
+
+@(test)
+test_unmarshal_state_round_trips :: proc(t: ^testing.T) {
+    buf: [256]byte
+    n := state_fixture(buf[:])
+
+    dec: [MAX_REGS]Reg_Entry
+    count, err := unmarshal_state(buf[:n], &dec)
+    defer for &entry in dec {free_reg_entry(&entry)}
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, count, 1)
+
+    entry := dec[reg_id_from_named_index(0)]
+    testing.expect_value(t, entry.timestamp, 1234)
+    testing.expect_value(t, len(entry.reprs), 1)
+    testing.expect_value(t, string(entry.reprs[0].data), "hello")
+    testing.expect_value(t, entry.reprs[0].mimes[0], "text/plain")
+}
+
+@(test)
+test_unmarshal_state_rejects_empty :: proc(t: ^testing.T) {
+    // `buf[0]` read the count unconditionally, so an empty file panicked on daemon startup.
+    dec: [MAX_REGS]Reg_Entry
+    _, err := unmarshal_state([]byte{}, &dec)
+    testing.expect(t, err != nil, "empty state file should be rejected")
+}
+
+@(test)
+test_unmarshal_state_rejects_truncation_at_every_offset :: proc(t: ^testing.T) {
+    // A crash mid-save leaves a prefix of a valid file, so every prefix must be rejected rather than crash. Exhaustive
+    // because each truncation point exercises a different bounds check.
+    buf: [256]byte
+    n := state_fixture(buf[:])
+
+    for cut in 1 ..< n {
+        dec: [MAX_REGS]Reg_Entry
+        _, err := unmarshal_state(buf[:cut], &dec)
+        for &entry in dec {free_reg_entry(&entry)}
+        testing.expect(t, err != nil, fmt.tprintf("truncation to %d of %d bytes should be rejected", cut, n))
+    }
+}
+
+@(test)
+test_unmarshal_state_rejects_invalid_reg_id :: proc(t: ^testing.T) {
+    // `regs[reg_id]` indexed a fixed array with a byte straight from the file: 200 is past `MAX_REGS`.
+    buf: [256]byte
+    n := state_fixture(buf[:])
+    buf[1] = 200
+
+    dec: [MAX_REGS]Reg_Entry
+    _, err := unmarshal_state(buf[:n], &dec)
+    for &entry in dec {free_reg_entry(&entry)}
+    testing.expect(t, err != nil, "out-of-range register id should be rejected")
+}
+
+@(test)
+test_unmarshal_state_rejects_oversized_data_len :: proc(t: ^testing.T) {
+    // The case that motivated `int` arithmetic: a `data_len` of 0xFFFFFFFF must be caught by the bounds check rather
+    // than wrapping it.
+    buf: [256]byte
+    n := state_fixture(buf[:])
+
+    // Walk to the u32 data length: count + reg_id + timestamp + blob_count + mime_count + [len]"text/plain"
+    data_len_at := 1 + 1 + size_of(i64) + 1 + 1 + 1 + len("text/plain")
+    for i in 0 ..< size_of(u32) {buf[data_len_at + i] = 0xFF}
+
+    dec: [MAX_REGS]Reg_Entry
+    _, err := unmarshal_state(buf[:n], &dec)
+    for &entry in dec {free_reg_entry(&entry)}
+    testing.expect(t, err != nil, "data length beyond the buffer should be rejected")
+}
+
+@(test)
+test_unmarshal_state_rejects_zero_mimes :: proc(t: ^testing.T) {
+    // A repr with no mime cannot be resolved by anything downstream, and `mimes[0]` uses would panic on it.
+    buf: [256]byte
+    n := state_fixture(buf[:])
+    mime_count_at := 1 + 1 + size_of(i64) + 1
+    buf[mime_count_at] = 0
+
+    dec: [MAX_REGS]Reg_Entry
+    _, err := unmarshal_state(buf[:n], &dec)
+    for &entry in dec {free_reg_entry(&entry)}
+    testing.expect(t, err != nil, "a repr with zero mimes should be rejected")
+}
+
+@(test)
+test_unmarshal_state_zeroes_regs_on_error :: proc(t: ^testing.T) {
+    // The contract the caller relies on: a failed parse leaves nothing partially restored, so `main` can log and
+    // continue with empty history rather than having to unpick a half-filled array.
+    buf: [256]byte
+    n := state_fixture(buf[:])
+
+    dec: [MAX_REGS]Reg_Entry
+    count, err := unmarshal_state(buf[:n - 1], &dec)
+    testing.expect(t, err != nil)
+    testing.expect_value(t, count, 0)
+    for entry in dec {
+        testing.expect_value(t, len(entry.reprs), 0)
+    }
+}
+
+@(test)
+test_marshal_state_clamps_over_long_mime :: proc(t: ^testing.T) {
+    // `u8(len(mime))` wrapped a 256-byte name to 0, which wrote the bytes with a length of zero and desynced every
+    // later field -- producing a file that then failed to parse. Clamping keeps the encoding self-consistent.
+    long: [MAX_MIME_LEN + 1]byte
+    for &c in long {c = 'x'}
+
+    data := transmute([]byte)string("x")
+    mimes := []string{string(long[:])}
+    reprs := []Data_Repr{{data = data, mimes = mimes}}
+    entry := Reg_Entry {
+        reprs     = reprs,
+        timestamp = 1,
+    }
+    regs: [MAX_REGS]^Reg_Entry
+    regs[reg_id_from_named_index(0)] = &entry
+
+    buf := make([]byte, state_size(regs))
+    defer delete(buf)
+    n := marshal_state(regs, buf)
+
+    dec: [MAX_REGS]Reg_Entry
+    _, err := unmarshal_state(buf[:n], &dec)
+    defer for &e in dec {free_reg_entry(&e)}
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, len(dec[reg_id_from_named_index(0)].reprs[0].mimes[0]), MAX_MIME_LEN)
+}

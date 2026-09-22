@@ -69,12 +69,16 @@ main :: proc() {
     defer if server.state_path != nil {delete(server.state_path.?)}
     if path, ok := server.state_path.?; ok {
         regs: [lib.MAX_REGS]lib.Reg_Entry
-        err := load_registers_state(path, &regs)
-        if err != os.General_Error.None {
-            // TODO: free any entries `regs` picked up once `unmarshal_state` can fail partway. It currently only
-            // errors before allocating anything (the `read_entire_file` call), so dropping `regs` here leaks nothing.
+        err, parse_err := load_registers_state(path, &regs)
+        switch {
+        case err != os.General_Error.None:
+            // Expected on a first run, when no state file exists yet.
             log.warnf("Failed to load registers state from path %s: errno %v", path, err)
-        } else {
+        case parse_err != nil:
+            // `unmarshal_state` already freed whatever it decoded and zeroed `regs`, so there is nothing to clean up
+            // here and nothing partially restored. Starting empty is the correct degradation for an unusable file.
+            log.errorf("Ignoring unusable state file %s: %s", path, parse_err.?)
+        case:
             load_registers(&server.registers, &regs)
         }
     }

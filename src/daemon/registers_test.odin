@@ -607,3 +607,176 @@ test_append_non_text_repr_is_rejected :: proc(t: ^testing.T) {
     entry := get_reg(&store, reg)
     testing.expect_value(t, string(entry.reprs[0].data), "text") // unchanged
 }
+
+// Multi-repr entries.
+
+// Build an owned multi-repr entry: one repr per (data, mimes) pair, everything cloned so the store can free it.
+multi_repr :: proc(specs: []struct {
+        data:  string,
+        mimes: []string,
+    }) -> []lib.Data_Repr {
+    reprs := make([]lib.Data_Repr, len(specs))
+    for spec, i in specs {
+        mimes := make([]string, len(spec.mimes))
+        for mime, m in spec.mimes {mimes[m] = strings.clone(mime)}
+        reprs[i] = lib.Data_Repr {
+            data  = slice.clone(transmute([]byte)spec.data),
+            mimes = mimes,
+        }
+    }
+    return reprs
+}
+
+@(test)
+test_named_reg_holds_several_reprs :: proc(t: ^testing.T) {
+    store: Register_Store
+    defer cleanup_registers(&store)
+    reg := lib.reg_id_from_named_index(0)
+
+    set_named_reg(
+        &store,
+        reg,
+        multi_repr(
+            {
+                {"<b>hi</b>", {"text/html"}},
+                {"hi", {"text/plain;charset=utf-8", "text/plain"}},
+            },
+        ),
+        .OVERWRITE,
+    )
+
+    entry := get_reg(&store, reg)
+    testing.expect_value(t, len(entry.reprs), 2)
+    testing.expect_value(t, string(entry.reprs[0].data), "<b>hi</b>")
+    testing.expect_value(t, len(entry.reprs[1].mimes), 2)
+}
+
+@(test)
+test_multi_repr_resolves_per_preference :: proc(t: ^testing.T) {
+    // The payoff of multiple reprs: the same register answers differently depending on what the client asked for.
+    store: Register_Store
+    defer cleanup_registers(&store)
+    reg := lib.reg_id_from_named_index(0)
+
+    set_named_reg(
+        &store,
+        reg,
+        multi_repr({{"PNGDATA", {"image/png"}}, {"fallback text", {"text/plain"}}}),
+        .OVERWRITE,
+    )
+    entry := get_reg(&store, reg)
+
+    printable, ok_p := lib.resolve_repr(entry, lib.Ranked_Mime.PRINTABLE)
+    testing.expect(t, ok_p, "PRINTABLE should find the text repr")
+    testing.expect_value(t, string(entry.reprs[printable].data), "fallback text")
+
+    richest, ok_r := lib.resolve_repr(entry, lib.Ranked_Mime.RICHEST)
+    testing.expect(t, ok_r, "RICHEST should find the image repr")
+    testing.expect_value(t, string(entry.reprs[richest].data), "PNGDATA")
+
+    exact, ok_e := lib.resolve_repr(entry, lib.Exact_Mime("image/png"))
+    testing.expect(t, ok_e, "an exact mime should match regardless of ranking")
+    testing.expect_value(t, string(entry.reprs[exact].data), "PNGDATA")
+}
+
+@(test)
+test_append_intersects_mimes_across_reprs :: proc(t: ^testing.T) {
+    // Append is text-only and leaves the register text-only: the html repr describes the pre-append content, so keeping
+    // it would make `get +a=text/html` return markup inconsistent with `get +a`.
+    store: Register_Store
+    defer cleanup_registers(&store)
+    reg := lib.reg_id_from_named_index(0)
+
+    set_named_reg(
+        &store,
+        reg,
+        multi_repr(
+            {
+                {"<b>hi</b>", {"text/html"}},
+                {"hi", {"text/plain;charset=utf-8", "text/plain"}},
+            },
+        ),
+        .OVERWRITE,
+    )
+    // Incoming claims only `text/plain`, so the charset refinement cannot survive the concatenation.
+    ok := set_named_reg(&store, reg, multi_repr({{" there", {"text/plain"}}}), .APPEND)
+    testing.expect(t, ok, "appending plaintext onto a text repr should succeed")
+
+    entry := get_reg(&store, reg)
+    testing.expect_value(t, len(entry.reprs), 1)
+    testing.expect_value(t, string(entry.reprs[0].data), "hi there")
+    testing.expect_value(t, len(entry.reprs[0].mimes), 1)
+    testing.expect_value(t, entry.reprs[0].mimes[0], "text/plain")
+}
+
+@(test)
+test_append_drops_to_text_plain_when_mimes_disjoint :: proc(t: ^testing.T) {
+    // No shared name, so `intersect_mimes` falls back to `text/plain` -- every plaintext mime refines it, so it stays
+    // truthful for the concatenation even though neither side claimed it alone.
+    store: Register_Store
+    defer cleanup_registers(&store)
+    reg := lib.reg_id_from_named_index(0)
+
+    set_named_reg(&store, reg, multi_repr({{"latin", {"STRING"}}}), .OVERWRITE)
+    ok := set_named_reg(&store, reg, multi_repr({{" utf8", {"text/plain;charset=utf-8"}}}), .APPEND)
+    testing.expect(t, ok)
+
+    entry := get_reg(&store, reg)
+    testing.expect_value(t, len(entry.reprs[0].mimes), 1)
+    testing.expect_value(t, entry.reprs[0].mimes[0], "text/plain")
+}
+
+@(test)
+test_append_to_image_only_register_fails :: proc(t: ^testing.T) {
+    // Nothing to concatenate onto: joining two PNGs produces garbage, so the append is refused rather than attempted.
+    // The daemon now surfaces this as an error instead of reporting success.
+    store: Register_Store
+    defer cleanup_registers(&store)
+    reg := lib.reg_id_from_named_index(0)
+
+    set_named_reg(&store, reg, multi_repr({{"PNGDATA", {"image/png"}}}), .OVERWRITE)
+    ok := set_named_reg(&store, reg, multi_repr({{" text", {"text/plain"}}}), .APPEND)
+    testing.expect(t, !ok, "appending to an image-only register should fail")
+
+    entry := get_reg(&store, reg)
+    testing.expect_value(t, string(entry.reprs[0].data), "PNGDATA") // untouched
+}
+
+@(test)
+test_multi_repr_survives_state_round_trip :: proc(t: ^testing.T) {
+    // The state format keeps every repr and every mime; this pins that down for a genuinely multi-repr entry rather
+    // than the single-repr fixtures the other persistence tests use.
+    store: Register_Store
+    defer cleanup_registers(&store)
+    reg := lib.reg_id_from_named_index(3)
+    set_named_reg(
+        &store,
+        reg,
+        multi_repr(
+            {
+                {"PNGDATA", {"image/png"}},
+                {"<b>hi</b>", {"text/html"}},
+                {"hi", {"text/plain;charset=utf-8", "text/plain"}},
+            },
+        ),
+        .OVERWRITE,
+    )
+
+    regs := get_registers(&store, lib.CMD_GET_FILTER_NAMED)
+    buf := make([]byte, lib.state_size(regs))
+    defer delete(buf)
+    n := lib.marshal_state(regs, buf)
+
+    dec: [lib.MAX_REGS]lib.Reg_Entry
+    count, err := lib.unmarshal_state(buf[:n], &dec)
+    defer for &entry in dec {lib.free_reg_entry(&entry)}
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, count, 1)
+
+    restored := dec[reg]
+    testing.expect_value(t, len(restored.reprs), 3)
+    testing.expect_value(t, string(restored.reprs[0].data), "PNGDATA")
+    testing.expect_value(t, restored.reprs[0].mimes[0], "image/png")
+    testing.expect_value(t, len(restored.reprs[2].mimes), 2)
+    testing.expect_value(t, restored.reprs[2].mimes[1], "text/plain")
+}

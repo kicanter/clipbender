@@ -85,9 +85,20 @@ save_registers_state :: proc(filename: string, regs: [lib.MAX_REGS]^lib.Reg_Entr
 
 // Fills `regs` in place with owned entries (caller frees via free_reg_entry). Uses the out-param
 // shape to match unmarshal_state, which it wraps: the deserialize/own path fills a value array.
-load_registers_state :: proc(filename: string, regs: ^[lib.MAX_REGS]lib.Reg_Entry) -> os.Error {
-    data, err := os.read_entire_file(filename, context.temp_allocator)
-    if err != os.General_Error.None {return err}
-    _ = lib.unmarshal_state(data, regs)
-    return err
+//
+// A corrupt or truncated file is reported rather than partially applied: `unmarshal_state` frees whatever it decoded
+// and zeroes `regs`, so the caller starts with empty history instead of a half-restored store. `parse_err` is separate
+// from `err` because the two are not the same failure. A read error means the file is unreachable, a parse error
+// means its contents are unusable, and only the latter implies the file should probably be replaced.
+load_registers_state :: proc(
+    filename: string,
+    regs: ^[lib.MAX_REGS]lib.Reg_Entry,
+) -> (
+    err: os.Error,
+    parse_err: Maybe(string),
+) {
+    data, read_err := os.read_entire_file(filename, context.temp_allocator)
+    if read_err != os.General_Error.None {return read_err, nil}
+    _, parse_err = lib.unmarshal_state(data, regs)
+    return nil, parse_err
 }

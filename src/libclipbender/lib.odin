@@ -1003,26 +1003,23 @@ unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mimes: []string, data: []byte,
         return nil, nil, "SET request carries no mime"
     }
 
+    // Odin `defer` cannot modify a return value (it is copied out first), so cleanup has to happen before an explicit
+    // `return nil, ...` or the caller gets a slice of freed memory.
     offset := size_of(u8)
-    mimes = make([]string, mime_count)
-    decoded := 0
-    // Clears `mimes` itself, so the error paths must *not* `return nil` for it -- a defer runs after the return values
-    // are assigned, so nilling it at the return site would leave this loop indexing a nil slice.
-    defer if err != nil {
-        for mime in mimes[:decoded] {delete(mime)}
-        delete(mimes)
-        mimes = nil
-    }
+    decoded := make([]string, mime_count)
+    filled := 0
 
     for i in 0 ..< mime_count {
         mime, mime_err := read_resp_mime(buf, &offset)
         if mime_err != nil {
-            err = fmt.tprintf("SET request truncated: mime %d %s", i, mime_err.?)
-            return
+            for m in decoded[:filled] {delete(m)}
+            delete(decoded)
+            return nil, nil, fmt.tprintf("SET request truncated: mime %d %s", i, mime_err.?)
         }
-        mimes[i] = mime
-        decoded += 1
+        decoded[i] = mime
+        filled += 1
     }
+    mimes = decoded
 
     data = slice.clone(buf[offset:])
     return mimes, data, nil
@@ -1159,11 +1156,9 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
             buf[written] = u8(len(repr.mimes))
             written += size_of(u8)
             for mime in repr.mimes {
-                mime_len := u8(len(mime))
-                buf[written] = byte(mime_len)
-                written += size_of(mime_len)
-                copy(buf[written:][:int(mime_len)], mime)
-                written += int(mime_len)
+                // Clamp rather than wrap: `u8(len(mime))` on a 256-byte name yields 0, which would write the mime's
+                // bytes with a length of zero and desync every subsequent field. `write_resp_mime` clamps the same way.
+                written += write_resp_mime(buf[written:], mime)
             }
 
             // Data length u32 + data bytes
@@ -1183,14 +1178,44 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
 }
 
 // Deserialize state into owned entries indexed by Reg_Id. Slots not present are left zeroed.
-// NOTE: caller is responsible for freeing all entries in `regs`.
-unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8) {
+//
+// On error, entries decoded so far are freed and `regs` is zeroed, so the caller never sees a half-populated array.
+// NOTE: on success the caller is responsible for freeing all entries in `regs`.
+unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8, err: Maybe(string)) {
+    count, err = unmarshal_state_entries(buf, regs)
+    if err != nil {
+        // Discard whatever parsed before the failure. `free_reg_entry` is a no-op on a zeroed entry, so sweeping the
+        // whole array is simpler than tracking which slots were filled -- and this is the only place that can honestly
+        // report `count = 0`, since an Odin `defer` cannot modify a return value.
+        for &entry in regs {free_reg_entry(&entry)}
+        regs^ = {}
+        return 0, err
+    }
+    return count, nil
+}
+
+// Decoding half of `unmarshal_state`. Leaves `regs` partially filled on error; the caller sweeps it.
+unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8, err: Maybe(string)) {
     regs^ = {}
+    if len(buf) == 0 {
+        return 0, "state file is empty"
+    }
     count = u8(buf[0])
 
     offset := 1
-    for _ in 0 ..< count {
+    for entry_idx in 0 ..< int(count) {
+        // Reg_Id + timestamp + blob count, read together since they are fixed-width.
+        header_size := size_of(Reg_Id) + size_of(i64) + size_of(u8)
+        if offset + header_size > len(buf) {
+            err = fmt.tprintf("entry %d: header needs %d bytes, %d remain", entry_idx, header_size, len(buf) - offset)
+            return
+        }
+
         reg_id := Reg_Id(buf[offset])
+        if !reg_id_is_valid(reg_id) {
+            err = fmt.tprintf("entry %d: invalid register id %d", entry_idx, u8(reg_id))
+            return
+        }
         offset += size_of(Reg_Id)
 
         time_bytes: [size_of(i64)]byte
@@ -1198,39 +1223,91 @@ unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8) 
         time := transmute(i64)time_bytes
         offset += size_of(i64)
 
-        blob_count := u8(buf[offset])
+        blob_count := int(buf[offset])
         offset += size_of(u8)
 
-        reprs := make([]Data_Repr, int(blob_count))
-        for b in 0 ..< int(blob_count) {
-            mime_count := u8(buf[offset])
+        // Counts are `u8`, so they cannot drive a large allocation,  but a repeated `reg_id` would leak the entry
+        // already stored in that slot, so reject rather than overwrite.
+        if len(regs[reg_id].reprs) != 0 {
+            err = fmt.tprintf("entry %d: register %s appears twice", entry_idx, reg_id_to_string(reg_id))
+            return
+        }
+
+        reprs := make([]Data_Repr, blob_count)
+        // In-flight work needs its own cleanup: this entry is not in `regs` yet, so `unmarshal_state`'s sweep cannot
+        // see it. These defers only free, they never assign to `err` or `count`.
+        reprs_filled := 0
+        defer if err != nil {
+            for i in 0 ..< reprs_filled {free_data_repr(reprs[i])}
+            delete(reprs)
+        }
+
+        for b in 0 ..< blob_count {
+            if offset + size_of(u8) > len(buf) {
+                err = fmt.tprintf("entry %d repr %d: missing mime count", entry_idx, b)
+                return
+            }
+            mime_count := int(buf[offset])
             offset += size_of(u8)
-            mimes := make([]string, int(mime_count))
-            for m in 0 ..< int(mime_count) {
-                mime_len := u8(buf[offset])
-                offset += size_of(mime_len)
-                mimes[m] = strings.clone(string(buf[offset:][:int(mime_len)]))
-                offset += int(mime_len)
+            if mime_count == 0 {
+                err = fmt.tprintf("entry %d repr %d: no mimes", entry_idx, b)
+                return
             }
 
+            mimes := make([]string, mime_count)
+            mimes_filled := 0
+            defer if err != nil {
+                for i in 0 ..< mimes_filled {delete(mimes[i])}
+                delete(mimes)
+            }
+
+            for m in 0 ..< mime_count {
+                mime, mime_err := read_resp_mime(buf, &offset)
+                if mime_err != nil {
+                    err = fmt.tprintf("entry %d repr %d mime %d: %s", entry_idx, b, m, mime_err.?)
+                    return
+                }
+                mimes[m] = mime
+                mimes_filled += 1
+            }
+
+            if offset + size_of(u32) > len(buf) {
+                err = fmt.tprintf("entry %d repr %d: missing data length", entry_idx, b)
+                return
+            }
             data_len_bytes: [size_of(u32)]byte
             copy(data_len_bytes[:], buf[offset:][:size_of(u32)])
-            data_len := transmute(u32)data_len_bytes
+            data_len := int(transmute(u32)data_len_bytes)
             offset += size_of(u32)
-            data := slice.clone(buf[offset:][:int(data_len)])
-            offset += int(data_len)
+
+            // `int` arithmetic, so a `data_len` of 0xFFFFFFFF is caught here rather than wrapping the comparison.
+            if offset + data_len > len(buf) {
+                err = fmt.tprintf(
+                    "entry %d repr %d: data needs %d bytes, %d remain",
+                    entry_idx,
+                    b,
+                    data_len,
+                    len(buf) - offset,
+                )
+                return
+            }
+            data := slice.clone(buf[offset:][:data_len])
+            offset += data_len
 
             reprs[b] = Data_Repr {
                 data  = data,
                 mimes = mimes,
             }
+            reprs_filled += 1
+            mimes_filled = 0 // ownership moved into `reprs[b]`, freed by the outer cleanup from here on
         }
 
         regs[reg_id] = Reg_Entry {
             reprs     = reprs,
             timestamp = time,
         }
+        reprs_filled = 0 // ownership moved into `regs[reg_id]`, so `unmarshal_state`'s sweep frees it from here on
     }
 
-    return count
+    return count, nil
 }
