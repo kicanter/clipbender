@@ -655,20 +655,29 @@ wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display,
     linux.close(write_fd)
     wl.display_flush(display)
 
+    return read_pipe_blob(read_fd, mime)
+}
+
+READ_TIMEOUT_MS :: 2000 // 2s
+
+// Drain `read_fd` to EOF and return the bytes, or nil on timeout, read error, empty payload, or a source that exceeds
+// `MAX_READ_SIZE`. Closes `read_fd`.
+read_pipe_blob :: proc(read_fd: linux.Fd, mime: string) -> []u8 {
+    // Ensure fd is closed.
+    defer linux.close(read_fd)
+
     // Wait for source app to write data, with timeout to avoid blocking forever on hung apps. Polled before every read.
     poll_fds := [1]linux.Poll_Fd{{fd = read_fd, events = {.IN}}}
-    timeout: i32 = 2000 // 2s timeout
 
     // Read all data from pipe until EOF, or until the source exceeds what we are willing to hold. Discard rather than
     // truncate because a half-read blob is not a representation of anything.
     result: [dynamic]byte
     for {
         // Poll the FD
-        poll_ret, poll_err := linux.poll(poll_fds[:], timeout)
+        poll_ret, poll_err := linux.poll(poll_fds[:], READ_TIMEOUT_MS)
         if poll_err != .NONE || poll_ret <= 0 {
             log.errorf("Timed out waiting for source app to write mime `%s`: errno %v", mime, poll_err)
             delete(result)
-            linux.close(read_fd)
             return nil
         }
 
@@ -679,7 +688,6 @@ wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display,
         if err != .NONE {     // boooo :(
             log.errorf("Failed reading mime `%s` from source app: errno %v", mime, err)
             delete(result)
-            linux.close(read_fd)
             return nil
         } else if num_bytes == 0 {     // EOF success!
             resize(&result, old) // discard the unfilled tail
@@ -694,11 +702,9 @@ wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display,
                 mime,
             )
             delete(result)
-            linux.close(read_fd)
             return nil
         }
     }
-    linux.close(read_fd)
 
     if len(result) == 0 {
         delete(result)
