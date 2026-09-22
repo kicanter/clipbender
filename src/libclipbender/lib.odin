@@ -108,6 +108,7 @@ Selection_Type :: enum u8 {
 }
 
 Session_Type :: enum u8 {
+    NONE,
     WAYLAND,
     X11,
 }
@@ -123,7 +124,7 @@ get_session_type :: proc() -> Session_Type {
     case "x11":
         return .X11
     case:
-        return nil
+        return .NONE
     }
 }
 

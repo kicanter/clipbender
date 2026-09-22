@@ -37,7 +37,7 @@ main :: proc() {
         server.backend = &wl_state
     case .X11:
         log.warn("X11 is currently unsupported for clipboard monitoring, named registers are still functional")
-    case:
+    case .NONE:
         log.warn("Only Wayland and X11 are supported for clipboard monitoring, named registers are still functional")
     }
 
