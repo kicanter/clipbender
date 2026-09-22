@@ -1,5 +1,6 @@
 package libclipbender
 
+import "core:encoding/json"
 import "core:fmt"
 import "core:log"
 import "core:os"
@@ -578,9 +579,72 @@ resolve_mimes :: proc(data: []byte) -> []string {
     if mimes, ok := container_mimes(data, RIFF_CONTAINER); ok {return mimes}
     if mimes, ok := container_mimes(data, FTYP_CONTAINER); ok {return mimes}
 
-    // Last, so ASCII-but-structured formats (RTF, PostScript) claim their specific mime before falling back to text.
-    if utf8.valid_string(string(data)) {return PLAINTEXT_RESULT[:]}
+    // Last, so ASCII-valid formats (RTF, PostScript) claim their specific mime before falling back to text.
+    if utf8.valid_string(string(data)) {
+        if mimes, found_mime := sniff_text(string(data)); found_mime {return mimes}
+        return PLAINTEXT_RESULT[:]
+    }
+
+    // Fallback to octet-stream if absolutely nothing else applies.
     return BINARY_RESULT[:]
+}
+
+// Text formats have no byte signature to match, so they are sniffed from their opening markup instead -- and only after
+// `utf8.valid_string` has confirmed the payload is text at all.
+@(rodata)
+SVG_RESULT := [?]string{"image/svg+xml", "application/xml", "text/plain;charset=utf-8", "text/plain"}
+@(rodata)
+XML_RESULT := [?]string{"application/xml", "text/plain;charset=utf-8", "text/plain"}
+@(rodata)
+HTML_RESULT := [?]string{"text/html", "text/plain;charset=utf-8", "text/plain"}
+@(rodata)
+JSON_RESULT := [?]string{"application/json", "text/plain;charset=utf-8", "text/plain"}
+
+// How far in to look for mime-indicating text e.g. `<svg`: past a BOM, an `<?xml ...?>` declaration, a DOCTYPE, etc.
+SNIFF_WINDOW :: 512
+
+@(rodata)
+XML_MARKER := "<?xml"
+@(rodata)
+SVG_MARKER := "<svg"
+@(rodata)
+HTML_MARKERS := [?]string{"<!doctype html", "<html", "<head", "<body"}
+
+// Every mime a text payload claims, or `ok = false` to fall through to plain text.
+//
+// Order is deliberate: SVG before XML (an SVG opens with `<?xml`, so testing XML first would classify every SVG as
+// plain XML), and JSON last because it is the only one needing a real parse.
+//
+// Markdown is absent on purpose since all plain text is valid markdown, so no signature exists and `mime=text/markdown`
+// is the only honest way to say it. CSV/TSV are absent because delimiter-consistency heuristics false-positive on any
+// prose containing commas.
+sniff_text :: proc(text: string) -> (mimes: []string, found_mime: bool) {
+    // A BOM is legal in front of any of these and would defeat a bare prefix test.
+    trimmed := text
+    trimmed = strings.trim_prefix(trimmed, "\xEF\xBB\xBF")
+    trimmed = strings.trim_left_space(trimmed)
+
+    head := trimmed if len(trimmed) < SNIFF_WINDOW else trimmed[:SNIFF_WINDOW]
+    lower_head := strings.to_lower(head, context.temp_allocator)
+
+    // SVG: either the root element directly, or an XML declaration with `<svg` somewhere in the window after it.
+    if strings.has_prefix(lower_head, SVG_MARKER) ||
+       (strings.has_prefix(lower_head, XML_MARKER) && strings.contains(lower_head, SVG_MARKER)) {
+        return SVG_RESULT[:], true
+    }
+
+    for marker in HTML_MARKERS {
+        if strings.has_prefix(lower_head, marker) {return HTML_RESULT[:], true}
+    }
+
+    if strings.has_prefix(lower_head, XML_MARKER) {return XML_RESULT[:], true}
+
+    // Only bother checking json if first char is `{` or `[` since we have to validate the entire text.
+    if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+        if json.is_valid(transmute([]byte)trimmed) {return JSON_RESULT[:], true}
+    }
+
+    return nil, false
 }
 
 container_mimes :: proc(data: []byte, container: Container_Magic) -> (mimes: []string, ok: bool) {

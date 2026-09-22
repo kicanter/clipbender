@@ -1088,3 +1088,103 @@ test_marshal_state_clamps_over_long_mime :: proc(t: ^testing.T) {
     testing.expect_value(t, err, nil)
     testing.expect_value(t, len(dec[reg_id_from_named_index(0)].reprs[0].mimes[0]), MAX_MIME_LEN)
 }
+
+// Text sniffing. These formats have no byte signature, so they are recognised from opening markup -- and every result
+// keeps `text/plain` at the end, so nothing a sniffer catches becomes *less* reachable than before.
+
+sniffed :: proc(t: ^testing.T, text: string, want: string, loc := #caller_location) {
+    mimes := resolve_mimes(transmute([]byte)text)
+    testing.expect(t, len(mimes) > 0, "should resolve to something", loc = loc)
+    testing.expect_value(t, mimes[0], want, loc = loc)
+    // Every text result stays plaintext-reachable, so `get +a` never regresses to `[no printable mime]`.
+    testing.expect_value(t, mimes[len(mimes) - 1], "text/plain", loc = loc)
+}
+
+@(test)
+test_sniff_xml :: proc(t: ^testing.T) {
+    sniffed(t, `<?xml version="1.0"?><root><a/></root>`, "application/xml")
+}
+
+@(test)
+test_sniff_svg :: proc(t: ^testing.T) {
+    // Both shapes: the root element directly, and behind an XML declaration.
+    sniffed(t, `<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>`, "image/svg+xml")
+    sniffed(t, `<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>`, "image/svg+xml")
+
+    // SVG must beat XML: an SVG opens with `<?xml`, so testing XML first would classify it as plain XML and it would
+    // never rank as an image under `pref=richest`, which is the whole reason SVG sniffing is worth having.
+    mimes := resolve_mimes(transmute([]byte)string(`<?xml version="1.0"?><svg/>`))
+    testing.expect_value(t, mimes[0], "image/svg+xml")
+    testing.expect_value(t, mimes[1], "application/xml")
+}
+
+@(test)
+test_sniff_html :: proc(t: ^testing.T) {
+    sniffed(t, "<!DOCTYPE html><html><body>hi</body></html>", "text/html")
+    sniffed(t, "<html><body>hi</body></html>", "text/html")
+    sniffed(t, "<head><title>x</title></head>", "text/html")
+    // Case-insensitive, and leading whitespace must not defeat the prefix test.
+    sniffed(t, "\n  <HTML><BODY>hi</BODY></HTML>", "text/html")
+}
+
+@(test)
+test_sniff_json :: proc(t: ^testing.T) {
+    sniffed(t, `{"a": 1, "b": [2, 3]}`, "application/json")
+    sniffed(t, `[1, 2, 3]`, "application/json")
+    sniffed(t, "  \n{\"nested\": {\"x\": null}}", "application/json")
+}
+
+@(test)
+test_sniff_json_requires_validation_not_just_a_brace :: proc(t: ^testing.T) {
+    // `{` alone is not evidence -- shell snippets, code, and prose all start with braces. The cheap first-byte gate
+    // only decides whether to *attempt* a parse; the parse decides the answer.
+    for text in ([]string{"{not json at all", "{ foo bar }", "[unclosed", "{"}) {
+        mimes := resolve_mimes(transmute([]byte)text)
+        testing.expect_value(t, mimes[0], "text/plain;charset=utf-8")
+    }
+}
+
+@(test)
+test_sniff_falls_through_to_plaintext :: proc(t: ^testing.T) {
+    // Markdown is deliberately unsniffable (all plain text is valid markdown), and prose containing angle brackets or
+    // commas must not be mistaken for markup or CSV.
+    for text in ([]string{
+        "# A heading\n\nsome *markdown* text",
+        "plain old prose",
+        "a, b, c\n1, 2, 3",
+        "x < y and y > z",
+        "",
+    }) {
+        mimes := resolve_mimes(transmute([]byte)text)
+        testing.expect_value(t, mimes[0], "text/plain;charset=utf-8")
+        testing.expect_value(t, len(mimes), 2)
+    }
+}
+
+@(test)
+test_sniff_does_not_run_on_binary :: proc(t: ^testing.T) {
+    // Sniffing happens only after `utf8.valid_string`, so a payload that merely *starts* with markup but is not valid
+    // UTF-8 stays octet-stream rather than being labelled text.
+    data := [?]byte{'<', 'h', 't', 'm', 'l', '>', 0x80, 0xFF}
+    testing.expect_value(t, resolve_mimes(data[:])[0], "application/octet-stream")
+}
+
+@(test)
+test_sniff_loses_to_magic_bytes :: proc(t: ^testing.T) {
+    // RTF is ASCII and would satisfy the UTF-8 check, but `MAGICS` runs first, so its specific mime wins.
+    rtf := resolve_mimes(transmute([]byte)string(`{\rtf1\ansi hello}`))
+    testing.expect_value(t, rtf[0], "application/rtf")
+}
+
+@(test)
+test_sniff_window_is_bounded :: proc(t: ^testing.T) {
+    // `<svg` past the window is not found: scanning a whole multi-megabyte document for a marker that only ever appears
+    // near the front would make every large text paste pay for it.
+    padding := make([]byte, SNIFF_WINDOW + 64)
+    defer delete(padding)
+    for &b in padding {b = ' '}
+
+    far := fmt.tprintf("<?xml version=\"1.0\"?>%s<svg/>", string(padding))
+    mimes := resolve_mimes(transmute([]byte)far)
+    testing.expect_value(t, mimes[0], "application/xml") // XML, not SVG
+}
