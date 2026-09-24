@@ -872,7 +872,7 @@ table_cell :: proc(str: string, width: int) -> string {
     runes := 0
     truncated := false
     for ch in str {
-        if runes >= width - 3 {
+        if runes > width - 1 {
             // Only pay for the ellipsis if something actually remains.
             truncated = true
             break
@@ -901,6 +901,7 @@ table_cell :: proc(str: string, width: int) -> string {
 
     cell := strings.to_string(escaped)
     if truncated {
+        cell = cell[:len(cell) - 3]
         cell = fmt.tprintf("%s...", cell)
         runes += 3
     }
