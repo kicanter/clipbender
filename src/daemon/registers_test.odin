@@ -636,12 +636,7 @@ test_named_reg_holds_several_reprs :: proc(t: ^testing.T) {
     set_named_reg(
         &store,
         reg,
-        multi_repr(
-            {
-                {"<b>hi</b>", {"text/html"}},
-                {"hi", {"text/plain;charset=utf-8", "text/plain"}},
-            },
-        ),
+        multi_repr({{"<b>hi</b>", {"text/html"}}, {"hi", {"text/plain;charset=utf-8", "text/plain"}}}),
         .OVERWRITE,
     )
 
@@ -658,12 +653,7 @@ test_multi_repr_resolves_per_preference :: proc(t: ^testing.T) {
     defer cleanup_registers(&store)
     reg := lib.reg_id_from_named_index(0)
 
-    set_named_reg(
-        &store,
-        reg,
-        multi_repr({{"PNGDATA", {"image/png"}}, {"fallback text", {"text/plain"}}}),
-        .OVERWRITE,
-    )
+    set_named_reg(&store, reg, multi_repr({{"PNGDATA", {"image/png"}}, {"fallback text", {"text/plain"}}}), .OVERWRITE)
     entry := get_reg(&store, reg)
 
     printable, ok_p := lib.resolve_repr(entry, lib.Ranked_Mime.PRINTABLE)
@@ -690,12 +680,7 @@ test_append_intersects_mimes_across_reprs :: proc(t: ^testing.T) {
     set_named_reg(
         &store,
         reg,
-        multi_repr(
-            {
-                {"<b>hi</b>", {"text/html"}},
-                {"hi", {"text/plain;charset=utf-8", "text/plain"}},
-            },
-        ),
+        multi_repr({{"<b>hi</b>", {"text/html"}}, {"hi", {"text/plain;charset=utf-8", "text/plain"}}}),
         .OVERWRITE,
     )
     // Incoming claims only `text/plain`, so the charset refinement cannot survive the concatenation.

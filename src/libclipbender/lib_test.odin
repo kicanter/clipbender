@@ -1148,13 +1148,13 @@ test_sniff_json_requires_validation_not_just_a_brace :: proc(t: ^testing.T) {
 test_sniff_falls_through_to_plaintext :: proc(t: ^testing.T) {
     // Markdown is deliberately unsniffable (all plain text is valid markdown), and prose containing angle brackets or
     // commas must not be mistaken for markup or CSV.
-    for text in ([]string{
-        "# A heading\n\nsome *markdown* text",
-        "plain old prose",
-        "a, b, c\n1, 2, 3",
-        "x < y and y > z",
-        "",
-    }) {
+    for text in ([]string {
+            "# A heading\n\nsome *markdown* text",
+            "plain old prose",
+            "a, b, c\n1, 2, 3",
+            "x < y and y > z",
+            "",
+        }) {
         mimes := resolve_mimes(transmute([]byte)text)
         testing.expect_value(t, mimes[0], "text/plain;charset=utf-8")
         testing.expect_value(t, len(mimes), 2)

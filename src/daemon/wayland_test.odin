@@ -57,11 +57,7 @@ test_read_pipe_blob_reassembles_short_reads :: proc(t: ^testing.T) {
     // Several writes arrive as separate reads, so the loop must concatenate rather than keep only the last chunk.
     got := read_pipe_blob(
         pipe_with(
-            {
-                transmute([]byte)string("one "),
-                transmute([]byte)string("two "),
-                transmute([]byte)string("three"),
-            },
+            {transmute([]byte)string("one "), transmute([]byte)string("two "), transmute([]byte)string("three")},
         ),
         "text/plain",
     )
