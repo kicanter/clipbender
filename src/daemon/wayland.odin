@@ -684,16 +684,16 @@ read_pipe_blob :: proc(read_fd: linux.Fd, mime: string) -> []u8 {
         // Read straight into the tail rather than staging through a scratch buffer, then trim to what actually arrived.
         old := len(result)
         resize(&result, old + lib.PIPE_READ_SIZE)
-        num_bytes, err := linux.read(read_fd, result[old:])
+        bytes_read, err := linux.read(read_fd, result[old:])
         if err != .NONE {     // boooo :(
-            log.errorf("Failed reading mime `%s` from source app: errno %v", mime, err)
+            log.errorf("Failed reading mime `%s` from source app after %d bytes: errno %v", mime, old, err)
             delete(result)
             return nil
-        } else if num_bytes == 0 {     // EOF success!
+        } else if bytes_read == 0 {     // EOF success!
             resize(&result, old) // discard the unfilled tail
             break
         }
-        resize(&result, old + num_bytes)
+        resize(&result, old + bytes_read)
 
         if len(result) > lib.MAX_READ_SIZE {
             log.errorf(
@@ -765,21 +765,54 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, reprs: []lib.Data_Repr, 
     log.debugf("Set %v selection with %d representation(s)", type, len(reprs))
 }
 
-wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, fd: linux.Fd) {
+wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, write_fd: linux.Fd) {
+    // Ensure fd is closed.
+    defer linux.close(write_fd)
+
     // Serve whichever representation claims the requested name. We advertised every name across every repr, so a miss
     // means the compositor asked for something we never offered.
     for repr in selection.source.reprs {
         for mime in repr.mimes {
             if mime == mime_type {
-                linux.write(fd, repr.data)
-                linux.close(fd)
+                total_written := 0
+                // Loop the write in case the fd cannot accommodate the entire blob of data in a single write
+                for total_written < len(repr.data) {
+                    bytes_written, err := linux.write(write_fd, repr.data[total_written:])
+                    switch {
+                    case err == .EPIPE:
+                        log.debugf(
+                            "Requester closed request for mime `%s` after %d/%d bytes",
+                            mime,
+                            total_written,
+                            len(repr.data),
+                        )
+                        return
+                    case err != .NONE:
+                        log.errorf(
+                            "Failed serving mime `%s` after %d/%d bytes: errno %v",
+                            mime,
+                            total_written,
+                            len(repr.data),
+                            err,
+                        )
+                        return
+                    case bytes_written <= 0:
+                        log.warnf(
+                            "Zero-length write serving mime `%s` at %d/%d bytes",
+                            mime,
+                            total_written,
+                            len(repr.data),
+                        )
+                        return
+                    }
+                    total_written += bytes_written
+                }
                 return
             }
         }
     }
 
     log.errorf("Requested mime `%s` was never offered, this is unexpected", mime_type)
-    linux.close(fd)
 }
 
 // ============================== Protocol Wrappers ==============================
