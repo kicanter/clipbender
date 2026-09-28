@@ -538,11 +538,21 @@ uds_serve :: proc(server: ^Server_State, socket_path: string) {
     defer cleanup_socket(socket_path, server_fd)
 
     // Block SIGINT/SIGTERM
-    mask: linux.Sig_Set
-    sigaddset(&mask, .SIGINT)
-    sigaddset(&mask, .SIGTERM)
-    linux.rt_sigprocmask(.SIG_BLOCK, &mask, nil)
-    sig_fd := signalfd(&mask)
+    sigmask: linux.Sig_Set
+    sigaddset(&sigmask, .SIGINT)
+    sigaddset(&sigmask, .SIGTERM)
+    if err := linux.rt_sigprocmask(.SIG_BLOCK, &sigmask, nil); err != .NONE {
+        log.errorf("Failed to block SIGINT and SIGTERM: %v", err)
+    }
+    sig_fd := signalfd(&sigmask)
+
+    // Ignore SIGPIPE
+    ignore_action := linux.Sig_Action(any) {
+        special = .SIG_IGN,
+    }
+    if err := linux.rt_sigaction(.SIGPIPE, &ignore_action, cast(^linux.Sig_Action(any))nil); err != .NONE {
+        log.errorf("Failed to ignore SIGPIPE: %v", err)
+    }
 
     // Set up io_uring
     ring: uring.Ring
