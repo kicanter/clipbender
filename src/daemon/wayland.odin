@@ -658,7 +658,7 @@ wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display,
     return read_pipe_blob(read_fd, mime)
 }
 
-READ_TIMEOUT_MS :: 2000 // 2s
+PIPE_TIMEOUT_MS :: 2000 // 2s
 
 // Drain `read_fd` to EOF and return the bytes, or nil on timeout, read error, empty payload, or a source that exceeds
 // `MAX_READ_SIZE`. Closes `read_fd`.
@@ -667,14 +667,14 @@ read_pipe_blob :: proc(read_fd: linux.Fd, mime: string) -> []u8 {
     defer linux.close(read_fd)
 
     // Wait for source app to write data, with timeout to avoid blocking forever on hung apps. Polled before every read.
-    poll_fds := [1]linux.Poll_Fd{{fd = read_fd, events = {.IN}}}
+    poll_fd := [1]linux.Poll_Fd{{fd = read_fd, events = {.IN}}}
 
     // Read all data from pipe until EOF, or until the source exceeds what we are willing to hold. Discard rather than
     // truncate because a half-read blob is not a representation of anything.
     result: [dynamic]byte
     for {
         // Poll the FD
-        poll_ret, poll_err := linux.poll(poll_fds[:], READ_TIMEOUT_MS)
+        poll_ret, poll_err := linux.poll(poll_fd[:], PIPE_TIMEOUT_MS)
         if poll_err != .NONE || poll_ret <= 0 {
             log.errorf("Timed out waiting for source app to write mime `%s`: errno %v", mime, poll_err)
             delete(result)
@@ -765,6 +765,7 @@ wayland_set_selection :: proc(wl_state: ^Wayland_State, reprs: []lib.Data_Repr, 
     log.debugf("Set %v selection with %d representation(s)", type, len(reprs))
 }
 
+// Find the `Data_Repr` of the requested mime and write all bytes to `write_fd`. Closes `write_fd`.
 wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, write_fd: linux.Fd) {
     // Ensure fd is closed.
     defer linux.close(write_fd)
@@ -774,9 +775,24 @@ wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, writ
     for repr in selection.source.reprs {
         for mime in repr.mimes {
             if mime == mime_type {
+                // Wait for receiver to drain pipe, with timeout to avoid blocking forever on hung apps. Polled before
+                // every write.
+                poll_fd := [1]linux.Poll_Fd{{fd = write_fd, events = {.OUT}}}
+
                 total_written := 0
-                // Loop the write in case the fd cannot accommodate the entire blob of data in a single write
+                // Loop the write in case the pipe cannot accommodate the entire blob of data in a single write
                 for total_written < len(repr.data) {
+                    // Poll the FD
+                    poll_ret, poll_err := linux.poll(poll_fd[:], PIPE_TIMEOUT_MS)
+                    if poll_err != .NONE || poll_ret <= 0 {
+                        log.errorf(
+                            "Timed out waiting for receiver of mime `%s` to drain fd, abandoning this send: errno %v",
+                            mime,
+                            poll_err,
+                        )
+                        return
+                    }
+
                     bytes_written, err := linux.write(write_fd, repr.data[total_written:])
                     switch {
                     case err == .EPIPE:
