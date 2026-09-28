@@ -157,6 +157,17 @@ sigaddset :: proc(set: ^linux.Sig_Set, sig: linux.Signal) {
     set[0] |= 1 << (uint(sig) - 1)
 }
 
+// Ignore SIGPIPE so that writing to a pipe whose reader has closed returns `EPIPE` instead of terminating the process.
+// `write` returns `EPIPE` there regardless; the default disposition just kills us before we can read it.
+ignore_sigpipe :: proc() {
+    ignore_action := linux.Sig_Action(any) {
+        special = .SIG_IGN,
+    }
+    if err := linux.rt_sigaction(.SIGPIPE, &ignore_action, cast(^linux.Sig_Action(any))nil); err != .NONE {
+        log.errorf("Failed to ignore SIGPIPE: %v", err)
+    }
+}
+
 SFD_CLOEXEC :: 0x00080000 // value straight from kernel
 signalfd :: proc(mask: ^linux.Sig_Set) -> linux.Fd {
     result := linux.syscall(linux.SYS_signalfd4, -1, mask, size_of(linux.Sig_Set), SFD_CLOEXEC)
@@ -546,13 +557,8 @@ uds_serve :: proc(server: ^Server_State, socket_path: string) {
     }
     sig_fd := signalfd(&sigmask)
 
-    // Ignore SIGPIPE
-    ignore_action := linux.Sig_Action(any) {
-        special = .SIG_IGN,
-    }
-    if err := linux.rt_sigaction(.SIGPIPE, &ignore_action, cast(^linux.Sig_Action(any))nil); err != .NONE {
-        log.errorf("Failed to ignore SIGPIPE: %v", err)
-    }
+    // Ignore SIGPIPE as to not crash daemon when client disconnects while we're still writing to its pipe
+    ignore_sigpipe()
 
     // Set up io_uring
     ring: uring.Ring

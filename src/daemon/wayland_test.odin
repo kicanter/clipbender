@@ -126,3 +126,121 @@ test_read_pipe_blob_times_out_on_silent_writer :: proc(t: ^testing.T) {
     got := read_pipe_blob(fds[0], "text/plain")
     testing.expect_value(t, len(got), 0)
 }
+
+// `write_pipe_blob` tests. The mirror of the above, and the place a bug hid twice: passing the whole slice to every
+// write yields the correct byte *count* with the wrong bytes, so these assert content rather than length.
+
+// `write_pipe_blob` tests. Worker writes, test reads: whichever side writes a payload larger than the pipe buffer
+// blocks until the other drains. Arguments go by value because the runner installs a per-test tracking allocator, so
+// allocating on one thread and freeing on another wedges it.
+send_async :: proc(mime: string, data: []byte) -> (read_fd: linux.Fd, worker: ^thread.Thread, ok: bool) {
+	fds: [2]linux.Fd
+	if linux.pipe2(&fds, {.CLOEXEC}) != nil {return -1, nil, false}
+
+	worker = thread.create_and_start_with_poly_data3(
+		fds[1],
+		mime,
+		data,
+		proc(write_fd: linux.Fd, mime: string, data: []byte) {
+			// `uds_serve` installs this in the daemon; the test runner never calls it, and without it a write to a
+			// closed reader kills the test binary with exit 141.
+			ignore_sigpipe()
+			write_pipe_blob(write_fd, mime, data)
+			linux.close(write_fd)
+		},
+	)
+	return fds[0], worker, true
+}
+
+// Read to EOF in the caller's context, then join the writer. Caller deletes the result.
+recv_all :: proc(read_fd: linux.Fd, worker: ^thread.Thread) -> []byte {
+	got: [dynamic]byte
+	chunk: [4096]byte
+	for {
+		n, err := linux.read(read_fd, chunk[:])
+		if err != .NONE || n <= 0 {break}
+		append(&got, ..chunk[:n])
+	}
+	linux.close(read_fd)
+	thread.join(worker)
+	thread.destroy(worker)
+	return got[:]
+}
+
+@(test)
+test_write_pipe_blob_single_chunk :: proc(t: ^testing.T) {
+	payload := transmute([]byte)string("hello world")
+	read_fd, worker, ok := send_async("text/plain", payload)
+	testing.expect(t, ok, "pipe2 failed")
+	if !ok {return}
+
+	got := recv_all(read_fd, worker)
+	defer delete(got)
+	testing.expect(t, slice.equal(got, payload), "payload should round-trip")
+}
+
+@(test)
+test_write_pipe_blob_spans_kernel_buffer :: proc(t: ^testing.T) {
+	// Larger than the 64 KiB pipe buffer, so the write resumes from `total_written`. Passing the whole slice each
+	// iteration gave the right byte count and the wrong bytes, so this compares content.
+	size := 64 * 1024 * 3 + 1234
+	payload := make([]byte, size)
+	defer delete(payload)
+	for &b, i in payload {b = byte((i * 7 + i / 251) % 251)}
+
+	read_fd, worker, ok := send_async("image/png", payload)
+	testing.expect(t, ok, "pipe2 failed")
+	if !ok {return}
+
+	got := recv_all(read_fd, worker)
+	defer delete(got)
+	testing.expect_value(t, len(got), size)
+	testing.expect(t, slice.equal(got, payload), "must reassemble byte-exactly")
+}
+
+@(test)
+test_write_pipe_blob_empty_payload :: proc(t: ^testing.T) {
+	read_fd, worker, ok := send_async("text/plain", []byte{})
+	testing.expect(t, ok, "pipe2 failed")
+	if !ok {return}
+
+	got := recv_all(read_fd, worker)
+	defer delete(got)
+	testing.expect_value(t, len(got), 0)
+}
+
+@(test)
+test_write_pipe_blob_survives_closed_reader :: proc(t: ^testing.T) {
+	// Writing to a pipe whose reader is gone must yield EPIPE, not kill the process.
+	ignore_sigpipe()
+	context.logger = log.nil_logger()
+
+	fds: [2]linux.Fd
+	if linux.pipe2(&fds, {.CLOEXEC}) != nil {
+		testing.fail_now(t, "pipe2 failed")
+	}
+	defer linux.close(fds[1])
+	linux.close(fds[0])
+
+	payload := make([]byte, 128*1024)
+	defer delete(payload)
+	write_pipe_blob(fds[1], "text/plain", payload)
+}
+
+@(test)
+test_write_pipe_blob_times_out_on_stalled_receiver :: proc(t: ^testing.T) {
+	// Reader open but never reading, payload larger than the buffer: `poll` must time out rather than block forever.
+	// Requires O_NONBLOCK, since a blocking pipe write never returns short. Takes `PIPE_TIMEOUT_MS`.
+	context.logger = log.nil_logger()
+
+	fds: [2]linux.Fd
+	if linux.pipe2(&fds, {.CLOEXEC}) != nil {
+		testing.fail_now(t, "pipe2 failed")
+	}
+	defer linux.close(fds[0])
+	defer linux.close(fds[1])
+
+	payload := make([]byte, 512*1024)
+	defer delete(payload)
+	write_pipe_blob(fds[1], "image/png", payload)
+}

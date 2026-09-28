@@ -775,60 +775,63 @@ wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, writ
     for repr in selection.source.reprs {
         for mime in repr.mimes {
             if mime == mime_type {
-                // Wait for receiver to drain pipe, with timeout to avoid blocking forever on hung apps. Polled before
-                // every write.
-                poll_fd := [1]linux.Poll_Fd{{fd = write_fd, events = {.OUT}}}
-
-                total_written := 0
-                // Loop the write in case the pipe cannot accommodate the entire blob of data in a single write
-                for total_written < len(repr.data) {
-                    // Poll the FD
-                    poll_ret, poll_err := linux.poll(poll_fd[:], PIPE_TIMEOUT_MS)
-                    if poll_err != .NONE || poll_ret <= 0 {
-                        log.errorf(
-                            "Timed out waiting for receiver of mime `%s` to drain fd, abandoning this send: errno %v",
-                            mime,
-                            poll_err,
-                        )
-                        return
-                    }
-
-                    bytes_written, err := linux.write(write_fd, repr.data[total_written:])
-                    switch {
-                    case err == .EPIPE:
-                        log.debugf(
-                            "Requester closed request for mime `%s` after %d/%d bytes",
-                            mime,
-                            total_written,
-                            len(repr.data),
-                        )
-                        return
-                    case err != .NONE:
-                        log.errorf(
-                            "Failed serving mime `%s` after %d/%d bytes: errno %v",
-                            mime,
-                            total_written,
-                            len(repr.data),
-                            err,
-                        )
-                        return
-                    case bytes_written <= 0:
-                        log.warnf(
-                            "Zero-length write serving mime `%s` at %d/%d bytes",
-                            mime,
-                            total_written,
-                            len(repr.data),
-                        )
-                        return
-                    }
-                    total_written += bytes_written
-                }
+                write_pipe_blob(write_fd, mime, repr.data)
                 return
             }
         }
     }
 
     log.errorf("Requested mime `%s` was never offered, this is unexpected", mime_type)
+}
+
+// Write all of `data` to `write_fd`, or give up on a receiver that stops draining. Caller owns `write_fd`.
+write_pipe_blob :: proc(write_fd: linux.Fd, mime: string, data: []byte) {
+    // A blocking pipe write does not return short, it writes all n bytes, blocking as needed, so polling for
+    // writability alone would not stop a stalled receiver hanging us. Append the NONBLOCK flag to the fd's flags.
+    flags, getfl_err := linux.fcntl_getfl(write_fd, linux.F_GETFL)
+    if getfl_err != .NONE {
+        log.errorf("Failed to read flags for mime `%s`: errno %v", mime, getfl_err)
+        return
+    }
+    if err := linux.fcntl_setfl(write_fd, linux.F_SETFL, flags + {.NONBLOCK}); err != .NONE {
+        log.errorf("Failed to set O_NONBLOCK for mime `%s`: errno %v", mime, err)
+        return
+    }
+
+    // `POLLOUT` becomes ready when the pipe buffer has room, which only happens when the receiver reads. A closed read
+    // end surfaces as `POLLERR`, so `poll_ret > 0` covers both and the write below distinguishes them.
+    poll_fd := [1]linux.Poll_Fd{{fd = write_fd, events = {.OUT}}}
+
+    total_written := 0
+    for total_written < len(data) {
+        poll_ret, poll_err := linux.poll(poll_fd[:], PIPE_TIMEOUT_MS)
+        if poll_err != .NONE || poll_ret <= 0 {
+            log.warnf(
+                "Receiver of mime `%s` stopped draining at %d/%d bytes: errno %v",
+                mime,
+                total_written,
+                len(data),
+                poll_err,
+            )
+            return
+        }
+
+        bytes_written, err := linux.write(write_fd, data[total_written:])
+        switch {
+        case err == .EAGAIN:
+            continue // buffer filled between poll and write; poll again
+        case err == .EPIPE:
+            log.debugf("Requester closed request for mime `%s` after %d/%d bytes", mime, total_written, len(data))
+            return
+        case err != .NONE:
+            log.errorf("Failed serving mime `%s` after %d/%d bytes: errno %v", mime, total_written, len(data), err)
+            return
+        case bytes_written <= 0:
+            log.warnf("Zero-length write serving mime `%s` at %d/%d bytes", mime, total_written, len(data))
+            return
+        }
+        total_written += bytes_written
+    }
 }
 
 // ============================== Protocol Wrappers ==============================
