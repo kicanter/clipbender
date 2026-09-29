@@ -28,14 +28,14 @@ Debounce :: struct {
 
 // The active clipboard backend, chosen once at startup from the session type and never reassigned. `nil` means no
 // backend is active; named registers still work; clipboard monitoring does not.
-Clipboard_Backend :: union {
+Backend_State :: union {
     ^Wayland_State,
     ^X11_State, // TODO: implement X11 support
 }
 
 // The fd the event loop polls for backend events. Derived rather than cached so it cannot go stale when the backend is
 // torn down mid-run.
-backend_fd :: proc(backend: Clipboard_Backend) -> linux.Fd {
+backend_fd :: proc(backend: Backend_State) -> linux.Fd {
     switch b in backend {
     case ^Wayland_State:
         return wayland_get_fd(b)
@@ -47,7 +47,7 @@ backend_fd :: proc(backend: Clipboard_Backend) -> linux.Fd {
 }
 
 // False if the backend hit an unrecoverable error and should be torn down.
-backend_dispatch :: proc(backend: Clipboard_Backend) -> bool {
+backend_dispatch :: proc(backend: Backend_State) -> bool {
     switch b in backend {
     case ^Wayland_State:
         return wayland_dispatch(b)
@@ -59,7 +59,7 @@ backend_dispatch :: proc(backend: Clipboard_Backend) -> bool {
 }
 
 // Tear down the backend and mark it inactive, so `backend == nil` is the single "no monitoring" test everywhere else.
-backend_cleanup :: proc(backend: ^Clipboard_Backend) {
+backend_cleanup :: proc(backend: ^Backend_State) {
     switch b in backend^ {
     case ^Wayland_State:
         wayland_cleanup(b)
@@ -74,7 +74,7 @@ backend_cleanup :: proc(backend: ^Clipboard_Backend) {
 
 // Advertise `reprs` as the `type` selection, taking ownership either way, including when no backend is active, since
 // the caller has already cloned them and has no way to reclaim them afterwards.
-backend_set_selection :: proc(backend: Clipboard_Backend, reprs: []lib.Data_Repr, type: lib.Selection_Type) {
+backend_set_selection :: proc(backend: Backend_State, reprs: []lib.Data_Repr, type: lib.Selection_Type) {
     switch b in backend {
     case ^Wayland_State:
         wayland_set_selection(b, reprs, type)
@@ -90,7 +90,7 @@ backend_set_selection :: proc(backend: Clipboard_Backend, reprs: []lib.Data_Repr
 
 // True if `type`'s offer was staged since the last check, clearing the flag as it reports it. Staging happens in the
 // backend's event callbacks; the event loop uses this to decide whether to (re)arm the debounce timer.
-backend_take_staged :: proc(backend: Clipboard_Backend, type: lib.Selection_Type) -> bool {
+backend_take_staged :: proc(backend: Backend_State, type: lib.Selection_Type) -> bool {
     switch b in backend {
     case ^Wayland_State:
         selection: ^Selection_State
@@ -111,11 +111,7 @@ backend_take_staged :: proc(backend: Clipboard_Backend, type: lib.Selection_Type
 }
 
 // Commit the staged offer for `type` into `store`. True if a register changed, so state is worth saving.
-backend_commit_selection :: proc(
-    backend: Clipboard_Backend,
-    store: ^Register_Store,
-    type: lib.Selection_Type,
-) -> bool {
+backend_commit_selection :: proc(backend: Backend_State, store: ^Register_Store, type: lib.Selection_Type) -> bool {
     switch b in backend {
     case ^Wayland_State:
         return wayland_commit_selection(b, store, type)
@@ -128,7 +124,7 @@ backend_commit_selection :: proc(
 
 // All otherwise-global daemon state, threaded explicitly through the event loop and its handlers.
 Server_State :: struct {
-    backend:    Clipboard_Backend,
+    backend:    Backend_State,
     registers:  Register_Store,
     debounces:  [Debounce_Event]Debounce,
     // `nil` when no usable state directory exists, in which case registers live in memory only and are lost on

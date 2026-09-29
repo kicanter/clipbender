@@ -500,6 +500,7 @@ wayland_stage_selection :: proc(wl_state: ^Wayland_State, selection: ^Selection_
     selection.offer.staged = true
 }
 
+// For deduplication, check if two `Data_Repr`s are equivalent.
 reprs_are_equal :: proc(a: []lib.Data_Repr, b: []lib.Data_Repr) -> bool {
     if len(a) != len(b) {return false}
     for repr, i in a {
