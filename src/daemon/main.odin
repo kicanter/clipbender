@@ -14,6 +14,21 @@ main :: proc() {
     context.logger = _logger
     defer log.destroy_console_logger(_logger)
 
+    args := os.args[1:]
+    if len(args) > 0 {
+        subcommand := args[0]
+        switch subcommand {
+        case "version", "-v", "--version":
+            lib.print_version()
+        case "help", "-h", "--help":
+            fmt.println("help command not implemented yet")
+        case:
+            fmt.eprintfln("Error: unknown argument %q", args[0])
+            os.exit(1)
+        }
+        os.exit(0)
+    }
+
     socket_path := lib.clipbender_socket_path()
     defer delete(socket_path)
     log.debugf("Writing socket file to path %s", socket_path)

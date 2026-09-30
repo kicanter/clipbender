@@ -60,11 +60,13 @@ build_pkg() {
     out="$(out_name "$pkg")"
     [[ "$pkg" == "client" ]] && ensure_stb
 
+    local HASH=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
     local mode_flags=()
     case "$mode" in
-    dev)     mode_flags=(-warnings-as-errors -vet) ;;
-    debug)   mode_flags=(-debug -sanitize:address) ;;
-    release) mode_flags=(-warnings-as-errors -vet -o:speed) ;;
+    dev)     mode_flags=(-warnings-as-errors -vet -define:BUILD="$HASH-dev") ;;
+    debug)   mode_flags=(-debug -sanitize:address -define:BUILD="$HASH-debug") ;;
+    release) mode_flags=(-warnings-as-errors -vet -o:speed -define:BUILD="$HASH") ;;
     esac
 
     # shellcheck disable=SC2086

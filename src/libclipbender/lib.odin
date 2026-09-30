@@ -8,6 +8,44 @@ import "core:slice"
 import "core:strings"
 import "core:unicode/utf8"
 
+Semantic_Version :: struct {
+    major: uint,
+    minor: uint,
+    patch: uint,
+    pre:   string,
+    build: string,
+}
+Monotonic_Version :: distinct uint
+
+CLIPBENDER_VERSION :: Semantic_Version {
+    major = 0,
+    minor = 2,
+    patch = 0,
+    pre   = "alpha",
+    build = #config(BUILD, ""),
+}
+
+PROTOCOL_VERSION :: Monotonic_Version(1)
+STATE_VERSION :: Monotonic_Version(1)
+
+// Allocates, caller is responsible for freeing.
+semantic_version_to_string :: proc(version: Semantic_Version, allocator := context.allocator) -> string {
+    buf: [128]byte
+    length := 0
+    length += len(fmt.bprintf(buf[length:], "%d.%d.%d", version.major, version.minor, version.patch))
+    if version.pre != "" {length += len(fmt.bprintf(buf[length:], "-%s", version.pre))}
+    if version.build != "" {length += len(fmt.bprintf(buf[length:], "+%s", version.build))}
+    return strings.clone_from_bytes(buf[:length], allocator)
+}
+
+version_string :: proc() -> string {
+    return semantic_version_to_string(CLIPBENDER_VERSION, context.temp_allocator)
+}
+
+print_version :: proc() {
+    fmt.printfln("clipbender %s", version_string())
+}
+
 // Max data allowed to pass over IPC
 MAX_MSG_SIZE :: 65536 // 64 KiB
 

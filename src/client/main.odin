@@ -34,6 +34,18 @@ main :: proc() {
     context.logger = _logger
     defer log.destroy_console_logger(_logger)
 
+    args := os.args[1:]
+    if len(args) > 0 {
+        subcommand := args[0]
+        switch subcommand {
+        case "version", "-v", "--version":
+            lib.print_version()
+            os.exit(0)
+        case "help", "-h", "--help":
+            print_usage_and_exit(false)
+        }
+    }
+
     socket_path := lib.clipbender_socket_path()
     defer delete(socket_path)
 
@@ -43,7 +55,6 @@ main :: proc() {
     // Free any temp allocations made during initialization
     free_all(context.temp_allocator)
 
-    args := os.args[1:]
     if len(args) == 0 {
         run_gui(client_fd)
     } else {

@@ -12,8 +12,8 @@ import lib "src:libclipbender"
 
 RESP_BUF_SMALL :: 256 // OK/ERROR responses
 
-print_usage_and_exit :: proc() {
-    fmt.eprintln(
+print_usage_and_exit :: proc(is_err: bool) {
+    usage_str :=
         "Usage: clipbender [command] \n\n" +
         "Commands:\n" +
         "\t(none)                                  Launch the clipbender GUI\n" +
@@ -39,9 +39,14 @@ print_usage_and_exit :: proc() {
         "\tclipbender get +0:5 +@0:3               Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
         "\tclipbender get ++numbered fmt=json      Print clipboard numbered registers as structured JSON.\n" +
         "\tclipbender get +a fmt=raw | wl-copy     Pipe only the contents of register `a` into wl-copy.\n" +
-        "\tclipbender get +a fmt=raw > <file>      Redirect the contents of register `a` to `file`.\n",
-    )
-    os.exit(1)
+        "\tclipbender get +a fmt=raw > <file>      Redirect the contents of register `a` to `file`.\n"
+    if is_err {
+        fmt.eprintln(usage_str)
+        os.exit(1)
+    } else {
+        fmt.println(usage_str)
+        os.exit(0)
+    }
 }
 
 print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
@@ -1283,6 +1288,6 @@ run_cli :: proc(client_fd: linux.Fd, args: []string) {
     case "shutdown":
         cmd_shutdown(args[1:], client_fd)
     case:
-        print_usage_and_exit()
+        print_usage_and_exit(true)
     }
 }
