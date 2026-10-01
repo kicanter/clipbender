@@ -223,20 +223,41 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
     running = true
     store := &server.registers
     resp_buf: [lib.MAX_MSG_SIZE]u8
-    msg_type := cast(lib.Command_Type)data_buf[0]
+
+    if bytes_read < lib.CMD_VERSION_SIZE {
+        resp_written := lib.marshal_resp_error("request is empty", resp_buf[:])
+        send_resp(client_fd, resp_buf[:resp_written])
+        return running, dirty
+    }
+    // Validate version
+    client_version := lib.Monotonic_Version(data_buf[0])
+    if client_version != lib.PROTOCOL_VERSION {
+        errmsg := fmt.tprintf(
+            "client protocol version %d, daemon speaks %d; run matching `clipbender` and `clipbenderd` builds",
+            client_version,
+            lib.PROTOCOL_VERSION,
+        )
+        log.warn(errmsg)
+        resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
+        send_resp(client_fd, resp_buf[:resp_written])
+        return running, dirty
+    }
+
+    msg := data_buf[lib.CMD_VERSION_SIZE:bytes_read]
+    msg_type := cast(lib.Command_Type)msg[0]
 
     switch msg_type {
     case lib.Command_Type.SET:
         // Client is not allowed to overwrite numbered registers
-        log.debugf("Got set message: %v", data_buf[:bytes_read])
+        log.debugf("Got set message: %v", msg)
 
         // Validate before reading the header: any local process can write to this socket, and `data_buf` is a reused
         // global, so a short message would otherwise parse whatever the previous one left behind and a SET shorter than
-        // 5 bytes would panic on the INLINE branch's `data_buf[4:bytes_read]` slice.
-        if bytes_read < lib.CMD_SET_HEADER_SIZE + 1 {
+        // the header would panic on the INLINE branch's `msg[CMD_SET_HEADER_SIZE:]` slice.
+        if len(msg) < lib.CMD_SET_HEADER_SIZE + 1 {
             errmsg := fmt.tprintf(
-                "SET request truncated: %d bytes, need at least %d",
-                bytes_read,
+                "SET request truncated: %d body bytes, need at least %d",
+                len(msg),
                 lib.CMD_SET_HEADER_SIZE + 1,
             )
             resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
@@ -244,15 +265,15 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             return running, dirty
         }
 
-        dest_reg := lib.Reg_Id(data_buf[1])
-        set_mode := lib.Set_Mode(data_buf[2])
-        source_kind := lib.Source_Kind(data_buf[3])
+        dest_reg := lib.Reg_Id(msg[1])
+        set_mode := lib.Set_Mode(msg[2])
+        source_kind := lib.Source_Kind(msg[3])
         // Every representation this SET will store. One for INLINE, all of the source's for REGISTER.
         reprs: []lib.Data_Repr
 
         switch (source_kind) {
         case .REGISTER:
-            source_reg := lib.Reg_Id(data_buf[4])
+            source_reg := lib.Reg_Id(msg[4])
             source := get_reg(store, source_reg)
             if source == nil {
                 errmsg := fmt.tprintf("source register `%s` is empty", lib.reg_id_to_string(source_reg))
@@ -276,7 +297,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 move_recency_reg_to_front(store, .PRIMARY, lib.reg_id_to_primary_index(source_reg))
             }
         case .INLINE:
-            mimes, data, inline_err := lib.unmarshal_cmd_set_inline(data_buf[lib.CMD_SET_HEADER_SIZE:bytes_read])
+            mimes, data, inline_err := lib.unmarshal_cmd_set_inline(msg[lib.CMD_SET_HEADER_SIZE:])
             if inline_err != nil {
                 resp_written := lib.marshal_resp_error(inline_err.?, resp_buf[:])
                 send_resp(client_fd, resp_buf[:resp_written])
@@ -338,9 +359,9 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         // Send response back to client
         send_resp(client_fd, resp_buf[:resp_written])
     case lib.Command_Type.GET:
-        log.debugf("Got get message: %v", data_buf[:bytes_read])
+        log.debugf("Got get message: %v", msg)
         groups: [lib.MAX_REGS]lib.Cmd_Get_Group
-        count, get_err := lib.unmarshal_cmd_get(data_buf[1:bytes_read], &groups)
+        count, get_err := lib.unmarshal_cmd_get(msg[1:], &groups)
         if get_err != nil {
             resp_written := lib.marshal_resp_error(get_err.?, resp_buf[:])
             send_resp(client_fd, resp_buf[:resp_written])
@@ -373,7 +394,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         resp_written, _ := lib.marshal_resp_registers(regs, prefs, resp_buf[:])
         send_resp(client_fd, resp_buf[:resp_written])
     case lib.Command_Type.CLEAR:
-        log.debugf("Got clear message: %v", data_buf[:bytes_read])
+        log.debugf("Got clear message: %v", msg)
         if bytes_read < lib.CMD_CLEAR_SIZE {
             errmsg := fmt.tprintf("CLEAR request truncated: %d bytes, need %d", bytes_read, lib.CMD_CLEAR_SIZE)
             resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
@@ -381,7 +402,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             return running, dirty
         }
 
-        reg := lib.Reg_Id(data_buf[1])
+        reg := lib.Reg_Id(msg[1])
 
         resp_written: int
         // Register must be a named register to manually clear it

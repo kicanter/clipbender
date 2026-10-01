@@ -90,11 +90,13 @@ test_marshal_cmd_set_reg :: proc(t: ^testing.T) {
 
     n := marshal_cmd_set_reg(dest, source, mode, buf[:])
     testing.expect_value(t, n, CMD_SET_REG_SIZE)
-    testing.expect_value(t, Command_Type(buf[0]), Command_Type.SET)
-    testing.expect_value(t, Reg_Id(buf[1]), dest)
-    testing.expect_value(t, Set_Mode(buf[2]), mode)
-    testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.REGISTER)
-    testing.expect_value(t, Reg_Id(buf[4]), source)
+    testing.expect_value(t, Monotonic_Version(buf[0]), PROTOCOL_VERSION)
+    body := buf[CMD_VERSION_SIZE:]
+    testing.expect_value(t, Command_Type(body[0]), Command_Type.SET)
+    testing.expect_value(t, Reg_Id(body[1]), dest)
+    testing.expect_value(t, Set_Mode(body[2]), mode)
+    testing.expect_value(t, Source_Kind(body[3]), Source_Kind.REGISTER)
+    testing.expect_value(t, Reg_Id(body[4]), source)
 }
 
 @(test)
@@ -107,12 +109,14 @@ test_marshal_unmarshal_cmd_set_inline :: proc(t: ^testing.T) {
 
     n := marshal_cmd_set_inline(dest, mode, mimes, data, buf[:])
     testing.expect_value(t, n, cmd_set_inline_size(mimes, data))
-    testing.expect_value(t, Set_Mode(buf[2]), mode)
-    testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.INLINE)
-    testing.expect_value(t, int(buf[4]), len(mimes))
+    testing.expect_value(t, Monotonic_Version(buf[0]), PROTOCOL_VERSION)
+    body := buf[CMD_VERSION_SIZE:]
+    testing.expect_value(t, Set_Mode(body[2]), mode)
+    testing.expect_value(t, Source_Kind(body[3]), Source_Kind.INLINE)
+    testing.expect_value(t, int(body[4]), len(mimes))
 
     // unmarshal_cmd_set_inline expects buf starting after the Source_Kind byte
-    dec_mimes, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
+    dec_mimes, dec_data, dec_err := unmarshal_cmd_set_inline(buf[CMD_VERSION_SIZE + CMD_SET_HEADER_SIZE:n])
     defer {
         for mime in dec_mimes {delete(mime)}
         delete(dec_mimes)
@@ -133,14 +137,15 @@ test_marshal_unmarshal_cmd_get_ranked :: proc(t: ^testing.T) {
     filter := CMD_GET_FILTER_NUMBERED + CMD_GET_FILTER_NAMED
     groups := [?]Cmd_Get_Group{{filter = filter, pref = Ranked_Mime.PRINTABLE}}
 
-    // A ranked group carries no mime, so it is 9 bytes: [1b type][1b count][8b filter][1b tag]
+    // A ranked group carries no mime: [1b version][1b type][1b count][8b filter][1b tag]
     n := marshal_cmd_get(groups[:], buf[:])
-    testing.expect_value(t, n, 11)
-    testing.expect_value(t, Command_Type(buf[0]), Command_Type.GET)
-    testing.expect_value(t, buf[1], u8(1))
+    testing.expect_value(t, n, CMD_VERSION_SIZE + 11)
+    testing.expect_value(t, Monotonic_Version(buf[0]), PROTOCOL_VERSION)
+    testing.expect_value(t, Command_Type(buf[CMD_VERSION_SIZE]), Command_Type.GET)
+    testing.expect_value(t, buf[CMD_VERSION_SIZE + 1], u8(1))
 
     dec: [MAX_REGS]Cmd_Get_Group
-    count, err := unmarshal_cmd_get(buf[1:n], &dec)
+    count, err := unmarshal_cmd_get(buf[CMD_VERSION_SIZE + 1:n], &dec)
     testing.expect_value(t, err, nil)
     testing.expect_value(t, count, 1)
     testing.expect_value(t, dec[0].filter, filter)
@@ -159,10 +164,10 @@ test_marshal_unmarshal_cmd_get_mixed_groups :: proc(t: ^testing.T) {
 
     // 2 header + (8+1+1+9) exact + (8+1) ranked
     n := marshal_cmd_get(groups[:], buf[:])
-    testing.expect_value(t, n, 30)
+    testing.expect_value(t, n, CMD_VERSION_SIZE + 30)
 
     dec: [MAX_REGS]Cmd_Get_Group
-    count, err := unmarshal_cmd_get(buf[1:n], &dec)
+    count, err := unmarshal_cmd_get(buf[CMD_VERSION_SIZE + 1:n], &dec)
     testing.expect_value(t, err, nil)
     testing.expect_value(t, count, 2)
     testing.expect_value(t, dec[0].pref, Mime_Pref(Exact_Mime("image/png")))
@@ -180,7 +185,7 @@ test_unmarshal_cmd_get_max_mime :: proc(t: ^testing.T) {
 
     n := marshal_cmd_get(groups[:], buf[:])
     dec: [MAX_REGS]Cmd_Get_Group
-    count, err := unmarshal_cmd_get(buf[1:n], &dec)
+    count, err := unmarshal_cmd_get(buf[CMD_VERSION_SIZE + 1:n], &dec)
     testing.expect_value(t, err, nil)
     testing.expect_value(t, count, 1)
     testing.expect_value(t, dec[0].pref, Mime_Pref(Exact_Mime(string(long[:]))))
@@ -221,11 +226,11 @@ test_unmarshal_cmd_get_rejects_truncated :: proc(t: ^testing.T) {
     dec: [MAX_REGS]Cmd_Get_Group
 
     // Chop the mime bytes: the declared length now exceeds what remains.
-    _, err_mime := unmarshal_cmd_get(buf[1:n - 4], &dec)
+    _, err_mime := unmarshal_cmd_get(buf[CMD_VERSION_SIZE + 1:n - 4], &dec)
     testing.expect(t, err_mime != nil, "truncated mime should be rejected")
 
     // Chop mid-filter, before the pref byte is even reachable.
-    _, err_filter := unmarshal_cmd_get(buf[1:6], &dec)
+    _, err_filter := unmarshal_cmd_get(buf[CMD_VERSION_SIZE + 1:CMD_VERSION_SIZE + 6], &dec)
     testing.expect(t, err_filter != nil, "truncated filter should be rejected")
 }
 
@@ -458,11 +463,13 @@ test_marshal_cmd_set_reg_append :: proc(t: ^testing.T) {
 
     n := marshal_cmd_set_reg(dest, source, mode, buf[:])
     testing.expect_value(t, n, CMD_SET_REG_SIZE)
-    testing.expect_value(t, Command_Type(buf[0]), Command_Type.SET)
-    testing.expect_value(t, Reg_Id(buf[1]), dest)
-    testing.expect_value(t, Set_Mode(buf[2]), mode)
-    testing.expect_value(t, Source_Kind(buf[3]), Source_Kind.REGISTER)
-    testing.expect_value(t, Reg_Id(buf[4]), source)
+    testing.expect_value(t, Monotonic_Version(buf[0]), PROTOCOL_VERSION)
+    body := buf[CMD_VERSION_SIZE:]
+    testing.expect_value(t, Command_Type(body[0]), Command_Type.SET)
+    testing.expect_value(t, Reg_Id(body[1]), dest)
+    testing.expect_value(t, Set_Mode(body[2]), mode)
+    testing.expect_value(t, Source_Kind(body[3]), Source_Kind.REGISTER)
+    testing.expect_value(t, Reg_Id(body[4]), source)
 }
 
 @(test)
@@ -473,7 +480,7 @@ test_unmarshal_cmd_set_reg :: proc(t: ^testing.T) {
     mode := Set_Mode.OVERWRITE
 
     marshal_cmd_set_reg(dest, source, mode, buf[:])
-    decoded_source := unmarshal_cmd_set_reg(buf[4:])
+    decoded_source := unmarshal_cmd_set_reg(buf[CMD_VERSION_SIZE + CMD_SET_HEADER_SIZE:])
     testing.expect_value(t, decoded_source, source)
 }
 
@@ -484,9 +491,10 @@ test_marshal_unmarshal_cmd_clear :: proc(t: ^testing.T) {
 
     n := marshal_cmd_clear(reg, buf[:])
     testing.expect_value(t, n, CMD_CLEAR_SIZE)
-    testing.expect_value(t, Command_Type(buf[0]), Command_Type.CLEAR)
+    testing.expect_value(t, Monotonic_Version(buf[0]), PROTOCOL_VERSION)
+    testing.expect_value(t, Command_Type(buf[CMD_VERSION_SIZE]), Command_Type.CLEAR)
 
-    decoded_reg := unmarshal_cmd_clear(buf[1:])
+    decoded_reg := unmarshal_cmd_clear(buf[CMD_VERSION_SIZE + size_of(Command_Type):])
     testing.expect_value(t, decoded_reg, reg)
 }
 
@@ -496,7 +504,8 @@ test_marshal_cmd_shutdown :: proc(t: ^testing.T) {
 
     n := marshal_cmd_shutdown(buf[:])
     testing.expect_value(t, n, CMD_SHUTDOWN_SIZE)
-    testing.expect_value(t, Command_Type(buf[0]), Command_Type.SHUTDOWN)
+    testing.expect_value(t, Monotonic_Version(buf[0]), PROTOCOL_VERSION)
+    testing.expect_value(t, Command_Type(buf[CMD_VERSION_SIZE]), Command_Type.SHUTDOWN)
 }
 
 @(test)
@@ -532,7 +541,7 @@ test_marshal_unmarshal_cmd_set_inline_empty_data :: proc(t: ^testing.T) {
     data := []byte{}
 
     n := marshal_cmd_set_inline(dest, mode, mimes, data, buf[:])
-    dec_mimes, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
+    dec_mimes, dec_data, dec_err := unmarshal_cmd_set_inline(buf[CMD_VERSION_SIZE + CMD_SET_HEADER_SIZE:n])
     defer {
         for mime in dec_mimes {delete(mime)}
         delete(dec_mimes)
@@ -558,7 +567,7 @@ test_marshal_unmarshal_cmd_set_inline_max_mime :: proc(t: ^testing.T) {
     data := transmute([]byte)string("test")
 
     n := marshal_cmd_set_inline(dest, mode, mimes, data, buf[:])
-    dec_mimes, dec_data, dec_err := unmarshal_cmd_set_inline(buf[4:n])
+    dec_mimes, dec_data, dec_err := unmarshal_cmd_set_inline(buf[CMD_VERSION_SIZE + CMD_SET_HEADER_SIZE:n])
     defer {
         for mime in dec_mimes {delete(mime)}
         delete(dec_mimes)
@@ -743,7 +752,7 @@ test_state_size_matches_marshal :: proc(t: ^testing.T) {
 @(test)
 test_state_size_empty :: proc(t: ^testing.T) {
     regs: [MAX_REGS]^Reg_Entry
-    testing.expect_value(t, state_size(regs), size_of(u8)) // just the entry count
+    testing.expect_value(t, state_size(regs), STATE_VERSION_SIZE + size_of(u8)) // version prefix + entry count
 }
 
 @(test)
@@ -987,6 +996,68 @@ test_unmarshal_state_rejects_empty :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_unmarshal_state_rejects_version_mismatch :: proc(t: ^testing.T) {
+    // A file written by a different format version must be reported, not decoded at the wrong offsets. Every non-current
+    // version is rejected, in both directions, so a downgrade is caught as well as an upgrade.
+    buf: [256]byte
+    n := state_fixture(buf[:])
+
+    for v in 0 ..= int(max(u8)) {
+        if Monotonic_Version(v) == STATE_VERSION {continue}
+        buf[0] = u8(v)
+
+        dec: [MAX_REGS]Reg_Entry
+        count, err := unmarshal_state(buf[:n], &dec)
+        for &entry in dec {free_reg_entry(&entry)}
+        testing.expect(t, err != nil, fmt.tprintf("state version %d should be rejected", v))
+        testing.expect_value(t, count, 0)
+    }
+}
+
+@(test)
+test_unmarshal_state_accepts_current_version :: proc(t: ^testing.T) {
+    // Guards the pairing: `marshal_state` must write exactly the byte `unmarshal_state` demands, so a bump to one
+    // without the other fails here rather than at runtime.
+    buf: [256]byte
+    n := state_fixture(buf[:])
+    testing.expect_value(t, Monotonic_Version(buf[0]), STATE_VERSION)
+
+    dec: [MAX_REGS]Reg_Entry
+    count, err := unmarshal_state(buf[:n], &dec)
+    defer for &entry in dec {free_reg_entry(&entry)}
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, count, 1)
+}
+
+@(test)
+test_marshal_cmds_all_carry_protocol_version :: proc(t: ^testing.T) {
+    // Every command must be prefixed, not just the ones with dedicated round-trip tests: a marshal proc that forgets the
+    // prefix sends a body byte as the version and gets the whole message rejected.
+    dest := reg_id_from_named_index(0)
+    source := reg_id_from_named_index(1)
+    groups := []Cmd_Get_Group{{filter = CMD_GET_FILTER_NAMED, pref = Ranked_Mime.PRINTABLE}}
+
+    buf: [MAX_MSG_SIZE]byte
+    check :: proc(t: ^testing.T, buf: []byte, n: int, name: string) {
+        testing.expectf(t, n > CMD_VERSION_SIZE, "%s: %d bytes is prefix-only", name, n)
+        testing.expectf(
+            t,
+            Monotonic_Version(buf[0]) == PROTOCOL_VERSION,
+            "%s: prefix is %d, expected %d",
+            name,
+            buf[0],
+            PROTOCOL_VERSION,
+        )
+    }
+
+    check(t, buf[:], marshal_cmd_set_reg(dest, source, .OVERWRITE, buf[:]), "SET (REGISTER)")
+    check(t, buf[:], marshal_cmd_set_inline(dest, .OVERWRITE, []string{"text/plain"}, {'x'}, buf[:]), "SET (INLINE)")
+    check(t, buf[:], marshal_cmd_get(groups, buf[:]), "GET")
+    check(t, buf[:], marshal_cmd_clear(dest, buf[:]), "CLEAR")
+    check(t, buf[:], marshal_cmd_shutdown(buf[:]), "SHUTDOWN")
+}
+
+@(test)
 test_unmarshal_state_rejects_truncation_at_every_offset :: proc(t: ^testing.T) {
     // A crash mid-save leaves a prefix of a valid file, so every prefix must be rejected rather than crash. Exhaustive
     // because each truncation point exercises a different bounds check.
@@ -1006,7 +1077,7 @@ test_unmarshal_state_rejects_invalid_reg_id :: proc(t: ^testing.T) {
     // `regs[reg_id]` indexed a fixed array with a byte straight from the file: 200 is past `MAX_REGS`.
     buf: [256]byte
     n := state_fixture(buf[:])
-    buf[1] = 200
+    buf[STATE_VERSION_SIZE + 1] = 200
 
     dec: [MAX_REGS]Reg_Entry
     _, err := unmarshal_state(buf[:n], &dec)
@@ -1022,7 +1093,7 @@ test_unmarshal_state_rejects_oversized_data_len :: proc(t: ^testing.T) {
     n := state_fixture(buf[:])
 
     // Walk to the u32 data length: count + reg_id + timestamp + blob_count + mime_count + [len]"text/plain"
-    data_len_at := 1 + 1 + size_of(i64) + 1 + 1 + 1 + len("text/plain")
+    data_len_at := STATE_VERSION_SIZE + 1 + 1 + size_of(i64) + 1 + 1 + 1 + len("text/plain")
     for i in 0 ..< size_of(u32) {buf[data_len_at + i] = 0xFF}
 
     dec: [MAX_REGS]Reg_Entry
@@ -1036,7 +1107,7 @@ test_unmarshal_state_rejects_zero_mimes :: proc(t: ^testing.T) {
     // A repr with no mime cannot be resolved by anything downstream, and `mimes[0]` uses would panic on it.
     buf: [256]byte
     n := state_fixture(buf[:])
-    mime_count_at := 1 + 1 + size_of(i64) + 1
+    mime_count_at := STATE_VERSION_SIZE + 1 + 1 + size_of(i64) + 1
     buf[mime_count_at] = 0
 
     dec: [MAX_REGS]Reg_Entry

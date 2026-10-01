@@ -60,7 +60,7 @@ build_pkg() {
     out="$(out_name "$pkg")"
     [[ "$pkg" == "client" ]] && ensure_stb
 
-    local HASH=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+    local HASH="${BUILD:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 
     local mode_flags=()
     case "$mode" in

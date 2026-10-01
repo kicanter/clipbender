@@ -15,7 +15,9 @@ Semantic_Version :: struct {
     pre:   string,
     build: string,
 }
-Monotonic_Version :: distinct uint
+// `u8` because versions are serialized as a single byte in IPC protocol; widening is a breaking change to the protocol
+// and state.
+Monotonic_Version :: distinct u8
 
 CLIPBENDER_VERSION :: Semantic_Version {
     major = 0,
@@ -25,7 +27,9 @@ CLIPBENDER_VERSION :: Semantic_Version {
     build = #config(BUILD, ""),
 }
 
+// Version for IPC wire format protocol between client and daemon
 PROTOCOL_VERSION :: Monotonic_Version(1)
+// Version for state persistence serialization protocol
 STATE_VERSION :: Monotonic_Version(1)
 
 // Allocates, caller is responsible for freeing.
@@ -245,7 +249,8 @@ clipbender_lock_path :: proc() -> string {
     return env_path_with_fallback(RUNTIME_ENV_VAR, CLIPBENDER_SUBDIR, LOCK_FILENAME, TMP_DIR)
 }
 
-// Kinds of messages (commands) passed from client to daemon. IPC wire format:
+// Kinds of messages (commands) passed from client to daemon. Every message is `[1b PROTOCOL_VERSION][body]`; the bodies
+// below are what follows the prefix. IPC wire format:
 //
 // SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b source Reg_Id]`
 // SET (INLINE):   `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
@@ -263,15 +268,21 @@ Command_Type :: enum u8 {
     SHUTDOWN,
 }
 
-// Exact wire sizes for the fixed-length commands, so callers size their buffers from the format rather than counting
-// bytes by hand. Each mirrors what the matching `marshal_*` returns.
+// Every command is prefixed with `PROTOCOL_VERSION`. The bytes after it are the command *body*, whose layout is what
+// the `[1b Message_Type]...` comments above describe, so body offsets stay independent of the prefix.
+CMD_VERSION_SIZE :: size_of(Monotonic_Version)
+
+// Exact wire sizes for the fixed-length commands, prefix included, so callers size their buffers from the format rather
+// than counting bytes by hand. Each mirrors what the matching `marshal_*` returns.
 //
 // SET (INLINE) and GET have no constant: both carry variable-length payloads and use `MAX_MSG_SIZE` buffers.
-CMD_SET_REG_SIZE :: size_of(Command_Type) + (2 * size_of(Reg_Id)) + size_of(Set_Mode) + size_of(Source_Kind)
-CMD_CLEAR_SIZE :: size_of(Command_Type) + size_of(Reg_Id)
-CMD_SHUTDOWN_SIZE :: size_of(Command_Type)
-// Bytes every SET carries before its source-specific tail: REGISTER adds a source Reg_Id, INLINE adds a mime length.
-// Both tails are at least one byte, so `CMD_SET_HEADER_SIZE + 1` is the shortest legal SET.
+CMD_SET_REG_SIZE ::
+    CMD_VERSION_SIZE + size_of(Command_Type) + (2 * size_of(Reg_Id)) + size_of(Set_Mode) + size_of(Source_Kind)
+CMD_CLEAR_SIZE :: CMD_VERSION_SIZE + size_of(Command_Type) + size_of(Reg_Id)
+CMD_SHUTDOWN_SIZE :: CMD_VERSION_SIZE + size_of(Command_Type)
+// Bytes every SET body carries before its source-specific tail: REGISTER adds a source Reg_Id, INLINE adds a mime
+// length. Body-relative, unlike the sizes above, because its only use is indexing into a body slice. Both tails are at
+// least one byte, so `CMD_SET_HEADER_SIZE + 1` is the shortest legal SET body.
 CMD_SET_HEADER_SIZE :: size_of(Command_Type) + size_of(Reg_Id) + size_of(Set_Mode) + size_of(Source_Kind)
 
 // For SET operations, whether the register should be overwritten or appended
@@ -768,11 +779,13 @@ free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
 
 // SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b source Reg_Id]`
 marshal_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, buf: []byte) -> int {
-    buf[0] = byte(Command_Type.SET)
-    buf[1] = byte(dest)
-    buf[2] = byte(set_mode)
-    buf[3] = byte(Source_Kind.REGISTER)
-    buf[4] = byte(source)
+    buf[0] = byte(PROTOCOL_VERSION)
+    body := buf[CMD_VERSION_SIZE:]
+    body[0] = byte(Command_Type.SET)
+    body[1] = byte(dest)
+    body[2] = byte(set_mode)
+    body[3] = byte(Source_Kind.REGISTER)
+    body[4] = byte(source)
     return CMD_SET_REG_SIZE
 }
 
@@ -781,23 +794,25 @@ marshal_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, bu
 //
 // Callers must reject mimes longer than MAX_MIME_LEN beforehand; `write_resp_mime` clamps rather than failing.
 marshal_cmd_set_inline :: proc(dest: Reg_Id, set_mode: Set_Mode, mimes: []string, data: []byte, buf: []byte) -> int {
-    buf[0] = byte(Command_Type.SET)
-    buf[1] = byte(dest)
-    buf[2] = byte(set_mode)
-    buf[3] = byte(Source_Kind.INLINE)
-    buf[4] = u8(min(len(mimes), int(max(u8))))
+    buf[0] = byte(PROTOCOL_VERSION)
+    body := buf[CMD_VERSION_SIZE:]
+    body[0] = byte(Command_Type.SET)
+    body[1] = byte(dest)
+    body[2] = byte(set_mode)
+    body[3] = byte(Source_Kind.INLINE)
+    body[4] = u8(min(len(mimes), int(max(u8))))
     written := CMD_SET_HEADER_SIZE + size_of(u8)
-    for mime in mimes[:int(buf[4])] {
-        written += write_resp_mime(buf[written:], mime)
+    for mime in mimes[:int(body[4])] {
+        written += write_resp_mime(body[written:], mime)
     }
-    copy(buf[written:][:len(data)], data)
+    copy(body[written:][:len(data)], data)
     written += len(data)
-    return written
+    return CMD_VERSION_SIZE + written
 }
 
 // Bytes `marshal_cmd_set_inline` will write, so the caller can size its buffer exactly.
 cmd_set_inline_size :: proc(mimes: []string, data: []byte) -> int {
-    size := CMD_SET_HEADER_SIZE + size_of(u8) + len(data)
+    size := CMD_VERSION_SIZE + CMD_SET_HEADER_SIZE + size_of(u8) + len(data)
     for mime in mimes {
         size += size_of(u8) + min(len(mime), MAX_MIME_LEN)
     }
@@ -811,43 +826,49 @@ cmd_set_inline_size :: proc(mimes: []string, data: []byte) -> int {
 // Callers must reject mimes longer than MAX_MIME_LEN before calling; this truncates rather than failing, matching
 // marshal_cmd_set_inline.
 marshal_cmd_get :: proc(groups: []Cmd_Get_Group, buf: []byte) -> int {
-    buf[0] = byte(Command_Type.GET)
-    buf[1] = u8(len(groups))
+    buf[0] = byte(PROTOCOL_VERSION)
+    body := buf[CMD_VERSION_SIZE:]
+    body[0] = byte(Command_Type.GET)
+    body[1] = u8(len(groups))
     written := size_of(Command_Type) + size_of(u8)
 
     for group in groups {
         filter_bytes := transmute([8]byte)group.filter
-        copy(buf[written:][:size_of(Cmd_Get_Filter)], filter_bytes[:])
+        copy(body[written:][:size_of(Cmd_Get_Filter)], filter_bytes[:])
         written += size_of(Cmd_Get_Filter)
 
         switch pref in group.pref {
         case Ranked_Mime:
-            buf[written] = u8(pref)
+            body[written] = u8(pref)
             written += size_of(EXACT_MIME_TAG)
         case Exact_Mime:
-            buf[written] = EXACT_MIME_TAG
+            body[written] = EXACT_MIME_TAG
             written += size_of(EXACT_MIME_TAG)
             mime_len := u8(min(len(pref), MAX_MIME_LEN))
-            buf[written] = byte(mime_len)
+            body[written] = byte(mime_len)
             written += size_of(mime_len)
-            copy(buf[written:][:int(mime_len)], string(pref))
+            copy(body[written:][:int(mime_len)], string(pref))
             written += int(mime_len)
         }
     }
 
-    return written
+    return CMD_VERSION_SIZE + written
 }
 
 // CLEAR: `[1b Message_Type][1b Reg_Id]`
 marshal_cmd_clear :: proc(reg_id: Reg_Id, buf: []byte) -> int {
-    buf[0] = byte(Command_Type.CLEAR)
-    buf[1] = byte(reg_id)
+    buf[0] = byte(PROTOCOL_VERSION)
+    body := buf[CMD_VERSION_SIZE:]
+    body[0] = byte(Command_Type.CLEAR)
+    body[1] = byte(reg_id)
     return CMD_CLEAR_SIZE
 }
 
 // SHUTDOWN: `[1b Message_Type]`
 marshal_cmd_shutdown :: proc(buf: []byte) -> int {
-    buf[0] = byte(Command_Type.SHUTDOWN)
+    buf[0] = byte(PROTOCOL_VERSION)
+    body := buf[CMD_VERSION_SIZE:]
+    body[0] = byte(Command_Type.SHUTDOWN)
     return CMD_SHUTDOWN_SIZE
 }
 
@@ -1207,6 +1228,7 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 // Keeping them separate lets the GET format change without touching persistence.
 //
 // Wire format:
+//   [1b STATE_VERSION]
 //   [1b count]
 //   for entry in count:
 //     [1b Reg_Id][8b i64 timestamp][1b blob_count]
@@ -1214,9 +1236,14 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 //       [1b mime_count]
 //       for mime in mime_count: [1b mime_len][mime_len bytes]
 //       [4b u32 data_len][data_len bytes]
+
+// Bytes the `STATE_VERSION` prefix occupies. Everything after it is the state *body*, so the per-entry offsets above are
+// independent of the prefix.
+STATE_VERSION_SIZE :: size_of(Monotonic_Version)
+
 // Exact serialized size of `regs` in the state format, so a caller can allocate a buffer that fits instead of guessing.
 state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
-    size := size_of(u8) // entry count
+    size := STATE_VERSION_SIZE + size_of(u8) // version prefix + entry count
     for entry in regs {
         if entry == nil {continue}
         size += size_of(Reg_Id) + size_of(i64) + size_of(u8)
@@ -1235,6 +1262,9 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
     // Every write below is unchecked, so a short buffer would run off the end. Size it with `state_size`.
     assert(len(buf) >= state_size(regs), "marshal_state buffer too small; size it with state_size()")
 
+    buf[0] = byte(STATE_VERSION)
+    body := buf[STATE_VERSION_SIZE:] // every offset below is relative to the body, not the file
+
     written := size_of(u8) // reserve count byte
     count: u8 = 0
 
@@ -1242,42 +1272,42 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
         if entry_ptr == nil {continue}
 
         // Reg ID u8
-        buf[written] = byte(id)
+        body[written] = byte(id)
         written += size_of(Reg_Id)
 
         // Timestamp i64
         time_bytes := transmute([size_of(i64)]byte)entry_ptr.timestamp
-        copy(buf[written:][:size_of(i64)], time_bytes[:])
+        copy(body[written:][:size_of(i64)], time_bytes[:])
         written += size_of(i64)
 
         // Blob count u8
-        buf[written] = u8(len(entry_ptr.reprs))
+        body[written] = u8(len(entry_ptr.reprs))
         written += size_of(u8)
 
         for repr in entry_ptr.reprs {
             // Mime count u8, then each [mime_len u8][mime bytes]
-            buf[written] = u8(len(repr.mimes))
+            body[written] = u8(len(repr.mimes))
             written += size_of(u8)
             for mime in repr.mimes {
                 // Clamp rather than wrap: `u8(len(mime))` on a 256-byte name yields 0, which would write the mime's
                 // bytes with a length of zero and desync every subsequent field. `write_resp_mime` clamps the same way.
-                written += write_resp_mime(buf[written:], mime)
+                written += write_resp_mime(body[written:], mime)
             }
 
             // Data length u32 + data bytes
             data_len := u32(len(repr.data))
             data_len_bytes := transmute([size_of(u32)]byte)data_len
-            copy(buf[written:][:size_of(u32)], data_len_bytes[:])
+            copy(body[written:][:size_of(u32)], data_len_bytes[:])
             written += size_of(u32)
-            copy(buf[written:][:int(data_len)], repr.data)
+            copy(body[written:][:int(data_len)], repr.data)
             written += int(data_len)
         }
 
         count += 1
     }
 
-    buf[0] = byte(count)
-    return written
+    body[0] = byte(count)
+    return STATE_VERSION_SIZE + written
 }
 
 // Deserialize state into owned entries indexed by Reg_Id. Slots not present are left zeroed.
@@ -1300,21 +1330,33 @@ unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8, 
 // Decoding half of `unmarshal_state`. Leaves `regs` partially filled on error; the caller sweeps it.
 unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8, err: Maybe(string)) {
     regs^ = {}
-    if len(buf) == 0 {
+    if len(buf) < STATE_VERSION_SIZE {
         return 0, "state file is empty"
     }
-    count = u8(buf[0])
+
+    // Checked before anything else is read: a file from a different format version would otherwise decode this byte as
+    // the entry count and every field after it at the wrong offset, which can parse "successfully" into garbage.
+    version := Monotonic_Version(buf[0])
+    if version != STATE_VERSION {
+        return 0, fmt.tprintf("state file version %d, expected %d", version, STATE_VERSION)
+    }
+    body := buf[STATE_VERSION_SIZE:] // every offset below is relative to the body, not the file
+
+    if len(body) == 0 {
+        return 0, "state file has no entry count"
+    }
+    count = u8(body[0])
 
     offset := 1
     for entry_idx in 0 ..< int(count) {
         // Reg_Id + timestamp + blob count, read together since they are fixed-width.
         header_size := size_of(Reg_Id) + size_of(i64) + size_of(u8)
-        if offset + header_size > len(buf) {
-            err = fmt.tprintf("entry %d: header needs %d bytes, %d remain", entry_idx, header_size, len(buf) - offset)
+        if offset + header_size > len(body) {
+            err = fmt.tprintf("entry %d: header needs %d bytes, %d remain", entry_idx, header_size, len(body) - offset)
             return
         }
 
-        reg_id := Reg_Id(buf[offset])
+        reg_id := Reg_Id(body[offset])
         if !reg_id_is_valid(reg_id) {
             err = fmt.tprintf("entry %d: invalid register id %d", entry_idx, u8(reg_id))
             return
@@ -1322,11 +1364,11 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
         offset += size_of(Reg_Id)
 
         time_bytes: [size_of(i64)]byte
-        copy(time_bytes[:], buf[offset:][:size_of(i64)])
+        copy(time_bytes[:], body[offset:][:size_of(i64)])
         time := transmute(i64)time_bytes
         offset += size_of(i64)
 
-        blob_count := int(buf[offset])
+        blob_count := int(body[offset])
         offset += size_of(u8)
 
         // Counts are `u8`, so they cannot drive a large allocation,  but a repeated `reg_id` would leak the entry
@@ -1346,11 +1388,11 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
         }
 
         for b in 0 ..< blob_count {
-            if offset + size_of(u8) > len(buf) {
+            if offset + size_of(u8) > len(body) {
                 err = fmt.tprintf("entry %d repr %d: missing mime count", entry_idx, b)
                 return
             }
-            mime_count := int(buf[offset])
+            mime_count := int(body[offset])
             offset += size_of(u8)
             if mime_count == 0 {
                 err = fmt.tprintf("entry %d repr %d: no mimes", entry_idx, b)
@@ -1365,7 +1407,7 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
             }
 
             for m in 0 ..< mime_count {
-                mime, mime_err := read_resp_mime(buf, &offset)
+                mime, mime_err := read_resp_mime(body, &offset)
                 if mime_err != nil {
                     err = fmt.tprintf("entry %d repr %d mime %d: %s", entry_idx, b, m, mime_err.?)
                     return
@@ -1374,27 +1416,27 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
                 mimes_filled += 1
             }
 
-            if offset + size_of(u32) > len(buf) {
+            if offset + size_of(u32) > len(body) {
                 err = fmt.tprintf("entry %d repr %d: missing data length", entry_idx, b)
                 return
             }
             data_len_bytes: [size_of(u32)]byte
-            copy(data_len_bytes[:], buf[offset:][:size_of(u32)])
+            copy(data_len_bytes[:], body[offset:][:size_of(u32)])
             data_len := int(transmute(u32)data_len_bytes)
             offset += size_of(u32)
 
             // `int` arithmetic, so a `data_len` of 0xFFFFFFFF is caught here rather than wrapping the comparison.
-            if offset + data_len > len(buf) {
+            if offset + data_len > len(body) {
                 err = fmt.tprintf(
                     "entry %d repr %d: data needs %d bytes, %d remain",
                     entry_idx,
                     b,
                     data_len,
-                    len(buf) - offset,
+                    len(body) - offset,
                 )
                 return
             }
-            data := slice.clone(buf[offset:][:data_len])
+            data := slice.clone(body[offset:][:data_len])
             offset += data_len
 
             reprs[b] = Data_Repr {
