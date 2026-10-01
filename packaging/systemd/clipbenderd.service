@@ -7,10 +7,17 @@ StartLimitBurst=5
 StartLimitIntervalSec=30
 
 [Service]
-Type=simple
+# Startup fails if the binary cannot be executed, rather than reporting success and then restarting in a loop.
+Type=exec
+# If installed to a non-systemd search path (e.g. `~/.local/bin`), this needs to be changed to reference that path e.g.
+#   ExecStart=%h/.local/bin/clipbenderd
 ExecStart=clipbenderd
 Restart=on-failure
 RestartSec=3
+
+# Put the daemon in an empty network space so it cannot open a network socket.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
 
 [Install]
 WantedBy=graphical-session.target
