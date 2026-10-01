@@ -3,6 +3,7 @@ package libclipbender
 import "core:encoding/json"
 import "core:fmt"
 import "core:log"
+import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -750,9 +751,33 @@ clone_data_reprs :: proc(reprs: []Data_Repr) -> []Data_Repr {
     return cloned_reprs
 }
 
-// Free a repr.
+// Safe on a nil or zero-length slice.
+zero_and_delete_slice :: proc(
+    array: $T/[]$E,
+    allocator := context.allocator,
+    loc := #caller_location,
+) -> mem.Allocator_Error {
+    mem.zero_explicit(raw_data(array), size_of(E) * len(array))
+    return delete(array, allocator, loc)
+}
+
+// Zeroes the whole capacity rather than `len`: a caller that shrinks `len` after a partial fill would otherwise leave
+// content in the tail.
+zero_and_delete_dynamic :: proc(array: $T/[dynamic]$E, loc := #caller_location) -> mem.Allocator_Error {
+    mem.zero_explicit(raw_data(array), size_of(E) * cap(array))
+    return delete(array, loc)
+}
+
+// Free a repr and zero `data` before it is released, so freed clipboard contents are not left readable in the heap
+// block until something else happens to reuse it. Safe on a nil or zero-length slice.
+zero_and_delete :: proc {
+    zero_and_delete_slice,
+    zero_and_delete_dynamic,
+}
+
+// Only `data` is zeroed: the mimes are format names, not content.
 free_data_repr :: proc(repr: Data_Repr) {
-    delete(repr.data)
+    zero_and_delete(repr.data)
     for mime in repr.mimes {
         delete(mime)
     }

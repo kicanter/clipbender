@@ -298,14 +298,18 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
             fmt.eprintfln("Error: %v", err.?)
             print_cmd_usage_and_exit(.SET)
         }
+
+        // SET with inline data is an N-byte message; size it to the content rather than guessing.
+        msg := make([]byte, lib.cmd_set_inline_size(mimes, data))
+
         defer {
             for mime in mimes {delete(mime)}
             delete(mimes)
+
+            // Both hold the payload -- `data` as read from stdin, `msg` as the marshalled copy.
+            lib.zero_and_delete(data)
+            lib.zero_and_delete(msg)
         }
-        defer delete(data)
-        // SET with inline data is an N-byte message; size it to the content rather than guessing.
-        msg := make([]byte, lib.cmd_set_inline_size(mimes, data))
-        defer delete(msg)
         written := lib.marshal_cmd_set_inline(dest_reg, set_mode, mimes, data, msg[:])
         _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
         if send_err != nil {

@@ -678,7 +678,7 @@ read_pipe_blob :: proc(read_fd: linux.Fd, mime: string) -> []u8 {
         poll_ret, poll_err := linux.poll(poll_fd[:], PIPE_TIMEOUT_MS)
         if poll_err != .NONE || poll_ret <= 0 {
             log.errorf("Timed out waiting for source app to write mime `%s`: errno %v", mime, poll_err)
-            delete(result)
+            lib.zero_and_delete(result)
             return nil
         }
 
@@ -688,7 +688,7 @@ read_pipe_blob :: proc(read_fd: linux.Fd, mime: string) -> []u8 {
         bytes_read, err := linux.read(read_fd, result[old:])
         if err != .NONE {     // boooo :(
             log.errorf("Failed reading mime `%s` from source app after %d bytes: errno %v", mime, old, err)
-            delete(result)
+            lib.zero_and_delete(result)
             return nil
         } else if bytes_read == 0 {     // EOF success!
             resize(&result, old) // discard the unfilled tail
@@ -702,13 +702,13 @@ read_pipe_blob :: proc(read_fd: linux.Fd, mime: string) -> []u8 {
                 lib.MAX_READ_SIZE,
                 mime,
             )
-            delete(result)
+            lib.zero_and_delete(result)
             return nil
         }
     }
 
     if len(result) == 0 {
-        delete(result)
+        lib.zero_and_delete(result)
         return nil
     }
 
