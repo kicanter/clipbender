@@ -167,26 +167,42 @@ test_table_cell_multibyte_width_counted_in_runes :: proc(t: ^testing.T) {
 @(test)
 test_display_content_binary_is_described_not_rendered :: proc(t: ^testing.T) {
     data := [?]byte{0x89, 'P', 'N', 'G', 0xFF, 0xFE}
-    mimes := [?]string{}
+    mimes := [?]string{"image/png"}
+    reprs := [?]lib.Resp_Repr{{mimes = mimes[:], size = u64(len(data))}}
     entry := lib.Resp_Reg {
-        mime        = "image/png",
-        data        = data[:],
-        other_mimes = mimes[:],
+        reprs    = reprs[:],
+        selected = 0,
+        data     = data[:],
     }
     result := display_content(entry, CONTENT_COL_WIDTH)
-    testing.expect_value(t, strings.trim_space(result), "[6 bytes of binary data]")
+    testing.expect_value(t, strings.trim_space(result), "[image/png 6 B]")
     testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
 }
 
 @(test)
-test_display_content_no_printable_mime :: proc(t: ^testing.T) {
-    others := [?]string{"image/png"}
+test_display_content_describes_unsent_repr :: proc(t: ^testing.T) {
+    // Nothing matched the preference, so no bytes arrived -- but the descriptor did, which is what lets the cell say what
+    // the register actually holds instead of rendering as blank.
+    mimes := [?]string{"image/png"}
+    reprs := [?]lib.Resp_Repr{{mimes = mimes[:], size = 67413, meta = lib.Image_Dims{600, 300}}}
     entry := lib.Resp_Reg {
-        mime        = "",
-        other_mimes = others[:],
+        reprs    = reprs[:],
+        selected = lib.RESP_SELECTED_NONE,
     }
     result := display_content(entry, CONTENT_COL_WIDTH)
-    testing.expect_value(t, strings.trim_space(result), "[no printable mime]")
+    testing.expect_value(t, strings.trim_space(result), "[image/png 600x300 65.8 kiB]")
+}
+
+@(test)
+test_display_content_unsent_repr_without_dims :: proc(t: ^testing.T) {
+    mimes := [?]string{"application/pdf"}
+    reprs := [?]lib.Resp_Repr{{mimes = mimes[:], size = 2048}}
+    entry := lib.Resp_Reg {
+        reprs    = reprs[:],
+        selected = lib.RESP_SELECTED_NONE,
+    }
+    result := display_content(entry, CONTENT_COL_WIDTH)
+    testing.expect_value(t, strings.trim_space(result), "[application/pdf 2.0 kiB]")
 }
 
 // json_escape_string tests

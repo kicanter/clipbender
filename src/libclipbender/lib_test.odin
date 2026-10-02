@@ -297,8 +297,10 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
     // Entries land at their original Reg_Id slots, with the chosen repr's bytes in reprs[0].
     for id in ([]Reg_Id{clip0, named3, primary2}) {
         testing.expect_value(t, dec[id].timestamp, regs[id].timestamp)
-        testing.expect_value(t, dec[id].mime, regs[id].reprs[0].mimes[0])
-        testing.expect_value(t, len(dec[id].other_mimes), 0)
+        testing.expect_value(t, len(dec[id].reprs), 1)
+        testing.expect_value(t, dec[id].selected, 0)
+        testing.expect_value(t, dec[id].reprs[0].mimes[0], regs[id].reprs[0].mimes[0])
+        testing.expect_value(t, dec[id].reprs[0].size, u64(len(regs[id].reprs[0].data)))
         testing.expect(t, slice.equal(dec[id].data, regs[id].reprs[0].data))
     }
 }
@@ -330,11 +332,14 @@ test_resp_registers_sent_mime_in_own_slot :: proc(t: ^testing.T) {
     _, derr := unmarshal_resp_registers(buf[1:n], &dec)
     testing.expect_value(t, derr, nil)
 
-    testing.expect_value(t, dec[id].mime, "image/png")
+    // Both reprs are described in their original order; `selected` names the one whose bytes travelled.
+    testing.expect_value(t, len(dec[id].reprs), 2)
+    testing.expect_value(t, dec[id].selected, 1)
+    testing.expect_value(t, dec[id].reprs[1].mimes[0], "image/png")
     testing.expect_value(t, string(dec[id].data), "PNGDATA")
-    // The other name is a mime preview: it is listed, but its bytes were not sent.
-    testing.expect_value(t, len(dec[id].other_mimes), 1)
-    testing.expect_value(t, dec[id].other_mimes[0], "text/html")
+    // The unsent repr still carries its name and its size, which is the point of describing every repr.
+    testing.expect_value(t, dec[id].reprs[0].mimes[0], "text/html")
+    testing.expect_value(t, dec[id].reprs[0].size, u64(len("<p>hi</p>")))
 }
 
 @(test)
@@ -362,11 +367,13 @@ test_resp_registers_mime_preview_when_nothing_matched :: proc(t: ^testing.T) {
     count, derr := unmarshal_resp_registers(buf[1:n], &dec)
     testing.expect_value(t, derr, nil)
     testing.expect_value(t, count, 1)
-    // `mime` is empty exactly because no representation was sent; the name still travels as preview.
-    testing.expect_value(t, dec[id].mime, "")
+    // Nothing was selected, but the repr is still fully described -- name, size, and dimensions if readable -- which is
+    // what lets a client show the register instead of rendering it as empty.
+    testing.expect(t, resp_reg_selected(dec[id]) == nil, "nothing should be selected")
     testing.expect_value(t, len(dec[id].data), 0)
-    testing.expect_value(t, len(dec[id].other_mimes), 1)
-    testing.expect_value(t, dec[id].other_mimes[0], "image/png")
+    testing.expect_value(t, len(dec[id].reprs), 1)
+    testing.expect_value(t, dec[id].reprs[0].mimes[0], "image/png")
+    testing.expect_value(t, dec[id].reprs[0].size, u64(len("PNGDATA")))
 }
 
 @(test)
@@ -393,14 +400,18 @@ test_resp_registers_all_mimes_travel :: proc(t: ^testing.T) {
     _, derr := unmarshal_resp_registers(buf[1:n], &dec)
     testing.expect_value(t, derr, nil)
 
-    // The sent representation's first name fills the slot; its aliases join the preview list alongside the png, since
-    // they name the same bytes. No repr grouping survives the wire.
-    testing.expect_value(t, dec[id].mime, "text/plain;charset=utf-8")
+    // Grouping survives the wire: the three text names stay together under one repr, so a client can tell they share a
+    // payload and need not re-request to switch between them. The flat list this replaced could not express that.
+    testing.expect_value(t, len(dec[id].reprs), 2)
+    testing.expect_value(t, dec[id].selected, 0)
     testing.expect_value(t, string(dec[id].data), "hi")
-    testing.expect_value(t, len(dec[id].other_mimes), 3)
-    testing.expect_value(t, dec[id].other_mimes[0], "text/plain")
-    testing.expect_value(t, dec[id].other_mimes[1], "STRING")
-    testing.expect_value(t, dec[id].other_mimes[2], "image/png")
+    testing.expect_value(t, len(dec[id].reprs[0].mimes), 3)
+    testing.expect_value(t, dec[id].reprs[0].mimes[0], "text/plain;charset=utf-8")
+    testing.expect_value(t, dec[id].reprs[0].mimes[1], "text/plain")
+    testing.expect_value(t, dec[id].reprs[0].mimes[2], "STRING")
+    testing.expect_value(t, len(dec[id].reprs[1].mimes), 1)
+    testing.expect_value(t, dec[id].reprs[1].mimes[0], "image/png")
+    testing.expect_value(t, dec[id].reprs[1].size, u64(len("PNGDATA")))
 }
 
 @(test)
@@ -1258,4 +1269,293 @@ test_sniff_window_is_bounded :: proc(t: ^testing.T) {
     far := fmt.tprintf("<?xml version=\"1.0\"?>%s<svg/>", string(padding))
     mimes := resolve_mimes(transmute([]byte)far)
     testing.expect_value(t, mimes[0], "application/xml") // XML, not SVG
+}
+
+// `image_dimensions`. Every format stores them at a different offset in a different width and endianness, so each needs
+// its own case -- and a short buffer must report nothing rather than read past the end, since the magic table matches a
+// 4-byte prefix and a register can be labelled `image/png` with fewer bytes than an IHDR needs.
+
+@(test)
+test_image_dimensions_png :: proc(t: ^testing.T) {
+    // 8B signature, then [4B len][4B "IHDR"][4B width BE][4B height BE]
+    data: [26]byte
+    copy(data[:], []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
+    copy(data[8:], []byte{0, 0, 0, 13, 'I', 'H', 'D', 'R'})
+    copy(data[16:], []byte{0x00, 0x00, 0x02, 0x58}) // 600
+    copy(data[20:], []byte{0x00, 0x00, 0x01, 0x2c}) // 300
+    dims, ok := image_dimensions(data[:], "image/png")
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+@(test)
+test_image_dimensions_gif :: proc(t: ^testing.T) {
+    // "GIF89a" then width/height as little-endian u16
+    data: [10]byte
+    copy(data[:], []byte{'G', 'I', 'F', '8', '9', 'a', 0x58, 0x02, 0x2c, 0x01})
+    dims, ok := image_dimensions(data[:], "image/gif")
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+@(test)
+test_image_dimensions_bmp_negative_height_is_top_down :: proc(t: ^testing.T) {
+    // A negative height is legal and means the rows are stored top-down, so the magnitude is the dimension. Read as
+    // unsigned it would come back as ~4 billion.
+    data: [26]byte
+    copy(data[:], []byte{'B', 'M'})
+    copy(data[18:], []byte{0x58, 0x02, 0x00, 0x00}) // 600
+    copy(data[22:], []byte{0xd4, 0xfe, 0xff, 0xff}) // -300
+    dims, ok := image_dimensions(data[:], "image/bmp")
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+@(test)
+test_image_dimensions_qoi :: proc(t: ^testing.T) {
+    data: [14]byte
+    copy(data[:], []byte{'q', 'o', 'i', 'f'})
+    copy(data[4:], []byte{0x00, 0x00, 0x02, 0x58})
+    copy(data[8:], []byte{0x00, 0x00, 0x01, 0x2c})
+    dims, ok := image_dimensions(data[:], "image/qoi")
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+@(test)
+test_image_dimensions_short_buffer_reports_nothing :: proc(t: ^testing.T) {
+    // The case a real register hits: `printf '\x89PNG' > f` matches MAGIC_PNG but has no IHDR at all.
+    four := [?]byte{0x89, 'P', 'N', 'G'}
+    _, ok := image_dimensions(four[:], "image/png")
+    testing.expect(t, !ok, "a 4-byte PNG has no IHDR and must report no dimensions")
+
+    // Every truncation of a valid header must also be refused rather than read past the end.
+    full: [26]byte
+    copy(full[:], []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
+    copy(full[16:], []byte{0x00, 0x00, 0x02, 0x58})
+    copy(full[20:], []byte{0x00, 0x00, 0x01, 0x2c})
+    for cut in 0 ..< 24 {
+        _, cut_ok := image_dimensions(full[:cut], "image/png")
+        testing.expectf(t, !cut_ok, "a %d-byte PNG must report no dimensions", cut)
+    }
+
+    _, empty_ok := image_dimensions({}, "image/png")
+    testing.expect(t, !empty_ok, "an empty buffer must report no dimensions")
+}
+
+@(test)
+test_image_dimensions_unknown_and_unparsed_formats :: proc(t: ^testing.T) {
+    big: [64]byte
+    _, text_ok := image_dimensions(big[:], "text/plain")
+    testing.expect(t, !text_ok, "a non-image mime has no dimensions")
+    // TIFF is tag/IFD based and the ISOBMFF formats need a box walk to reach `ispe`, so they report nothing rather than
+    // guess. They are reachable mimes, so this is a deliberate gap and not an oversight.
+    for mime in ([]string{"image/tiff", "image/jxl", "image/avif", "image/heic", "image/svg+xml"}) {
+        _, ok := image_dimensions(big[:], mime)
+        testing.expectf(t, !ok, "%s is not parsed and must report nothing rather than guess", mime)
+    }
+}
+
+// JPEG: dimensions sit in a Start-Of-Frame segment at no fixed offset, so the walk has to skip whatever metadata
+// precedes it. Validated against 40 real JPEGs on disk, all matching `file(1)`.
+
+@(test)
+test_image_dimensions_jpeg_skips_preceding_segments :: proc(t: ^testing.T) {
+    // SOI, an APP0/JFIF segment, a DHT, then SOF0. DHT is 0xC4 -- inside the SOF marker range but not a frame header, so
+    // a parser treating 0xC0-0xCF as contiguous reads its payload as dimensions and returns garbage.
+    data := [?]byte {
+        0xFF, 0xD8, // SOI
+        0xFF, 0xE0, 0x00, 0x10, // APP0, length 16 (2 + 14 payload)
+        'J', 'F', 'I', 'F', 0x00, 0x01, 0x02, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        0xFF, 0xC4, 0x00, 0x05, // DHT, length 5 (2 + 3 payload)
+        0x00, 0x00, 0x00,
+        0xFF, 0xC0, 0x00, 0x11, // SOF0, length 17
+        0x08, // precision
+        0x01, 0x2C, // height 300 -- height precedes width in SOF
+        0x02, 0x58, // width 600
+        0x03, // components
+        0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+    }
+    dims, ok := image_dimensions(data[:], "image/jpeg")
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+@(test)
+test_image_dimensions_jpeg_progressive_sof2 :: proc(t: ^testing.T) {
+    // SOF2 is progressive JPEG; the frame header layout is identical, so it must be accepted too.
+    data := [?]byte {
+        0xFF, 0xD8,
+        0xFF, 0xC2, 0x00, 0x0B, // SOF2, length 11
+        0x08, 0x00, 0x40, 0x00, 0x80, 0x01, 0x01, 0x11, 0x00,
+    }
+    dims, ok := image_dimensions(data[:], "image/jpeg")
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(128))
+    testing.expect_value(t, dims.height, u32(64))
+}
+
+@(test)
+test_image_dimensions_jpeg_rejects_malformed :: proc(t: ^testing.T) {
+    // No SOI
+    not_jpeg := [?]byte{0x00, 0x01, 0x02, 0x03}
+    _, ok1 := image_dimensions(not_jpeg[:], "image/jpeg")
+    testing.expect(t, !ok1, "a buffer without SOI is not a JPEG")
+
+    // SOI then a segment whose length cannot cover its own field, which would otherwise stall the walk
+    bad_len := [?]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x00, 0x00, 0x00}
+    _, ok2 := image_dimensions(bad_len[:], "image/jpeg")
+    testing.expect(t, !ok2, "a segment length below 2 must be rejected")
+
+    // SOI with no SOF anywhere: walks to the end and reports nothing instead of looping
+    no_sof := [?]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xD9}
+    _, ok3 := image_dimensions(no_sof[:], "image/jpeg")
+    testing.expect(t, !ok3, "a JPEG with no frame header has no dimensions")
+
+    // Every truncation of the valid fixture must be refused rather than read past the end
+    full := [?]byte {
+        0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x02, 0x58, 0x03,
+        0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+    }
+    for cut in 0 ..< 11 {
+        _, cut_ok := image_dimensions(full[:cut], "image/jpeg")
+        testing.expectf(t, !cut_ok, "a %d-byte JPEG must report no dimensions", cut)
+    }
+}
+
+// WebP: a RIFF container whose first chunk tag picks one of three encodings, none of which stores dimensions as a plain
+// integer. VP8X is validated against real files; VP8 and VP8L are built from the spec here.
+
+@(test)
+test_image_dimensions_webp_vp8x :: proc(t: ^testing.T) {
+    // Extended format: canvas dimensions are 24-bit little-endian and stored minus one.
+    data := [?]byte {
+        'R', 'I', 'F', 'F', 0x00, 0x00, 0x00, 0x00, 'W', 'E', 'B', 'P',
+        'V', 'P', '8', 'X', 0x0A, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, // flags
+        0x57, 0x02, 0x00, // width-1  = 599
+        0x2B, 0x01, 0x00, // height-1 = 299
+    }
+    dims, ok := image_dimensions(data[:], "image/webp")
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+@(test)
+test_image_dimensions_webp_vp8_lossy :: proc(t: ^testing.T) {
+    // Lossy: the top two bits of each 16-bit field are a scale factor, so they must be masked off.
+    data := [?]byte {
+        'R', 'I', 'F', 'F', 0x00, 0x00, 0x00, 0x00, 'W', 'E', 'B', 'P',
+        'V', 'P', '8', ' ', 0x0A, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, // frame tag
+        0x9D, 0x01, 0x2A, // start code
+        0x58, 0xC2, // 600 with scale bits set in the top two
+        0x2C, 0x41, // 300 with a scale bit set
+    }
+    dims, ok := image_dimensions(data[:], "image/webp")
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+@(test)
+test_image_dimensions_webp_vp8l_lossless :: proc(t: ^testing.T) {
+    // Lossless: 14 bits of width-1 then 14 bits of height-1, packed little-endian after a 0x2F signature.
+    // 599 | (299 << 14) = 0x004AC257
+    data := [?]byte {
+        'R', 'I', 'F', 'F', 0x00, 0x00, 0x00, 0x00, 'W', 'E', 'B', 'P',
+        'V', 'P', '8', 'L', 0x05, 0x00, 0x00, 0x00,
+        0x2F,
+        0x57, 0xC2, 0x4A, 0x00,
+    }
+    dims, ok := image_dimensions(data[:], "image/webp")
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+@(test)
+test_image_dimensions_webp_rejects_malformed :: proc(t: ^testing.T) {
+    not_riff := [?]byte{'X', 'X', 'X', 'X', 0, 0, 0, 0, 'W', 'E', 'B', 'P', 'V', 'P', '8', 'X', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    _, ok1 := image_dimensions(not_riff[:], "image/webp")
+    testing.expect(t, !ok1, "a non-RIFF container is not a WebP")
+
+    unknown_chunk := [?]byte{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P', 'J', 'U', 'N', 'K', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    _, ok2 := image_dimensions(unknown_chunk[:], "image/webp")
+    testing.expect(t, !ok2, "an unrecognised first chunk yields no dimensions")
+
+    short := [?]byte{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'}
+    _, ok3 := image_dimensions(short[:], "image/webp")
+    testing.expect(t, !ok3, "a header with no chunk payload yields no dimensions")
+}
+
+@(test)
+test_qoi_magic_resolves :: proc(t: ^testing.T) {
+    // The dimension reader is only reachable if the magic table can produce the mime in the first place.
+    qoi := [?]byte{'q', 'o', 'i', 'f', 0x00, 0x00, 0x02, 0x58, 0x00, 0x00, 0x01, 0x2C, 0x04, 0x00}
+    mimes := resolve_mimes(qoi[:])
+    testing.expect(t, len(mimes) > 0, "qoif should match a magic")
+    testing.expect_value(t, mimes[0], "image/qoi")
+    dims, ok := image_dimensions(qoi[:], mimes[0])
+    testing.expect(t, ok)
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+// `Repr_Meta` wire round trip.
+
+@(test)
+test_repr_meta_round_trips :: proc(t: ^testing.T) {
+    buf: [32]byte
+    n := write_repr_meta(buf[:], Image_Dims{600, 300})
+    offset := 0
+    meta, err := read_repr_meta(buf[:n], &offset)
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, offset, n)
+    dims, is_dims := meta.(Image_Dims)
+    testing.expect(t, is_dims, "should decode as Image_Dims")
+    testing.expect_value(t, dims.width, u32(600))
+    testing.expect_value(t, dims.height, u32(300))
+}
+
+@(test)
+test_repr_meta_none_round_trips :: proc(t: ^testing.T) {
+    buf: [32]byte
+    n := write_repr_meta(buf[:], nil)
+    testing.expect_value(t, n, size_of(Repr_Meta_Tag) + size_of(u8))
+    offset := 0
+    meta, err := read_repr_meta(buf[:n], &offset)
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, offset, n)
+    testing.expect(t, meta == nil, "NONE should decode as no metadata")
+}
+
+@(test)
+test_repr_meta_unknown_tag_is_skipped_not_fatal :: proc(t: ^testing.T) {
+    // The reason the length byte exists: a tag a client does not know is stepped over, leaving the stream aligned for
+    // whatever follows, rather than desyncing the rest of the entry.
+    buf := [?]byte{200, 3, 0xAA, 0xBB, 0xCC, 'n', 'e', 'x', 't'}
+    offset := 0
+    meta, err := read_repr_meta(buf[:], &offset)
+    testing.expect_value(t, err, nil)
+    testing.expect(t, meta == nil, "an unknown tag yields no metadata")
+    testing.expect_value(t, offset, 5)
+    testing.expect_value(t, string(buf[offset:]), "next")
+}
+
+@(test)
+test_repr_meta_rejects_truncation :: proc(t: ^testing.T) {
+    buf: [32]byte
+    n := write_repr_meta(buf[:], Image_Dims{1, 2})
+    for cut in 0 ..< n {
+        offset := 0
+        _, err := read_repr_meta(buf[:cut], &offset)
+        testing.expectf(t, err != nil, "a %d-byte meta field should be rejected", cut)
+    }
 }

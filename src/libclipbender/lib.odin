@@ -1,5 +1,6 @@
 package libclipbender
 
+import "core:encoding/endian"
 import "core:encoding/json"
 import "core:fmt"
 import "core:log"
@@ -393,6 +394,7 @@ IMAGE_MIMES := [?]string {
     "image/tiff",
     "image/bmp",
     "image/gif",
+    "image/qoi",
     "image/svg+xml",
 }
 
@@ -411,7 +413,8 @@ Cmd_Get_Group :: struct {
 // are at most MAX_REGS groups, and each mime is capped at 255 bytes by its u8 length field. Worst case is 16962 bytes,
 // ~26% of the buffer. This assert keeps that proof honest if the encoding ever grows.
 #assert(
-    size_of(Command_Type) +
+    CMD_VERSION_SIZE +
+        size_of(Command_Type) +
         size_of(u8) +
         MAX_REGS * (size_of(Cmd_Get_Filter) + size_of(EXACT_MIME_TAG) + size_of(u8) + 255) <=
     MAX_MSG_SIZE,
@@ -467,51 +470,231 @@ repr_with_mime :: proc(entry: ^Reg_Entry, mime: string) -> (int, bool) {
 // where each entry in REGISTERS is:
 //
 //     [1b Reg_Id][8b i64 timestamp]
-//     [1b mime len][mime len bytes]                       // the representation `data` holds; len 0 == none matched
-//     [1b other count][[1b mime len][mime len bytes]...]  // every other name the register offers
-//     [4b u32 data len][data len bytes]
+//     [1b u8 repr count]
+//     per repr:
+//         [1b u8 mime count][[1b u8 mime len][mime len bytes]...]  // these names all resolve to one payload
+//         [8b u64 size]                                            // size of this repr, sent or not
+//         [1b Repr_Meta_Tag][1b u8 meta len][meta len bytes]       // NONE carries no payload
+//     [1b u8 selected repr index]                                  // RESP_SELECTED_NONE when nothing matched
+//     [selected repr's size bytes]                                 // length read from the selected descriptor
 //
-// Every mime name the register offers, and the bytes of exactly one representation. If the first `mime len == 0` that
-// implies there was no data sent.
+// Every repr is described, but only one carries bytes. A client showing a register whose image repr was not sent still
+// needs its size and dimensions, and cannot derive them without the payload. It also lets a client that later wants a
+// different mime check whether it already holds that payload e.g. names grouped under one repr share bytes, so no
+// second request is needed.
 Resp_Status :: enum u8 {
     OK,
     ERROR,
     REGISTERS,
 }
 
-// One register as returned by GET: a projection of a `Reg_Entry` through a mime preference, not the entry itself.
+// Pixel dimensions for images, read from a repr's own header. `u32` because every format that stores them fixed-width
+// uses 32 bits or less.
+Image_Dims :: struct {
+    width:  u32,
+    height: u32,
+}
+
+// Metadata about a repr that a client cannot derive on its own, because the repr's bytes may not have been sent.
 //
-// `mime` names the representation `data` holds, and is `""` exactly when nothing matched the preference (in which case
-// `data` is empty too). `other_mimes` are names the register also offers whose bytes were not sent including any
-// additional names for the sent representation, since those describe the same bytes.
+// These meta tags are for info about the repr the user may want to see without the client having to fetch the entire
+// payload.
+Repr_Meta :: union {
+    Image_Dims,
+}
+
+Repr_Meta_Tag :: enum u8 {
+    NONE,
+    IMAGE_DIMS,
+}
+
+// A single representation in a REGISTERS response.
+Resp_Repr :: struct {
+    mimes: []string,
+    size:  u64,
+    meta:  Repr_Meta,
+}
+
+// We use an index value to specify which repr in the list of reprs the associated data blob bytes correlate with, if
+// any. If no data blob bytes were sent (no valid mime for the preference existed for the register), then we use this
+// sentinel to denote it.
+RESP_SELECTED_NONE :: 0xFF
+
+// A single register in a REGISTERS response.
+//
+// `selected` is the index in `reprs` that the bytes in `data` belong to, or is `RESP_SELECTED_NONE` if no mime was
+// found to be valid for the preference.
 Resp_Reg :: struct {
-    mime:        string,
-    data:        []byte,
-    other_mimes: []string,
-    timestamp:   i64,
+    reprs:     []Resp_Repr,
+    selected:  int,
+    data:      []byte,
+    timestamp: i64,
 }
 
-// True for a Reg_Id slot the response did not mention. A register that was returned always names at least one
-// representation (in `mime` if one was sent, in `other_mimes` otherwise) so an absence of names is the marker.
+// True for a Reg_Id slot the response did not mention. A register that was returned always describes at least one repr.
 resp_reg_is_empty :: proc(reg: Resp_Reg) -> bool {
-    return reg.mime == "" && len(reg.other_mimes) == 0
+    return len(reg.reprs) == 0
 }
 
-// Free the mime names, the other_mimes slice, and the data, then zero the entry.
+// The selected repr, or nil when the preference matched nothing.
+resp_reg_selected :: proc(reg: Resp_Reg) -> ^Resp_Repr {
+    if reg.selected < 0 || reg.selected >= len(reg.reprs) {return nil}
+    return &reg.reprs[reg.selected]
+}
+
+// Free every repr's mime names, the reprs slice, and the data, then zero the entry.
 free_resp_reg :: proc(reg: ^Resp_Reg) {
-    delete(reg.mime)
-    for mime in reg.other_mimes {
-        delete(mime)
+    for repr in reg.reprs {
+        for mime in repr.mimes {
+            delete(mime)
+        }
+        delete(repr.mimes)
     }
-    delete(reg.other_mimes)
-    delete(reg.data)
+    delete(reg.reprs)
+    zero_and_delete(reg.data)
     reg^ = {}
 }
 
+// Dimensions from a repr's header bytes, or `ok = false` when the format is unrecognised or the header is too short to
+// hold them. Short is normal, not exceptional: the magic table matches a 4-byte prefix, so a register can legitimately be
+// labelled `image/png` while holding fewer bytes than an IHDR chunk needs.
+image_dimensions :: proc(data: []byte, mime: string) -> (dims: Image_Dims, ok: bool) {
+    // `endian.get_*` bounds-check the slice it is handed, but slicing `data[off:]` would panic first on a short buffer.
+    read_u32 :: proc(data: []byte, offset: int, order: endian.Byte_Order) -> (u32, bool) {
+        if offset + size_of(u32) > len(data) {return 0, false}
+        return endian.get_u32(data[offset:], order)
+    }
+    read_u16 :: proc(data: []byte, offset: int, order: endian.Byte_Order) -> (u16, bool) {
+        if offset + size_of(u16) > len(data) {return 0, false}
+        return endian.get_u16(data[offset:], order)
+    }
+
+    switch mime {
+    case "image/png":
+        // IHDR is the first chunk and its data begins at offset 16, big-endian.
+        w, w_ok := read_u32(data, 16, .Big)
+        h, h_ok := read_u32(data, 20, .Big)
+        if !w_ok || !h_ok {return {}, false}
+        return {w, h}, true
+    case "image/gif":
+        w, w_ok := read_u16(data, 6, .Little)
+        h, h_ok := read_u16(data, 8, .Little)
+        if !w_ok || !h_ok {return {}, false}
+        return {u32(w), u32(h)}, true
+    case "image/bmp":
+        // Signed, and a negative height legitimately means the rows are stored top-down, so take the magnitude.
+        w, w_ok := read_u32(data, 18, .Little)
+        h, h_ok := read_u32(data, 22, .Little)
+        if !w_ok || !h_ok {return {}, false}
+        return {u32(abs(i32(w))), u32(abs(i32(h)))}, true
+    case "image/qoi":
+        // 4b "qoif", then width and height as big-endian u32: a 14-byte header with no chunk structure at all.
+        w, w_ok := read_u32(data, 4, .Big)
+        h, h_ok := read_u32(data, 8, .Big)
+        if !w_ok || !h_ok {return {}, false}
+        return {w, h}, true
+    case "image/jpeg":
+        return jpeg_dimensions(data)
+    case "image/webp":
+        return webp_dimensions(data)
+    }
+    return {}, false
+}
+
+// JPEG keeps dimensions in a Start-Of-Frame segment, reached by walking the segment chain from after the SOI marker.
+//
+// Note height precedes width in SOF, the reverse of every other format here.
+jpeg_dimensions :: proc(data: []byte) -> (dims: Image_Dims, ok: bool) {
+    if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {return {}, false}
+
+    offset := 2
+    for offset + 4 <= len(data) {
+        if data[offset] != 0xFF {return {}, false}     // lost segment sync; refuse rather than hunt
+        marker := data[offset + 1]
+        if marker == 0xFF {
+            offset += 1 // fill byte: any number of 0xFF may pad before a marker
+            continue
+        }
+        // Standalone markers carry no length field: TEM, the restart markers, and a repeated SOI/EOI.
+        if marker == 0x01 || (marker >= 0xD0 && marker <= 0xD9) {
+            offset += 2
+            continue
+        }
+        seg_len, len_ok := endian.get_u16(data[offset + 2:], .Big)
+        // A length under 2 cannot even cover its own field, and would stall the walk.
+        if !len_ok || seg_len < 2 {return {}, false}
+
+        if is_jpeg_sof(marker) {
+            // SOF payload: [1b precision][2b height][2b width][1b component count]
+            if offset + 9 > len(data) {return {}, false}
+            h, h_ok := endian.get_u16(data[offset + 5:], .Big)
+            w, w_ok := endian.get_u16(data[offset + 7:], .Big)
+            if !h_ok || !w_ok {return {}, false}
+            return {u32(w), u32(h)}, true
+        }
+        offset += 2 + int(seg_len)
+    }
+    return {}, false
+}
+
+// Frame headers are SOF0-3, SOF5-7, SOF9-11 and SOF13-15.
+is_jpeg_sof :: proc(marker: byte) -> bool {
+    switch marker {
+    case 0xC0 ..= 0xC3, 0xC5 ..= 0xC7, 0xC9 ..= 0xCB, 0xCD ..= 0xCF:
+        return true
+    }
+    return false
+}
+
+// WebP is a RIFF container e.g. `RIFF[4b size]WEBP` then chunks. The first chunk's tag says which of three codecs wrote
+// it.
+webp_dimensions :: proc(data: []byte) -> (dims: Image_Dims, ok: bool) {
+    // 4b "RIFF" + 4b size + 4b "WEBP" + 4b chunk tag + 4b chunk size before any payload
+    WEBP_BODY :: 20
+    if len(data) < WEBP_BODY {return {}, false}
+    if string(data[0:4]) != "RIFF" || string(data[8:12]) != "WEBP" {return {}, false}
+    tag := string(data[12:16])
+    body := data[WEBP_BODY:]
+
+    switch tag {
+    case "VP8X": // Extended
+        // [4b flags][3b canvas width-1 LE][3b canvas height-1 LE]
+        if len(body) < 10 {return {}, false}
+        w := u32(body[4]) | u32(body[5]) << 8 | u32(body[6]) << 16
+        h := u32(body[7]) | u32(body[8]) << 8 | u32(body[9]) << 16
+        return {w + 1, h + 1}, true
+    case "VP8 ": // Lossy
+        // 3b frame tag, 3b start code, then width and height as 14-bit values in little-endian u16s, the top two bits
+        // of each being a scale factor rather than part of the dimension.
+        if len(body) < 10 {return {}, false}
+        if body[3] != 0x9D || body[4] != 0x01 || body[5] != 0x2A {return {}, false}
+        w, w_ok := endian.get_u16(body[6:], .Little)
+        h, h_ok := endian.get_u16(body[8:], .Little)
+        if !w_ok || !h_ok {return {}, false}
+        return {u32(w & 0x3FFF), u32(h & 0x3FFF)}, true
+    case "VP8L": // Lossless
+        // 1b signature, then 14 bits of width-1 followed by 14 bits of height-1, packed little-endian.
+        if len(body) < 5 || body[0] != 0x2F {return {}, false}
+        bits, bits_ok := endian.get_u32(body[1:], .Little)
+        if !bits_ok {return {}, false}
+        return {(bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1}, true
+    }
+    return {}, false
+}
+
+// Metadata for a repr, derived from its bytes and names. `NONE` whenever nothing is known, which is the common case.
+repr_meta :: proc(repr: Data_Repr) -> Repr_Meta {
+    for mime in repr.mimes {
+        if dims, ok := image_dimensions(repr.data, mime); ok {return dims}
+    }
+    return nil
+}
+
 // Magic bytes and their respective mime types
-// A byte signature and every mime the matched content legitimately claims. Plural because text-based formats are
-// genuinely more than one thing e.g. an RTF document is `application/rtf` *and* `text/plain`, while binary formats
-// carry a single name. Ordered most-specific-first.
+//
+// A byte signature and every mime the matched content legitimately claims. Plural because text-based formats can be
+// more than one thing e.g. an RTF document is `application/rtf` and `text/plain`, while binary formats carry a single
+// name. Loosely ordered most-specific-first.
 Magic :: struct {
     bytes: []byte,
     mimes: []string,
@@ -520,6 +703,7 @@ MAGIC_PNG :: Magic{{'\x89', 'P', 'N', 'G'}, {"image/png"}}
 MAGIC_JPEG :: Magic{{'\xFF', '\xD8'}, {"image/jpeg"}}
 MAGIC_BMP :: Magic{{'B', 'M'}, {"image/bmp"}}
 MAGIC_GIF :: Magic{{'G', 'I', 'F', '8'}, {"image/gif"}}
+MAGIC_QOI :: Magic{{'q', 'o', 'i', 'f'}, {"image/qoi"}}
 MAGIC_TIFF_LE :: Magic{{'I', 'I', '*', '\x00'}, {"image/tiff"}}
 MAGIC_TIFF_BE :: Magic{{'M', 'M', '\x00', '*'}, {"image/tiff"}}
 MAGIC_RTF :: Magic{{'{', '\\', 'r', 't', 'f', '1'}, {"application/rtf", "text/plain"}}
@@ -549,6 +733,7 @@ MAGICS := [?]Magic {
     MAGIC_JPEG,
     MAGIC_BMP,
     MAGIC_GIF,
+    MAGIC_QOI,
     MAGIC_TIFF_LE,
     MAGIC_TIFF_BE,
     MAGIC_RTF,
@@ -804,12 +989,15 @@ free_reg_entry :: proc(reg_entry: ^Reg_Entry) {
 
 // SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b source Reg_Id]`
 marshal_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, buf: []byte) -> int {
+    // Version prefix
     buf[0] = byte(PROTOCOL_VERSION)
     body := buf[CMD_VERSION_SIZE:]
+    // Header
     body[0] = byte(Command_Type.SET)
     body[1] = byte(dest)
     body[2] = byte(set_mode)
     body[3] = byte(Source_Kind.REGISTER)
+    // Source register
     body[4] = byte(source)
     return CMD_SET_REG_SIZE
 }
@@ -819,17 +1007,21 @@ marshal_cmd_set_reg :: proc(dest: Reg_Id, source: Reg_Id, set_mode: Set_Mode, bu
 //
 // Callers must reject mimes longer than MAX_MIME_LEN beforehand; `write_resp_mime` clamps rather than failing.
 marshal_cmd_set_inline :: proc(dest: Reg_Id, set_mode: Set_Mode, mimes: []string, data: []byte, buf: []byte) -> int {
+    // Version prefix
     buf[0] = byte(PROTOCOL_VERSION)
     body := buf[CMD_VERSION_SIZE:]
+    // Header
     body[0] = byte(Command_Type.SET)
     body[1] = byte(dest)
     body[2] = byte(set_mode)
     body[3] = byte(Source_Kind.INLINE)
+    // Mime count, then each name
     body[4] = u8(min(len(mimes), int(max(u8))))
     written := CMD_SET_HEADER_SIZE + size_of(u8)
     for mime in mimes[:int(body[4])] {
         written += write_resp_mime(body[written:], mime)
     }
+    // Payload
     copy(body[written:][:len(data)], data)
     written += len(data)
     return CMD_VERSION_SIZE + written
@@ -851,17 +1043,22 @@ cmd_set_inline_size :: proc(mimes: []string, data: []byte) -> int {
 // Callers must reject mimes longer than MAX_MIME_LEN before calling; this truncates rather than failing, matching
 // marshal_cmd_set_inline.
 marshal_cmd_get :: proc(groups: []Cmd_Get_Group, buf: []byte) -> int {
+    // Version prefix
     buf[0] = byte(PROTOCOL_VERSION)
     body := buf[CMD_VERSION_SIZE:]
+    // Header and group count
     body[0] = byte(Command_Type.GET)
     body[1] = u8(len(groups))
     written := size_of(Command_Type) + size_of(u8)
 
+    // One group per iteration
     for group in groups {
+        // Register bitmask
         filter_bytes := transmute([8]byte)group.filter
         copy(body[written:][:size_of(Cmd_Get_Filter)], filter_bytes[:])
         written += size_of(Cmd_Get_Filter)
 
+        // Mime preference: a tag alone when ranked, a tag plus the name when exact
         switch pref in group.pref {
         case Ranked_Mime:
             body[written] = u8(pref)
@@ -882,8 +1079,10 @@ marshal_cmd_get :: proc(groups: []Cmd_Get_Group, buf: []byte) -> int {
 
 // CLEAR: `[1b Message_Type][1b Reg_Id]`
 marshal_cmd_clear :: proc(reg_id: Reg_Id, buf: []byte) -> int {
+    // Version prefix
     buf[0] = byte(PROTOCOL_VERSION)
     body := buf[CMD_VERSION_SIZE:]
+    // Header and target register
     body[0] = byte(Command_Type.CLEAR)
     body[1] = byte(reg_id)
     return CMD_CLEAR_SIZE
@@ -891,8 +1090,10 @@ marshal_cmd_clear :: proc(reg_id: Reg_Id, buf: []byte) -> int {
 
 // SHUTDOWN: `[1b Message_Type]`
 marshal_cmd_shutdown :: proc(buf: []byte) -> int {
+    // Version prefix
     buf[0] = byte(PROTOCOL_VERSION)
     body := buf[CMD_VERSION_SIZE:]
+    // Header only; SHUTDOWN carries no payload
     body[0] = byte(Command_Type.SHUTDOWN)
     return CMD_SHUTDOWN_SIZE
 }
@@ -928,6 +1129,7 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (cou
     if len(buf) == 0 {
         return 0, "REGISTERS response truncated: missing entry count"
     }
+    // Entry count
     count = int(buf[0])
     if count > MAX_REGS {
         return 0, fmt.tprintf("REGISTERS response entry count %d exceeds %d", count, MAX_REGS)
@@ -940,6 +1142,7 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (cou
             return 0, fmt.tprintf("REGISTERS response truncated: entry %d header", i)
         }
 
+        // Register id
         reg_id := Reg_Id(buf[offset])
         if !reg_id_is_valid(reg_id) {
             // Guards the array index below: Reg_Id is a u8, so an invalid one would write past a [MAX_REGS] array.
@@ -947,49 +1150,96 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (cou
         }
         offset += size_of(Reg_Id)
 
+        // Timestamp
         time_bytes: [size_of(i64)]byte
         copy(time_bytes[:], buf[offset:][:size_of(i64)])
         regs[reg_id].timestamp = transmute(i64)time_bytes
         offset += size_of(i64)
 
-        // The sent representation's mime. Length 0 means nothing matched the preference, leaving `mime` empty.
-        mime, mime_err := read_resp_mime(buf, &offset)
-        if mime_err != nil {
-            return 0, fmt.tprintf("REGISTERS response truncated: entry %d mime (%s)", i, mime_err.?)
-        }
-        regs[reg_id].mime = mime
-
+        // Repr count
         if offset + size_of(u8) > len(buf) {
-            return 0, fmt.tprintf("REGISTERS response truncated: entry %d other-mime count", i)
+            return 0, fmt.tprintf("REGISTERS response truncated: entry %d repr count", i)
         }
-        other_count := int(buf[offset])
+        repr_count := int(buf[offset])
         offset += size_of(u8)
+        if repr_count == 0 {
+            // A returned register always holds something; zero reprs would decode as an absent slot.
+            return 0, fmt.tprintf("REGISTERS response entry %d has zero reprs", i)
+        }
 
-        // Commit before filling so the deferred cleanup can free a partially decoded entry. `delete` on a zeroed string
-        // is a no-op, so the untouched tail is safe to free.
-        others := make([]string, other_count)
-        regs[reg_id].other_mimes = others
-        // Iterate through other mimes in response
-        for m in 0 ..< other_count {
-            other, other_err := read_resp_mime(buf, &offset)
-            if other_err != nil {
-                return 0, fmt.tprintf("REGISTERS response truncated: entry %d other mime %d (%s)", i, m, other_err.?)
+        // Commit before filling so the deferred cleanup can free a partially decoded entry.
+        reprs := make([]Resp_Repr, repr_count)
+        regs[reg_id].reprs = reprs
+        // One descriptor per iteration
+        for r in 0 ..< repr_count {
+            // Mime count
+            if offset + size_of(u8) > len(buf) {
+                return 0, fmt.tprintf("REGISTERS response truncated: entry %d repr %d mime count", i, r)
             }
-            others[m] = other
+            mime_count := int(buf[offset])
+            offset += size_of(u8)
+            if mime_count == 0 {
+                return 0, fmt.tprintf("REGISTERS response entry %d repr %d has zero mimes", i, r)
+            }
+            if mime_count > MAX_MIME_COUNT {
+                return 0, fmt.tprintf("REGISTERS response entry %d repr %d names %d mimes", i, r, mime_count)
+            }
+
+            // Names sharing this repr's payload
+            mimes := make([]string, mime_count)
+            reprs[r].mimes = mimes
+            for m in 0 ..< mime_count {
+                mime, mime_err := read_resp_mime(buf, &offset)
+                if mime_err != nil {
+                    return 0, fmt.tprintf(
+                        "REGISTERS response truncated: entry %d repr %d mime %d (%s)",
+                        i,
+                        r,
+                        m,
+                        mime_err.?,
+                    )
+                }
+                if mime == "" {
+                    return 0, fmt.tprintf("REGISTERS response entry %d repr %d mime %d is empty", i, r, m)
+                }
+                mimes[m] = mime
+            }
+
+            // Size, present whether or not these bytes were sent
+            if offset + size_of(u64) > len(buf) {
+                return 0, fmt.tprintf("REGISTERS response truncated: entry %d repr %d size", i, r)
+            }
+            size_bytes: [size_of(u64)]byte
+            copy(size_bytes[:], buf[offset:][:size_of(u64)])
+            reprs[r].size = transmute(u64)size_bytes
+            offset += size_of(u64)
+
+            // Optional metadata
+            meta, meta_err := read_repr_meta(buf, &offset)
+            if meta_err != nil {
+                return 0, fmt.tprintf("REGISTERS response entry %d repr %d meta: %s", i, r, meta_err.?)
+            }
+            reprs[r].meta = meta
         }
 
-        if offset + size_of(u32) > len(buf) {
-            return 0, fmt.tprintf("REGISTERS response truncated: entry %d data length", i)
+        // Which repr's bytes follow, if any
+        if offset + size_of(u8) > len(buf) {
+            return 0, fmt.tprintf("REGISTERS response truncated: entry %d selected index", i)
         }
-        data_len_bytes: [size_of(u32)]byte
-        copy(data_len_bytes[:], buf[offset:][:size_of(u32)])
-        data_len := int(transmute(u32)data_len_bytes)
-        offset += size_of(u32)
-        if regs[reg_id].mime == "" && data_len != 0 {
-            // `mime` empty means no representation was sent, so bytes here would contradict the header.
-            return 0, fmt.tprintf("REGISTERS response entry %d carries %d data bytes with no mime", i, data_len)
+        selected := int(buf[offset])
+        offset += size_of(u8)
+        if selected == RESP_SELECTED_NONE {
+            regs[reg_id].selected = RESP_SELECTED_NONE
+            continue
         }
-        if offset + data_len > len(buf) {
+        if selected >= repr_count {
+            return 0, fmt.tprintf("REGISTERS response entry %d selects repr %d of %d", i, selected, repr_count)
+        }
+        regs[reg_id].selected = selected
+
+        // Length of the payload is the selected descriptor's size rather than a second copy of it on the wire.
+        data_len := int(reprs[selected].size)
+        if data_len < 0 || offset + data_len > len(buf) {
             return 0, fmt.tprintf(
                 "REGISTERS response truncated: entry %d data needs %d bytes, %d remain",
                 i,
@@ -997,8 +1247,7 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (cou
                 len(buf) - offset,
             )
         }
-        // Skip the clone when nothing matched the preference: `slice.clone` calls `make` unconditionally, so cloning an
-        // empty slice would allocate for every register whose content the preference rejected.
+        // Skip the clone for an empty payload
         if data_len > 0 {
             regs[reg_id].data = slice.clone(buf[offset:][:data_len])
             offset += data_len
@@ -1010,6 +1259,7 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (cou
 
 // Read `[1b mime len][mime len bytes]` at `offset`, advancing it. Returns an owned clone; a length of 0 yields "".
 read_resp_mime :: proc(buf: []byte, offset: ^int) -> (mime: string, err: Maybe(string)) {
+    // Length
     if offset^ + size_of(u8) > len(buf) {
         return "", "missing length"
     }
@@ -1054,35 +1304,33 @@ marshal_resp_registers :: proc(
 ) {
     if len(buf) < size_of(Resp_Status) + size_of(u8) {return 0, false}
 
+    // Status byte
     buf[0] = byte(Resp_Status.REGISTERS)
     // Reserve the count byte, fill it in after we know how many non-empty entries there are
     written = size_of(Resp_Status) + size_of(u8)
     count: u8 = 0
 
+    // One non-empty register per iteration
     for entry_ptr, id in regs {
         if entry_ptr == nil {continue}
 
-        // The representation this register contributes: its bytes, and the one name that goes in the mime slot. Every
-        // other name the register offers becomes preview.
+        // Which repr contributes its bytes. Every repr is still described.
         chosen, has_blob := resolve_repr(entry_ptr, prefs[id])
         data: []byte
-        mime: string
-        if has_blob {
-            data = entry_ptr.reprs[chosen].data
-            mime = entry_ptr.reprs[chosen].mimes[0]
-        }
+        if has_blob {data = entry_ptr.reprs[chosen].data}
 
         // Pre-size the entry so it is written all-or-nothing.
-        other_count := 0
-        size := size_of(Reg_Id) + size_of(i64) + size_of(u8) + len(mime) + size_of(u8)
-        for repr in entry_ptr.reprs {
+        size := size_of(Reg_Id) + size_of(i64) + size_of(u8)
+        metas := make([]Repr_Meta, len(entry_ptr.reprs), context.temp_allocator)
+        for repr, i in entry_ptr.reprs {
+            metas[i] = repr_meta(repr)
+            size += size_of(u8)
             for m in repr.mimes {
-                if has_blob && m == mime {continue}
-                other_count += 1
-                size += size_of(u8) + len(m)
+                size += size_of(u8) + min(len(m), MAX_MIME_LEN)
             }
+            size += size_of(u64) + size_of(Repr_Meta_Tag) + size_of(u8) + repr_meta_size(metas[i])
         }
-        size += size_of(u32) + len(data)
+        size += size_of(u8) + len(data)
         if written + size > len(buf) {return 0, false}
 
         // Reg ID u8
@@ -1094,26 +1342,31 @@ marshal_resp_registers :: proc(
         copy(buf[written:][:size_of(i64)], time_bytes[:])
         written += size_of(i64)
 
-        // The sent representation's mime; length 0 when nothing matched the preference
-        written += write_resp_mime(buf[written:], mime)
-
-        // Other names u8 count, then each one
-        buf[written] = u8(other_count)
+        // Repr count u8, then a descriptor per repr
+        buf[written] = u8(len(entry_ptr.reprs))
         written += size_of(u8)
-        for repr in entry_ptr.reprs {
+        for repr, i in entry_ptr.reprs {
+            // Every name resolving to this repr's payload, so a client can tell which names share bytes
+            buf[written] = u8(len(repr.mimes))
+            written += size_of(u8)
             for m in repr.mimes {
-                if has_blob && m == mime {continue}
                 written += write_resp_mime(buf[written:], m)
             }
+
+            // Size u64, whether or not these bytes are being sent
+            size_bytes := transmute([size_of(u64)]byte)u64(len(repr.data))
+            copy(buf[written:][:size_of(u64)], size_bytes[:])
+            written += size_of(u64)
+
+            // Optional metadata
+            written += write_repr_meta(buf[written:], metas[i])
         }
 
-        // Data length u32 + the sent representation's bytes (length 0 when nothing matched)
-        data_len := u32(len(data))
-        data_len_bytes := transmute([size_of(u32)]byte)data_len
-        copy(buf[written:][:size_of(u32)], data_len_bytes[:])
-        written += size_of(u32)
-        copy(buf[written:][:int(data_len)], data)
-        written += int(data_len)
+        // Which repr's bytes follow, then the bytes themselves. Length is the selected descriptor's size.
+        buf[written] = u8(chosen) if has_blob else u8(RESP_SELECTED_NONE)
+        written += size_of(u8)
+        copy(buf[written:][:len(data)], data)
+        written += len(data)
 
         count += 1
     }
@@ -1121,6 +1374,61 @@ marshal_resp_registers :: proc(
     // Count
     buf[1] = byte(count)
     return written, true
+}
+
+// Payload bytes a `Repr_Meta` variant occupies on the wire, excluding its tag and length byte.
+repr_meta_size :: proc(meta: Repr_Meta) -> int {
+    switch _ in meta {
+    case Image_Dims:
+        return 2 * size_of(u32)
+    }
+    return 0
+}
+
+// Write `[1b Repr_Meta_Tag][1b u8 len][len bytes]`. The length is what lets a client skip a tag it does not know instead
+// of losing its place in the stream.
+write_repr_meta :: proc(buf: []byte, meta: Repr_Meta) -> (written: int) {
+    switch m in meta {
+    case Image_Dims:
+        buf[0] = byte(Repr_Meta_Tag.IMAGE_DIMS)
+        buf[1] = u8(repr_meta_size(meta))
+        dims := transmute([2 * size_of(u32)]byte)m
+        copy(buf[2:][:len(dims)], dims[:])
+        return size_of(Repr_Meta_Tag) + size_of(u8) + len(dims)
+    }
+    buf[0] = byte(Repr_Meta_Tag.NONE)
+    buf[1] = 0
+    return size_of(Repr_Meta_Tag) + size_of(u8)
+}
+
+// Read `[1b Repr_Meta_Tag][1b u8 len][len bytes]`. An unrecognised tag is skipped via its length and reported as no
+// metadata, so a newer daemon does not break an older client.
+read_repr_meta :: proc(buf: []byte, offset: ^int) -> (meta: Repr_Meta, err: Maybe(string)) {
+    if offset^ + size_of(Repr_Meta_Tag) + size_of(u8) > len(buf) {
+        return nil, "truncated meta header"
+    }
+    tag := Repr_Meta_Tag(buf[offset^])
+    meta_len := int(buf[offset^ + 1])
+    offset^ += size_of(Repr_Meta_Tag) + size_of(u8)
+    if offset^ + meta_len > len(buf) {
+        return nil, fmt.tprintf("meta needs %d bytes, %d remain", meta_len, len(buf) - offset^)
+    }
+    payload := buf[offset^:][:meta_len]
+    offset^ += meta_len
+
+    switch tag {
+    case .IMAGE_DIMS:
+        if meta_len != 2 * size_of(u32) {
+            return nil, fmt.tprintf("IMAGE_DIMS meta is %d bytes, expected %d", meta_len, 2 * size_of(u32))
+        }
+        dims_bytes: [2 * size_of(u32)]byte
+        copy(dims_bytes[:], payload)
+        return transmute(Image_Dims)dims_bytes, nil
+    case .NONE:
+        return nil, nil
+    }
+    // Unknown tag, already skipped by its length, so the stream is still aligned.
+    return nil, nil
 }
 
 // Write `[1b mime len][mime len bytes]`, returning the bytes written. Caller has already verified the entry fits.
@@ -1147,6 +1455,7 @@ unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mimes: []string, data: []byte,
     if len(buf) == 0 {
         return nil, nil, "SET request truncated: missing mime count"
     }
+    // Mime count
     mime_count := int(buf[0])
     if mime_count == 0 {
         return nil, nil, "SET request carries no mime"
@@ -1158,6 +1467,7 @@ unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mimes: []string, data: []byte,
     decoded := make([]string, mime_count)
     filled := 0
 
+    // One mime name per iteration
     for i in 0 ..< mime_count {
         mime, mime_err := read_resp_mime(buf, &offset)
         if mime_err != nil {
@@ -1170,6 +1480,7 @@ unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mimes: []string, data: []byte,
     }
     mimes = decoded
 
+    // Everything after the names is the payload
     data = slice.clone(buf[offset:])
     return mimes, data, nil
 }
@@ -1188,17 +1499,20 @@ unmarshal_cmd_get :: proc(buf: []byte, groups: ^[MAX_REGS]Cmd_Get_Group) -> (cou
     if len(buf) == 0 {
         return 0, "GET request truncated: missing group count"
     }
+    // Group count
     count = int(buf[0])
     if count == 0 || count > MAX_REGS {
         return 0, fmt.tprintf("GET request group count %d out of range (1 ..= %d)", count, MAX_REGS)
     }
 
     offset := size_of(u8)
+    // One group per iteration
     for i in 0 ..< count {
         if offset + size_of(Cmd_Get_Filter) + size_of(EXACT_MIME_TAG) > len(buf) {
             return 0, fmt.tprintf("GET request truncated: group %d missing filter/preference", i)
         }
 
+        // Register bitmask
         filter_bytes: [size_of(Cmd_Get_Filter)]byte
         copy(filter_bytes[:], buf[offset:][:size_of(Cmd_Get_Filter)])
         filter := transmute(Cmd_Get_Filter)(transmute(u64)filter_bytes)
@@ -1212,6 +1526,7 @@ unmarshal_cmd_get :: proc(buf: []byte, groups: ^[MAX_REGS]Cmd_Get_Group) -> (cou
         pref: Mime_Pref = Ranked_Mime(tag) if tag < EXACT_MIME_TAG else Ranked_Mime{}
         offset += size_of(EXACT_MIME_TAG)
 
+        // Exact prefs carry a trailing mime name; ranked ones do not
         if tag == EXACT_MIME_TAG {
             if offset + size_of(u8) > len(buf) {
                 return 0, fmt.tprintf("GET request truncated: group %d missing mime length", i)
@@ -1260,7 +1575,7 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 //     for repr in blob_count:
 //       [1b mime_count]
 //       for mime in mime_count: [1b mime_len][mime_len bytes]
-//       [4b u32 data_len][data_len bytes]
+//       [8b u64 data_len][data_len bytes]
 
 // Bytes the `STATE_VERSION` prefix occupies. Everything after it is the state *body*, so the per-entry offsets above are
 // independent of the prefix.
@@ -1277,7 +1592,7 @@ state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
             for mime in repr.mimes {
                 size += size_of(u8) + len(mime)
             }
-            size += size_of(u32) + len(repr.data)
+            size += size_of(u64) + len(repr.data)
         }
     }
     return size
@@ -1287,12 +1602,14 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
     // Every write below is unchecked, so a short buffer would run off the end. Size it with `state_size`.
     assert(len(buf) >= state_size(regs), "marshal_state buffer too small; size it with state_size()")
 
+    // Version prefix
     buf[0] = byte(STATE_VERSION)
     body := buf[STATE_VERSION_SIZE:] // every offset below is relative to the body, not the file
 
     written := size_of(u8) // reserve count byte
     count: u8 = 0
 
+    // One non-empty register per iteration
     for entry_ptr, id in regs {
         if entry_ptr == nil {continue}
 
@@ -1309,6 +1626,7 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
         body[written] = u8(len(entry_ptr.reprs))
         written += size_of(u8)
 
+        // One repr per iteration
         for repr in entry_ptr.reprs {
             // Mime count u8, then each [mime_len u8][mime bytes]
             body[written] = u8(len(repr.mimes))
@@ -1319,11 +1637,11 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
                 written += write_resp_mime(body[written:], mime)
             }
 
-            // Data length u32 + data bytes
-            data_len := u32(len(repr.data))
-            data_len_bytes := transmute([size_of(u32)]byte)data_len
-            copy(body[written:][:size_of(u32)], data_len_bytes[:])
-            written += size_of(u32)
+            // Data length u64 + data bytes
+            data_len := u64(len(repr.data))
+            data_len_bytes := transmute([size_of(u64)]byte)data_len
+            copy(body[written:][:size_of(u64)], data_len_bytes[:])
+            written += size_of(u64)
             copy(body[written:][:int(data_len)], repr.data)
             written += int(data_len)
         }
@@ -1331,6 +1649,7 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
         count += 1
     }
 
+    // Backfill the reserved count byte
     body[0] = byte(count)
     return STATE_VERSION_SIZE + written
 }
@@ -1370,9 +1689,11 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
     if len(body) == 0 {
         return 0, "state file has no entry count"
     }
+    // Entry count
     count = u8(body[0])
 
     offset := 1
+    // One register per iteration
     for entry_idx in 0 ..< int(count) {
         // Reg_Id + timestamp + blob count, read together since they are fixed-width.
         header_size := size_of(Reg_Id) + size_of(i64) + size_of(u8)
@@ -1381,6 +1702,7 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
             return
         }
 
+        // Register id
         reg_id := Reg_Id(body[offset])
         if !reg_id_is_valid(reg_id) {
             err = fmt.tprintf("entry %d: invalid register id %d", entry_idx, u8(reg_id))
@@ -1388,11 +1710,13 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
         }
         offset += size_of(Reg_Id)
 
+        // Timestamp
         time_bytes: [size_of(i64)]byte
         copy(time_bytes[:], body[offset:][:size_of(i64)])
         time := transmute(i64)time_bytes
         offset += size_of(i64)
 
+        // Repr count
         blob_count := int(body[offset])
         offset += size_of(u8)
 
@@ -1412,7 +1736,9 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
             delete(reprs)
         }
 
+        // One repr per iteration
         for b in 0 ..< blob_count {
+            // Mime count
             if offset + size_of(u8) > len(body) {
                 err = fmt.tprintf("entry %d repr %d: missing mime count", entry_idx, b)
                 return
@@ -1431,6 +1757,7 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
                 delete(mimes)
             }
 
+            // Each name for this repr
             for m in 0 ..< mime_count {
                 mime, mime_err := read_resp_mime(body, &offset)
                 if mime_err != nil {
@@ -1441,16 +1768,29 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
                 mimes_filled += 1
             }
 
-            if offset + size_of(u32) > len(body) {
+            // Data length
+            if offset + size_of(u64) > len(body) {
                 err = fmt.tprintf("entry %d repr %d: missing data length", entry_idx, b)
                 return
             }
-            data_len_bytes: [size_of(u32)]byte
-            copy(data_len_bytes[:], body[offset:][:size_of(u32)])
-            data_len := int(transmute(u32)data_len_bytes)
-            offset += size_of(u32)
+            data_len_bytes: [size_of(u64)]byte
+            copy(data_len_bytes[:], body[offset:][:size_of(u64)])
+            data_len_u64 := transmute(u64)data_len_bytes
+            offset += size_of(u64)
 
-            // `int` arithmetic, so a `data_len` of 0xFFFFFFFF is caught here rather than wrapping the comparison.
+            // Range-check data length is not larger than the rest of the bytes in the blob.
+            if data_len_u64 > u64(len(body) - offset) {
+                err = fmt.tprintf(
+                    "entry %d repr %d: data length %d exceeds the %d bytes remaining",
+                    entry_idx,
+                    b,
+                    data_len_u64,
+                    len(body) - offset,
+                )
+                return
+            }
+            data_len := int(data_len_u64)
+
             if offset + data_len > len(body) {
                 err = fmt.tprintf(
                     "entry %d repr %d: data needs %d bytes, %d remain",
@@ -1461,6 +1801,7 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
                 )
                 return
             }
+            // Payload
             data := slice.clone(body[offset:][:data_len])
             offset += data_len
 

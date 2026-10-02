@@ -921,13 +921,40 @@ table_cell :: proc(str: string, width: int) -> string {
 // The content cell for one register. Non-text content is described rather than rendered: replacement characters are
 // noise, and their widths would skew the column even after escaping.
 display_content :: proc(entry: lib.Resp_Reg, width: int) -> string {
-    if entry.mime == "" {
-        return table_cell("[no printable mime]", width)
+    if lib.resp_reg_selected(entry) == nil {
+        // Nothing matched the preference, so describe the first repr instead of leaving the cell blank. Uses size and
+        // meta tag to determine what data to show.
+        return table_cell(describe_repr(entry.reprs[0]), width)
     }
     if !utf8.valid_string(string(entry.data)) {
-        return table_cell(fmt.tprintf("[%d bytes of binary data]", len(entry.data)), width)
+        return table_cell(describe_repr(entry.reprs[entry.selected]), width)
     }
     return table_cell(string(entry.data), width)
+}
+
+// Get a description string of a repr whose data blob is not available/printable e.g. `image/png 600x300 67.4 kiB`.
+describe_repr :: proc(repr: lib.Resp_Repr) -> string {
+    switch meta in repr.meta {
+    case lib.Image_Dims:
+        return fmt.tprintf("[%s %dx%d %s]", repr.mimes[0], meta.width, meta.height, human_size(repr.size))
+    }
+    return fmt.tprintf("[%s %s]", repr.mimes[0], human_size(repr.size))
+}
+
+// Byte count for display. Binary units because that is what the size caps are expressed in.
+human_size :: proc(size: u64) -> string {
+    kib_size :: 1024
+    mib_size :: kib_size * 1024
+    gib_size :: mib_size * 1024
+    switch {
+    case size < kib_size:
+        return fmt.tprintf("%d B", size)
+    case size < mib_size:
+        return fmt.tprintf("%.1f kiB", f64(size) / kib_size)
+    case size < gib_size:
+        return fmt.tprintf("%.1f MiB", f64(size) / mib_size)
+    }
+    return fmt.tprintf("%.1f GiB", f64(size) / gib_size)
 }
 
 // Ordered groups of register IDs for display: clipboard recency, named, primary recency, then live selections.
@@ -970,23 +997,31 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
                 fmt.println(table_sep)
             }
 
-            // The representation that was actually fetched heads the mime column, sharing the line with its content. A
-            // blank content cell would read like a bug next to a populated mime list, so say why the bytes are absent.
-            mime := entry.mime
-            if mime == "" {mime = entry.other_mimes[0]}
+            // The repr whose bytes arrived heads the mime column, sharing the line with its content. When nothing
+            // matched, the first repr heads it instead, with its description as the content.
+            head := entry.selected if lib.resp_reg_selected(entry) != nil else 0
             fmt.printfln(
                 CONTENT_FMT,
                 lib.reg_id_to_string(id),
                 format_unix_timestamp(entry.timestamp, &ts_buf),
-                table_cell(mime, MIME_COL_WIDTH),
+                table_cell(entry.reprs[head].mimes[0], MIME_COL_WIDTH),
                 display_content(entry, CONTENT_COL_WIDTH),
             )
 
-            // Every other name the register advertises, stacked below. Not truncated: there is no other view that would
-            // show what was hidden, so a `+N more` would be a dead end.
-            others := entry.other_mimes if entry.mime != "" else entry.other_mimes[1:]
-            for other in others {
-                fmt.printfln(CONTENT_FMT, "", "", table_cell(other, MIME_COL_WIDTH), table_cell("", CONTENT_COL_WIDTH))
+            // Remaining mimes, stacked below. Mimes belonging to the same repr group are indented.
+            for repr, r in entry.reprs {
+                for mime, m in repr.mimes {
+                    if r == head && m == 0 {continue}
+                    label := fmt.tprintf("  %s", mime) if m > 0 else mime
+                    content := "" if m > 0 || r == head else describe_repr(repr)
+                    fmt.printfln(
+                        CONTENT_FMT,
+                        "",
+                        "",
+                        table_cell(label, MIME_COL_WIDTH),
+                        table_cell(content, CONTENT_COL_WIDTH),
+                    )
+                }
             }
 
             any_printed = true
@@ -1046,31 +1081,45 @@ json_content :: proc(data: []byte) -> (value: string, is_base64: bool) {
     return fmt.tprintf(`"%s"`, base64.encode(data, allocator = context.temp_allocator)), true
 }
 
-// `mime` is the representation `content` holds; both are null when nothing matched the preference. `other_mimes` lists
-// the register's remaining names, any of which a consumer can pass back as `=mime` to fetch that representation.
+// json format:
+// `register`: char = register name
+// `timestamp`: i64 = time of clipbender acquisition
+// `data`: string = data blob associated with printable mime, or `"null"` if no printable mime
+// `reprs`: list<object> = list of data representations for that register
+//     `mimes`: list<string> = list of mimes for a single data representation
+//     `size`: u64 = number of bytes in that data representation (using best-fitting units)
+//     `selected`: bool = whether this data representation is currently selected or not
+//     `width`: u32 = (images only) width of the image
+//     `height`: u32 = (images only) height of the image
 print_json_entry :: proc(entry: lib.Resp_Reg, id_str: string, printed: ^bool) {
     if printed^ {fmt.print(", ")}
 
-    fmt.printf(`{{"register": "%s", "timestamp": %d, "mime": `, id_str, entry.timestamp)
-    if entry.mime == "" {
-        fmt.print("null")
-    } else {
-        fmt.printf(`"%s"`, json_escape_string(entry.mime))
-    }
+    selected := lib.resp_reg_selected(entry)
+    fmt.printf(`{{"register": "%s", "timestamp": %d`, id_str, entry.timestamp)
 
-    fmt.print(`, "content": `)
-    if entry.mime == "" {
+    fmt.print(`, "data": `)
+    if selected == nil {
         fmt.print("null")
     } else {
         value, is_base64 := json_content(entry.data)
         fmt.print(value)
-        if is_base64 {fmt.print(`, "content_encoding": "base64"`)}
+        if is_base64 {fmt.print(`, "encoding": "base64"`)}
     }
 
-    fmt.print(`, "other_mimes": [`)
-    for other, i in entry.other_mimes {
-        if i > 0 {fmt.print(", ")}
-        fmt.printf(`"%s"`, json_escape_string(other))
+    fmt.print(`, "reprs": [`)
+    for repr, r in entry.reprs {
+        if r > 0 {fmt.print(", ")}
+        fmt.print(`{"mimes": [`)
+        for mime, m in repr.mimes {
+            if m > 0 {fmt.print(", ")}
+            fmt.printf(`"%s"`, json_escape_string(mime))
+        }
+        fmt.printf(`], "size": %d, "selected": %v`, repr.size, r == entry.selected)
+        switch meta in repr.meta {
+        case lib.Image_Dims:
+            fmt.printf(`, "width": %d, "height": %d`, meta.width, meta.height)
+        }
+        fmt.print("}")
     }
     fmt.print("]}")
 
