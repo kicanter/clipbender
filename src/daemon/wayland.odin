@@ -500,13 +500,18 @@ wayland_stage_selection :: proc(wl_state: ^Wayland_State, selection: ^Selection_
     selection.offer.staged = true
 }
 
-// For deduplication, check if two `Data_Repr`s are equivalent.
+// For deduplication, check if two `Data_Repr`s are equivalent (mimes are order-independent). We use a basic nested
+// iteration instead of building a set because for the small numbers of mimes we will see, the allocation + hashing
+// overhead of the set performs worse than the basic loops.
 reprs_are_equal :: proc(a: []lib.Data_Repr, b: []lib.Data_Repr) -> bool {
     if len(a) != len(b) {return false}
     for repr, i in a {
         if len(repr.mimes) != len(b[i].mimes) {return false}
-        for mime, j in repr.mimes {
-            if mime != b[i].mimes[j] {return false}
+        outer: for mime in repr.mimes {
+            for other in b[i].mimes {
+                if mime == other {continue outer}
+            }
+            return false
         }
         if !slice.equal(repr.data, b[i].data) {return false}
     }
