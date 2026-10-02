@@ -317,11 +317,11 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
             os.exit(1)
         }
         success_msg = fmt.tprintf(
-            "%s dest reg `%s` with inline `%v` data `%s`",
+            "%s dest reg `%s` with %d bytes of inline `%v` data",
             "overwrote" if set_mode == .OVERWRITE else "appended",
             lib.reg_id_to_string(dest_reg),
+            len(data),
             mimes,
-            string(data),
         )
     } else {
         print_cmd_usage_and_exit(.SET)

@@ -249,7 +249,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
     switch msg_type {
     case lib.Command_Type.SET:
         // Client is not allowed to overwrite numbered registers
-        log.debugf("Got set message: %v", msg)
+        log.debugf("Got SET message: %d bytes", len(msg))
 
         // Validate before reading the header: any local process can write to this socket, and `data_buf` is a reused
         // global, so a short message would otherwise parse whatever the previous one left behind and a SET shorter than
@@ -313,7 +313,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         }
 
         for repr in reprs {
-            log.debugf("\tContent: `%s`", string(repr.data))
+            log.debugf("\tContent: %d bytes", len(repr.data))
             log.debugf("\tMimes: %v", repr.mimes)
         }
         log.debugf(
@@ -359,7 +359,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         // Send response back to client
         send_resp(client_fd, resp_buf[:resp_written])
     case lib.Command_Type.GET:
-        log.debugf("Got get message: %v", msg)
+        log.debugf("Got GET message: %d bytes", len(msg))
         groups: [lib.MAX_REGS]lib.Cmd_Get_Group
         count, get_err := lib.unmarshal_cmd_get(msg[1:], &groups)
         if get_err != nil {
@@ -394,7 +394,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         resp_written, _ := lib.marshal_resp_registers(regs, prefs, resp_buf[:])
         send_resp(client_fd, resp_buf[:resp_written])
     case lib.Command_Type.CLEAR:
-        log.debugf("Got clear message: %v", msg)
+        log.debugf("Got CLEAR message: %d bytes", len(msg))
         if bytes_read < lib.CMD_CLEAR_SIZE {
             errmsg := fmt.tprintf("CLEAR request truncated: %d bytes, need %d", bytes_read, lib.CMD_CLEAR_SIZE)
             resp_written := lib.marshal_resp_error(errmsg, resp_buf[:])
