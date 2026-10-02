@@ -261,7 +261,9 @@ test_reprs_are_equal_rejects_differences :: proc(t: ^testing.T) {
     data := transmute([]byte)string("hello")
     base := []lib.Data_Repr{{data = data, mimes = []string{"text/plain", "text/html"}}}
 
-    diff_bytes := []lib.Data_Repr{{data = transmute([]byte)string("hellO"), mimes = []string{"text/plain", "text/html"}}}
+    diff_bytes := []lib.Data_Repr {
+        {data = transmute([]byte)string("hellO"), mimes = []string{"text/plain", "text/html"}},
+    }
     testing.expect(t, !reprs_are_equal(base, diff_bytes), "differing data should not compare equal")
 
     diff_mime := []lib.Data_Repr{{data = data, mimes = []string{"text/plain", "text/xml"}}}
