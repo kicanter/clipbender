@@ -657,13 +657,15 @@ webp_dimensions :: proc(data: []byte) -> (dims: Image_Dims, ok: bool) {
     body := data[WEBP_BODY:]
 
     switch tag {
-    case "VP8X": // Extended
+    case "VP8X":
+        // Extended
         // [4b flags][3b canvas width-1 LE][3b canvas height-1 LE]
         if len(body) < 10 {return {}, false}
         w := u32(body[4]) | u32(body[5]) << 8 | u32(body[6]) << 16
         h := u32(body[7]) | u32(body[8]) << 8 | u32(body[9]) << 16
         return {w + 1, h + 1}, true
-    case "VP8 ": // Lossy
+    case "VP8 ":
+        // Lossy
         // 3b frame tag, 3b start code, then width and height as 14-bit values in little-endian u16s, the top two bits
         // of each being a scale factor rather than part of the dimension.
         if len(body) < 10 {return {}, false}
@@ -672,7 +674,8 @@ webp_dimensions :: proc(data: []byte) -> (dims: Image_Dims, ok: bool) {
         h, h_ok := endian.get_u16(body[8:], .Little)
         if !w_ok || !h_ok {return {}, false}
         return {u32(w & 0x3FFF), u32(h & 0x3FFF)}, true
-    case "VP8L": // Lossless
+    case "VP8L":
+        // Lossless
         // 1b signature, then 14 bits of width-1 followed by 14 bits of height-1, packed little-endian.
         if len(body) < 5 || body[0] != 0x2F {return {}, false}
         bits, bits_ok := endian.get_u32(body[1:], .Little)

@@ -1368,17 +1368,52 @@ test_image_dimensions_jpeg_skips_preceding_segments :: proc(t: ^testing.T) {
     // SOI, an APP0/JFIF segment, a DHT, then SOF0. DHT is 0xC4 -- inside the SOF marker range but not a frame header, so
     // a parser treating 0xC0-0xCF as contiguous reads its payload as dimensions and returns garbage.
     data := [?]byte {
-        0xFF, 0xD8, // SOI
-        0xFF, 0xE0, 0x00, 0x10, // APP0, length 16 (2 + 14 payload)
-        'J', 'F', 'I', 'F', 0x00, 0x01, 0x02, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
-        0xFF, 0xC4, 0x00, 0x05, // DHT, length 5 (2 + 3 payload)
-        0x00, 0x00, 0x00,
-        0xFF, 0xC0, 0x00, 0x11, // SOF0, length 17
+        0xFF,
+        0xD8, // SOI
+        0xFF,
+        0xE0,
+        0x00,
+        0x10, // APP0, length 16 (2 + 14 payload)
+        'J',
+        'F',
+        'I',
+        'F',
+        0x00,
+        0x01,
+        0x02,
+        0x00,
+        0x00,
+        0x01,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
+        0xFF,
+        0xC4,
+        0x00,
+        0x05, // DHT, length 5 (2 + 3 payload)
+        0x00,
+        0x00,
+        0x00,
+        0xFF,
+        0xC0,
+        0x00,
+        0x11, // SOF0, length 17
         0x08, // precision
-        0x01, 0x2C, // height 300 -- height precedes width in SOF
-        0x02, 0x58, // width 600
+        0x01,
+        0x2C, // height 300 -- height precedes width in SOF
+        0x02,
+        0x58, // width 600
         0x03, // components
-        0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+        0x01,
+        0x22,
+        0x00,
+        0x02,
+        0x11,
+        0x01,
+        0x03,
+        0x11,
+        0x01,
     }
     dims, ok := image_dimensions(data[:], "image/jpeg")
     testing.expect(t, ok)
@@ -1390,9 +1425,21 @@ test_image_dimensions_jpeg_skips_preceding_segments :: proc(t: ^testing.T) {
 test_image_dimensions_jpeg_progressive_sof2 :: proc(t: ^testing.T) {
     // SOF2 is progressive JPEG; the frame header layout is identical, so it must be accepted too.
     data := [?]byte {
-        0xFF, 0xD8,
-        0xFF, 0xC2, 0x00, 0x0B, // SOF2, length 11
-        0x08, 0x00, 0x40, 0x00, 0x80, 0x01, 0x01, 0x11, 0x00,
+        0xFF,
+        0xD8,
+        0xFF,
+        0xC2,
+        0x00,
+        0x0B, // SOF2, length 11
+        0x08,
+        0x00,
+        0x40,
+        0x00,
+        0x80,
+        0x01,
+        0x01,
+        0x11,
+        0x00,
     }
     dims, ok := image_dimensions(data[:], "image/jpeg")
     testing.expect(t, ok)
@@ -1419,8 +1466,27 @@ test_image_dimensions_jpeg_rejects_malformed :: proc(t: ^testing.T) {
 
     // Every truncation of the valid fixture must be refused rather than read past the end
     full := [?]byte {
-        0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x02, 0x58, 0x03,
-        0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+        0xFF,
+        0xD8,
+        0xFF,
+        0xC0,
+        0x00,
+        0x11,
+        0x08,
+        0x01,
+        0x2C,
+        0x02,
+        0x58,
+        0x03,
+        0x01,
+        0x22,
+        0x00,
+        0x02,
+        0x11,
+        0x01,
+        0x03,
+        0x11,
+        0x01,
     }
     for cut in 0 ..< 11 {
         _, cut_ok := image_dimensions(full[:cut], "image/jpeg")
@@ -1435,11 +1501,36 @@ test_image_dimensions_jpeg_rejects_malformed :: proc(t: ^testing.T) {
 test_image_dimensions_webp_vp8x :: proc(t: ^testing.T) {
     // Extended format: canvas dimensions are 24-bit little-endian and stored minus one.
     data := [?]byte {
-        'R', 'I', 'F', 'F', 0x00, 0x00, 0x00, 0x00, 'W', 'E', 'B', 'P',
-        'V', 'P', '8', 'X', 0x0A, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, // flags
-        0x57, 0x02, 0x00, // width-1  = 599
-        0x2B, 0x01, 0x00, // height-1 = 299
+        'R',
+        'I',
+        'F',
+        'F',
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        'W',
+        'E',
+        'B',
+        'P',
+        'V',
+        'P',
+        '8',
+        'X',
+        0x0A,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00, // flags
+        0x57,
+        0x02,
+        0x00, // width-1  = 599
+        0x2B,
+        0x01,
+        0x00, // height-1 = 299
     }
     dims, ok := image_dimensions(data[:], "image/webp")
     testing.expect(t, ok)
@@ -1451,12 +1542,36 @@ test_image_dimensions_webp_vp8x :: proc(t: ^testing.T) {
 test_image_dimensions_webp_vp8_lossy :: proc(t: ^testing.T) {
     // Lossy: the top two bits of each 16-bit field are a scale factor, so they must be masked off.
     data := [?]byte {
-        'R', 'I', 'F', 'F', 0x00, 0x00, 0x00, 0x00, 'W', 'E', 'B', 'P',
-        'V', 'P', '8', ' ', 0x0A, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, // frame tag
-        0x9D, 0x01, 0x2A, // start code
-        0x58, 0xC2, // 600 with scale bits set in the top two
-        0x2C, 0x41, // 300 with a scale bit set
+        'R',
+        'I',
+        'F',
+        'F',
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        'W',
+        'E',
+        'B',
+        'P',
+        'V',
+        'P',
+        '8',
+        ' ',
+        0x0A,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00, // frame tag
+        0x9D,
+        0x01,
+        0x2A, // start code
+        0x58,
+        0xC2, // 600 with scale bits set in the top two
+        0x2C,
+        0x41, // 300 with a scale bit set
     }
     dims, ok := image_dimensions(data[:], "image/webp")
     testing.expect(t, ok)
@@ -1469,10 +1584,31 @@ test_image_dimensions_webp_vp8l_lossless :: proc(t: ^testing.T) {
     // Lossless: 14 bits of width-1 then 14 bits of height-1, packed little-endian after a 0x2F signature.
     // 599 | (299 << 14) = 0x004AC257
     data := [?]byte {
-        'R', 'I', 'F', 'F', 0x00, 0x00, 0x00, 0x00, 'W', 'E', 'B', 'P',
-        'V', 'P', '8', 'L', 0x05, 0x00, 0x00, 0x00,
+        'R',
+        'I',
+        'F',
+        'F',
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        'W',
+        'E',
+        'B',
+        'P',
+        'V',
+        'P',
+        '8',
+        'L',
+        0x05,
+        0x00,
+        0x00,
+        0x00,
         0x2F,
-        0x57, 0xC2, 0x4A, 0x00,
+        0x57,
+        0xC2,
+        0x4A,
+        0x00,
     }
     dims, ok := image_dimensions(data[:], "image/webp")
     testing.expect(t, ok)
@@ -1482,11 +1618,73 @@ test_image_dimensions_webp_vp8l_lossless :: proc(t: ^testing.T) {
 
 @(test)
 test_image_dimensions_webp_rejects_malformed :: proc(t: ^testing.T) {
-    not_riff := [?]byte{'X', 'X', 'X', 'X', 0, 0, 0, 0, 'W', 'E', 'B', 'P', 'V', 'P', '8', 'X', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    not_riff := [?]byte {
+        'X',
+        'X',
+        'X',
+        'X',
+        0,
+        0,
+        0,
+        0,
+        'W',
+        'E',
+        'B',
+        'P',
+        'V',
+        'P',
+        '8',
+        'X',
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    }
     _, ok1 := image_dimensions(not_riff[:], "image/webp")
     testing.expect(t, !ok1, "a non-RIFF container is not a WebP")
 
-    unknown_chunk := [?]byte{'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P', 'J', 'U', 'N', 'K', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+    unknown_chunk := [?]byte {
+        'R',
+        'I',
+        'F',
+        'F',
+        0,
+        0,
+        0,
+        0,
+        'W',
+        'E',
+        'B',
+        'P',
+        'J',
+        'U',
+        'N',
+        'K',
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    }
     _, ok2 := image_dimensions(unknown_chunk[:], "image/webp")
     testing.expect(t, !ok2, "an unrecognised first chunk yields no dimensions")
 
