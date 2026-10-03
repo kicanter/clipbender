@@ -64,9 +64,10 @@ build_pkg() {
 
     local mode_flags=()
     case "$mode" in
-    dev)     mode_flags=(-warnings-as-errors -vet -define:BUILD="$HASH-dev") ;;
-    debug)   mode_flags=(-debug -sanitize:address -define:BUILD="$HASH-debug") ;;
-    release) mode_flags=(-warnings-as-errors -vet -o:speed -define:BUILD="$HASH") ;;
+    # Single-quotes ensure these are always treated as strings in odin
+    dev)     mode_flags=(-warnings-as-errors -vet "-define:BUILD='$HASH-dev'") ;;
+    debug)   mode_flags=(-debug -sanitize:address "-define:BUILD='$HASH-debug'") ;;
+    release) mode_flags=(-warnings-as-errors -vet -o:speed "-define:BUILD='$HASH'") ;;
     esac
 
     # shellcheck disable=SC2086
