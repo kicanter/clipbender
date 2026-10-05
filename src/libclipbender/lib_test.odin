@@ -1757,3 +1757,82 @@ test_repr_meta_rejects_truncation :: proc(t: ^testing.T) {
         testing.expectf(t, err != nil, "a %d-byte meta field should be rejected", cut)
     }
 }
+
+@(test)
+test_resp_registers_oversize_payload_degrades_to_descriptor :: proc(t: ^testing.T) {
+    // The `pref=richest` failure: a blob can exceed the response buffer on its own, and refusing the whole response left
+    // the client with a zero-length message and no way to know why. The entry must still travel, described but
+    // unselected, so it renders as `[image/png ...]` rather than vanishing.
+    big := make([]byte, 4096)
+    defer delete(big)
+    m_png := [?]string{"image/png"}
+    reprs := [?]Data_Repr{{data = big, mimes = m_png[:]}}
+    entry := Reg_Entry {
+        reprs     = reprs[:],
+        timestamp = 11,
+    }
+
+    id := reg_id_from_named_index(0)
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[id] = &entry
+    prefs: [MAX_REGS]Mime_Pref
+    prefs[id] = Ranked_Mime.RICHEST
+
+    // Room for the descriptors, nowhere near enough for the 4 KiB payload.
+    buf: [128]byte
+    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    testing.expect(t, ok, "descriptors alone fit, so the response should succeed")
+
+    dec: [MAX_REGS]Resp_Reg
+    defer for &r in dec {free_resp_reg(&r)}
+    count, derr := unmarshal_resp_registers(buf[1:n], &dec)
+    testing.expect_value(t, derr, nil)
+    testing.expect_value(t, count, 1)
+
+    testing.expect(t, resp_reg_selected(dec[id]) == nil, "payload did not fit, so nothing is selected")
+    testing.expect_value(t, len(dec[id].data), 0)
+    // The descriptor still reports the real size, so a client can say what it could not fetch.
+    testing.expect_value(t, len(dec[id].reprs), 1)
+    testing.expect_value(t, dec[id].reprs[0].mimes[0], "image/png")
+    testing.expect_value(t, dec[id].reprs[0].size, u64(4096))
+}
+
+@(test)
+test_resp_registers_oversize_payload_keeps_later_entries :: proc(t: ^testing.T) {
+    // The symptom was total: one unfittable blob killed every register in the response. A small entry after a large one
+    // must still arrive with its bytes.
+    big := make([]byte, 4096)
+    defer delete(big)
+    small := transmute([]byte)string("hi")
+    m_png := [?]string{"image/png"}
+    m_txt := [?]string{"text/plain"}
+    big_reprs := [?]Data_Repr{{data = big, mimes = m_png[:]}}
+    small_reprs := [?]Data_Repr{{data = small, mimes = m_txt[:]}}
+    big_entry := Reg_Entry {
+        reprs = big_reprs[:],
+    }
+    small_entry := Reg_Entry {
+        reprs = small_reprs[:],
+    }
+
+    big_id := reg_id_from_named_index(0)
+    small_id := reg_id_from_named_index(1)
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[big_id] = &big_entry
+    reg_ptrs[small_id] = &small_entry
+    prefs: [MAX_REGS]Mime_Pref
+    prefs[big_id] = Ranked_Mime.RICHEST
+    prefs[small_id] = Ranked_Mime.RICHEST
+
+    buf: [256]byte
+    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    testing.expect(t, ok)
+
+    dec: [MAX_REGS]Resp_Reg
+    defer for &r in dec {free_resp_reg(&r)}
+    count, derr := unmarshal_resp_registers(buf[1:n], &dec)
+    testing.expect_value(t, derr, nil)
+    testing.expect_value(t, count, 2)
+    testing.expect(t, resp_reg_selected(dec[big_id]) == nil, "the oversize entry is described but unselected")
+    testing.expect_value(t, string(dec[small_id].data), "hi")
+}

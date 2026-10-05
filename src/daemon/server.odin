@@ -391,7 +391,12 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         regs := get_registers(store, filter)
 
         // Send REGISTERS response back to client (marshal packs only non-empty slots).
-        resp_written, _ := lib.marshal_resp_registers(regs, prefs, resp_buf[:])
+        resp_written, resp_ok := lib.marshal_resp_registers(regs, prefs, resp_buf[:])
+        if !resp_ok {
+            errmsg := fmt.tprintf("response does not fit in %d bytes", lib.MAX_MSG_SIZE)
+            log.warn(errmsg)
+            resp_written = lib.marshal_resp_error(errmsg, resp_buf[:])
+        }
         send_resp(client_fd, resp_buf[:resp_written])
     case lib.Command_Type.CLEAR:
         log.debugf("Got CLEAR message: %d bytes", len(msg))

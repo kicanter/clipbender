@@ -52,10 +52,11 @@ print_version :: proc() {
     fmt.printfln("clipbender %s", version_string())
 }
 
-// Max data allowed to pass over IPC
-MAX_MSG_SIZE :: 65536 // 64 KiB
+// Max data allowed to pass over IPC in one message (TODO: until we implement passing memfd via `SCM_RIGHTS` instead of
+// copying bytes).
+MAX_MSG_SIZE :: 128 * 1024 // 128 KiB
 
-// One unique byte stream plus every mime name it answers to. A register holds several of these when an application
+// One unique data blob plus every mime name it answers to. A register holds several of these when an application
 // offers the same selection in more than one format.
 Data_Repr :: struct {
     data:  []byte,
@@ -1322,7 +1323,7 @@ marshal_resp_registers :: proc(
         data: []byte
         if has_blob {data = entry_ptr.reprs[chosen].data}
 
-        // Pre-size the entry so it is written all-or-nothing.
+        // Pre-size the descriptors, which are written all-or-nothing.
         size := size_of(Reg_Id) + size_of(i64) + size_of(u8)
         metas := make([]Repr_Meta, len(entry_ptr.reprs), context.temp_allocator)
         for repr, i in entry_ptr.reprs {
@@ -1333,7 +1334,14 @@ marshal_resp_registers :: proc(
             }
             size += size_of(u64) + size_of(Repr_Meta_Tag) + size_of(u8) + repr_meta_size(metas[i])
         }
-        size += size_of(u8) + len(data)
+        size += size_of(u8) // selected index
+
+        // When the payload will not fit, send the entry described but unselected rather than failing the whole response.
+        if has_blob && written + size + len(data) > len(buf) {
+            has_blob = false
+            data = nil
+        }
+        // Not even the descriptors fit, so there is nothing honest left to send.
         if written + size > len(buf) {return 0, false}
 
         // Reg ID u8
