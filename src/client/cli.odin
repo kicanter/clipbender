@@ -918,6 +918,10 @@ table_cell :: proc(str: string, width: int) -> string {
     return fmt.tprintf("%s%s", cell, strings.repeat(" ", width - runes, context.temp_allocator))
 }
 
+// `REPR_MARK` indicates a repr with its own payload, `ALIAS_MARK` is another mime for the payload above it.
+REPR_MARK :: '='
+ALIAS_MARK :: '+'
+
 // The content cell for one register. Non-text content is described rather than rendered: replacement characters are
 // noise, and their widths would skew the column even after escaping.
 display_content :: proc(entry: lib.Resp_Reg, width: int) -> string {
@@ -972,17 +976,17 @@ REG_GROUPS :: [?]Reg_Group {
 
 // Print `regs` register entries formatted as an ascii table.
 cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
-    table_top := "┌────────────┬─────────────────────┬──────────────────────────┬──────────────────────────────────────────┐"
-    table_sep := "├────────────┼─────────────────────┼──────────────────────────┼──────────────────────────────────────────┤"
-    table_bot := "└────────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┘"
+    table_top := "┌────────────┬─────────────────────┬────────────────────────────┬──────────────────────────────────────────┐"
+    table_sep := "├────────────┼─────────────────────┼────────────────────────────┼──────────────────────────────────────────┤"
+    table_bot := "└────────────┴─────────────────────┴────────────────────────────┴──────────────────────────────────────────┘"
     fmt.println(table_top)
     fmt.println(
-        "│  Register  │ Timestamp           │ Mimes                    │ Content                                  │",
+        "│  Register  │ Timestamp           │ Mimes                      │ Content                                  │",
     )
 
     // Mime and content cells are pre-padded by `table_cell`, so the format string must not pad them again.
     CONTENT_FMT :: "│ % 10s │ % -19s │ %s │ %s │"
-    MIME_COL_WIDTH :: 24
+    MIME_COL_WIDTH :: 26 // 24 for the longest common mime, +2 for the `= `/`+ ` mark
     CONTENT_COL_WIDTH :: 40
 
     ts_buf: [19]u8
@@ -1004,7 +1008,7 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
                 CONTENT_FMT,
                 lib.reg_id_to_string(id),
                 format_unix_timestamp(entry.timestamp, &ts_buf),
-                table_cell(entry.reprs[head].mimes[0], MIME_COL_WIDTH),
+                table_cell(fmt.tprintf("%c %s", REPR_MARK, entry.reprs[head].mimes[0]), MIME_COL_WIDTH),
                 display_content(entry, CONTENT_COL_WIDTH),
             )
 
@@ -1012,7 +1016,8 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
             for repr, r in entry.reprs {
                 for mime, m in repr.mimes {
                     if r == head && m == 0 {continue}
-                    label := fmt.tprintf("  %s", mime) if m > 0 else mime
+                    mark := REPR_MARK if m == 0 else ALIAS_MARK
+                    label := fmt.tprintf("%c %s", mark, mime)
                     content := "" if m > 0 || r == head else describe_repr(repr)
                     fmt.printfln(
                         CONTENT_FMT,
