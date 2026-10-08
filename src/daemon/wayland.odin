@@ -190,6 +190,10 @@ registry_listener := wl.registry_listener {
             wl_state.seat = cast(^wl.seat)wl.registry_bind(registry, name_, &wl.seat_interface, 1)
             wl_state.seat_name = name_
         case "ext_data_control_manager_v1":
+            // If we already assigned wlr_data_control, destroy it before reassigning the pointer
+            if wl_state.data_control_manager != nil {
+                data_control_manager_v1_destroy_wrapper(wl_state.data_control_manager)
+            }
             wl_state.data_control_manager = cast(^ext_dc.data_control_manager_v1)wl.registry_bind(
                 registry,
                 name_,
