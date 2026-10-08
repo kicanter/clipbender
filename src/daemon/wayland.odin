@@ -561,7 +561,7 @@ wayland_commit_selection :: proc(
         }
     }
 
-    // Update only timestamp of cached live selection if duplicate, otherwise replace it.
+    // Update only the timestamp of the cached live selection when the whole offer matches, otherwise replace it.
     live_selection := get_live_selection(store, type)
     if live_selection != nil && reprs_are_equal(live_selection.reprs, reprs) {
         bump_live_selection(store, type)
@@ -571,10 +571,10 @@ wayland_commit_selection :: proc(
         set_live_selection(store, type, cloned_reprs)
     }
 
-    // Deduplicate: don't push if identical to the most recent entry
+    // Offer-level true-dedup, distinct from the per-mime coalescing in `wayland_read_offer_reprs`
     head_reg := get_recency_reg(store, type, 0)
     if head_reg != nil && reprs_are_equal(head_reg.reprs, reprs) {
-        log.debugf("Got duplicate %v copy, suppressing register push", type)
+        log.debugf("%v offer matches the recency head, suppressing register push", type)
         if !self_source {
             lib.free_data_reprs(reprs)
         }
@@ -619,7 +619,7 @@ wayland_read_offer_reprs :: proc(
 
         // Fold into an existing repr when the bytes match one already read. Manually realloc since coalescing is
         // probably not _super_ common.
-        duplicate := false
+        coalesced := false
         for &repr in reprs {
             if slice.equal(repr.data, data) {
                 names := make([]string, len(repr.mimes) + 1)
@@ -628,12 +628,12 @@ wayland_read_offer_reprs :: proc(
                 delete(repr.mimes)
                 repr.mimes = names
                 delete(data)
-                duplicate = true
-                log.debugf("Found duplicate data for mime `%s`", mime)
+                coalesced = true
+                log.debugf("Coalescing mime `%s`: same bytes as an earlier repr in this offer", mime)
                 break
             }
         }
-        if duplicate {continue}     // Don't append to reprs list if duplicate
+        if coalesced {continue}     // folded into an existing repr, so do not add a second one
 
         // This is a new repr, so it'll start with a new mime list of length 1 which includes the new unique mime.
         new_mime_slice := make([]string, 1)
