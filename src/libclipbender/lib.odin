@@ -198,6 +198,15 @@ private_dir_path :: proc(dir: string, subdir: string, filename: string) -> strin
     return fmt.aprintf("%s/%s", full_dir, filename)
 }
 
+// Return `<dir>/<subdir>`, creating it owner-only.
+//
+// Caller is responsible for freeing the returned string.
+private_dir :: proc(dir: string, subdir: string) -> string {
+    full_dir := fmt.aprintf("%s/%s", dir, subdir)
+    make_private_directory(full_dir)
+    return full_dir
+}
+
 // Return `<$env_var>/<subdir>/<filename>`, with `ok` false if the env var does not resolve to a directory. Unlike
 // `env_path_with_fallback` there is deliberately no fallback.
 //
@@ -214,6 +223,24 @@ env_path_or_none :: proc(env_var: string, subdir: string, filename: string) -> (
     }
 
     return private_dir_path(env_var_dir, subdir, filename), true
+}
+
+// Return `<$env_var>/<subdir>` as a directory, with `ok` false if the env var does not resolve to one. The directory
+// counterpart of `env_path_or_none`, for callers that need to build several paths under it.
+//
+// Caller is responsible for freeing the returned string but only when `ok`.
+env_dir_or_none :: proc(env_var: string, subdir: string) -> (path: string, ok: bool) {
+    env_var_dir := os.get_env(env_var, context.allocator)
+    defer delete(env_var_dir)
+
+    if len(env_var_dir) == 0 || !os.is_directory(env_var_dir) {
+        if len(env_var_dir) > 0 {
+            log.warnf("%s env var is not a directory, you should probably fix this (got %s)", env_var, env_var_dir)
+        }
+        return "", false
+    }
+
+    return private_dir(env_var_dir, subdir), true
 }
 
 // Return a path built from an env var directory, using a fallback if the env var doesn't exist or isn't a directory.
@@ -1592,7 +1619,7 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 // Keeping them separate lets the GET format change without touching persistence.
 //
 // Wire format:
-//   [1b STATE_VERSION]
+//   ["IROH" magic][1b STATE_VERSION]
 //   [1b count]
 //   for entry in count:
 //     [1b Reg_Id][8b i64 timestamp][1b blob_count]
@@ -1601,13 +1628,16 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 //       for mime in mime_count: [1b mime_len][mime_len bytes]
 //       [8b u64 data_len][data_len bytes]
 
-// Bytes the `STATE_VERSION` prefix occupies. Everything after it is the state *body*, so the per-entry offsets above are
+// Our state file magic.
+STATE_MAGIC :: "IROH"
+
+// Bytes the magic and version prefix occupy. Everything after is the state *body*, so the per-entry offsets above are
 // independent of the prefix.
-STATE_VERSION_SIZE :: size_of(Monotonic_Version)
+STATE_HEADER_SIZE :: len(STATE_MAGIC) + size_of(Monotonic_Version)
 
 // Exact serialized size of `regs` in the state format, so a caller can allocate a buffer that fits instead of guessing.
 state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
-    size := STATE_VERSION_SIZE + size_of(u8) // version prefix + entry count
+    size := STATE_HEADER_SIZE + size_of(u8) // magic + version + entry count
     for entry in regs {
         if entry == nil {continue}
         size += size_of(Reg_Id) + size_of(i64) + size_of(u8)
@@ -1627,8 +1657,9 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
     assert(len(buf) >= state_size(regs), "marshal_state buffer too small; size it with state_size()")
 
     // Version prefix
-    buf[0] = byte(STATE_VERSION)
-    body := buf[STATE_VERSION_SIZE:] // every offset below is relative to the body, not the file
+    copy(buf[:len(STATE_MAGIC)], STATE_MAGIC)
+    buf[len(STATE_MAGIC)] = byte(STATE_VERSION)
+    body := buf[STATE_HEADER_SIZE:] // every offset below is relative to the body, not the file
 
     written := size_of(u8) // reserve count byte
     count: u8 = 0
@@ -1675,7 +1706,7 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
 
     // Backfill the reserved count byte
     body[0] = byte(count)
-    return STATE_VERSION_SIZE + written
+    return STATE_HEADER_SIZE + written
 }
 
 // Deserialize state into owned entries indexed by Reg_Id. Slots not present are left zeroed.
@@ -1698,17 +1729,25 @@ unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8, 
 // Decoding half of `unmarshal_state`. Leaves `regs` partially filled on error; the caller sweeps it.
 unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8, err: Maybe(string)) {
     regs^ = {}
-    if len(buf) < STATE_VERSION_SIZE {
+    if len(buf) < STATE_HEADER_SIZE {
         return 0, "state file is empty"
     }
 
-    // Checked before anything else is read: a file from a different format version would otherwise decode this byte as
-    // the entry count and every field after it at the wrong offset, which can parse "successfully" into garbage.
-    version := Monotonic_Version(buf[0])
+    // Check magic bytes.
+    if string(buf[:len(STATE_MAGIC)]) != STATE_MAGIC {
+        return 0, fmt.tprintf(
+            "not a clipbender state file (magic %q, expected %q)",
+            string(buf[:len(STATE_MAGIC)]),
+            STATE_MAGIC,
+        )
+    }
+
+    // Check state serialization version
+    version := Monotonic_Version(buf[len(STATE_MAGIC)])
     if version != STATE_VERSION {
         return 0, fmt.tprintf("state file version %d, expected %d", version, STATE_VERSION)
     }
-    body := buf[STATE_VERSION_SIZE:] // every offset below is relative to the body, not the file
+    body := buf[STATE_HEADER_SIZE:] // every offset below is relative to the body, not the file
 
     if len(body) == 0 {
         return 0, "state file has no entry count"

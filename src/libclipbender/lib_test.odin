@@ -807,7 +807,7 @@ test_state_size_matches_marshal :: proc(t: ^testing.T) {
 @(test)
 test_state_size_empty :: proc(t: ^testing.T) {
     regs: [MAX_REGS]^Reg_Entry
-    testing.expect_value(t, state_size(regs), STATE_VERSION_SIZE + size_of(u8)) // version prefix + entry count
+    testing.expect_value(t, state_size(regs), STATE_HEADER_SIZE + size_of(u8)) // magic + version + entry count
 }
 
 @(test)
@@ -1059,7 +1059,7 @@ test_unmarshal_state_rejects_version_mismatch :: proc(t: ^testing.T) {
 
     for v in 0 ..= int(max(u8)) {
         if Monotonic_Version(v) == STATE_VERSION {continue}
-        buf[0] = u8(v)
+        buf[len(STATE_MAGIC)] = u8(v)
 
         dec: [MAX_REGS]Reg_Entry
         count, err := unmarshal_state(buf[:n], &dec)
@@ -1075,7 +1075,8 @@ test_unmarshal_state_accepts_current_version :: proc(t: ^testing.T) {
     // without the other fails here rather than at runtime.
     buf: [256]byte
     n := state_fixture(buf[:])
-    testing.expect_value(t, Monotonic_Version(buf[0]), STATE_VERSION)
+    testing.expect_value(t, string(buf[:len(STATE_MAGIC)]), STATE_MAGIC)
+    testing.expect_value(t, Monotonic_Version(buf[len(STATE_MAGIC)]), STATE_VERSION)
 
     dec: [MAX_REGS]Reg_Entry
     count, err := unmarshal_state(buf[:n], &dec)
@@ -1132,7 +1133,7 @@ test_unmarshal_state_rejects_invalid_reg_id :: proc(t: ^testing.T) {
     // `regs[reg_id]` indexed a fixed array with a byte straight from the file: 200 is past `MAX_REGS`.
     buf: [256]byte
     n := state_fixture(buf[:])
-    buf[STATE_VERSION_SIZE + 1] = 200
+    buf[STATE_HEADER_SIZE + 1] = 200
 
     dec: [MAX_REGS]Reg_Entry
     _, err := unmarshal_state(buf[:n], &dec)
@@ -1148,7 +1149,7 @@ test_unmarshal_state_rejects_oversized_data_len :: proc(t: ^testing.T) {
     n := state_fixture(buf[:])
 
     // Walk to the u32 data length: count + reg_id + timestamp + blob_count + mime_count + [len]"text/plain"
-    data_len_at := STATE_VERSION_SIZE + 1 + 1 + size_of(i64) + 1 + 1 + 1 + len("text/plain")
+    data_len_at := STATE_HEADER_SIZE + 1 + 1 + size_of(i64) + 1 + 1 + 1 + len("text/plain")
     for i in 0 ..< size_of(u32) {buf[data_len_at + i] = 0xFF}
 
     dec: [MAX_REGS]Reg_Entry
@@ -1162,7 +1163,7 @@ test_unmarshal_state_rejects_zero_mimes :: proc(t: ^testing.T) {
     // A repr with no mime cannot be resolved by anything downstream, and `mimes[0]` uses would panic on it.
     buf: [256]byte
     n := state_fixture(buf[:])
-    mime_count_at := STATE_VERSION_SIZE + 1 + 1 + size_of(i64) + 1
+    mime_count_at := STATE_HEADER_SIZE + 1 + 1 + size_of(i64) + 1
     buf[mime_count_at] = 0
 
     dec: [MAX_REGS]Reg_Entry
@@ -1925,4 +1926,35 @@ test_every_detectable_image_and_media_mime_is_rankable :: proc(t: ^testing.T) {
     // mimes most prone to the gap. `image/avif` was in fact already missing when this test was first written.
     check(t, RIFF_CONTAINER.magics, rankable, "RIFF_CONTAINER")
     check(t, FTYP_CONTAINER.magics, rankable, "FTYP_CONTAINER")
+}
+
+@(test)
+test_unmarshal_state_rejects_bad_magic :: proc(t: ^testing.T) {
+    // The job the version byte cannot do: reject a file that is not ours at all. Worth having because `STATE_VERSION` is
+    // 1, so any file whose first byte is 0x01 would otherwise pass the version check and misparse -- a Neovim shada
+    // file is one such file in the wild.
+    //
+    // Corrupting each magic byte covers removal of the check itself: the version lives at `buf[len(STATE_MAGIC)]` and
+    // stays valid, so without the magic test these would parse "successfully".
+    buf: [256]byte
+    n := state_fixture(buf[:])
+
+    for i in 0 ..< len(STATE_MAGIC) {
+        corrupt: [256]byte
+        copy(corrupt[:], buf[:n])
+        corrupt[i] = corrupt[i] ~ 0xFF
+
+        d: [MAX_REGS]Reg_Entry
+        count, err := unmarshal_state(corrupt[:n], &d)
+        for &entry in d {free_reg_entry(&entry)}
+        testing.expectf(t, err != nil, "magic byte %d corrupted should be rejected", i)
+        testing.expect_value(t, count, 0)
+    }
+
+    // A truncated header is rejected before any field is read.
+    for cut in 0 ..< STATE_HEADER_SIZE {
+        d: [MAX_REGS]Reg_Entry
+        _, err := unmarshal_state(buf[:cut], &d)
+        testing.expectf(t, err != nil, "a %d-byte file should be rejected", cut)
+    }
 }

@@ -71,18 +71,20 @@ main :: proc() {
     // The two modes fail differently by design: persistence was explicitly requested, so an unresolvable durable
     // location is fatal, whereas ephemeral state is expendable and we simply stop persisting.
     if persist_state {
-        path, err := persistent_state_path()
+        dir, err := persistent_state_dir()
         if err != nil {
             fmt.eprintfln("Error: persistence is enabled but %s", err.?)
             os.exit(1)
         }
-        server.state_path = path
+        server.state_dir = dir
     } else {
-        server.state_path = ephemeral_state_path()
+        server.state_dir = ephemeral_state_dir()
     }
 
-    defer if server.state_path != nil {delete(server.state_path.?)}
-    if path, ok := server.state_path.?; ok {
+    defer if server.state_dir != nil {delete(server.state_dir.?)}
+    if dir, ok := server.state_dir.?; ok {
+        path := state_file_path(dir)
+        defer delete(path)
         regs: [lib.MAX_REGS]lib.Reg_Entry
         err, parse_err := load_registers_state(path, &regs)
         switch {

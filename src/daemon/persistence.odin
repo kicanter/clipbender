@@ -11,7 +11,11 @@ HOME_ENV_VAR :: "HOME"
 // Relative to `$HOME`, used only when `$XDG_STATE_HOME` is unset. The XDG spec defines `$XDG_STATE_HOME` with
 // this as its default.
 XDG_STATE_SUBDIR :: ".local/state"
-REGISTERS_FILENAME :: "registers"
+STATE_FILENAME :: "registers.iroh"
+// Caller is responsible for freeing the returned string.
+state_file_path :: proc(dir: string) -> string {
+    return fmt.aprintf("%s/%s", dir, STATE_FILENAME)
+}
 
 // We split the state path resolution logic up between ephemeral (tmpfs) and persistent state (non-tmpfs disk) because
 // they illicit different expectations wrt saving state:
@@ -20,13 +24,13 @@ REGISTERS_FILENAME :: "registers"
 //   terminates, so it's fine to proceed without a valid path to write.
 // * With persistent, the user expects state to persist, so we want to hard-error instead of letting them continue while
 //   thinking their register state will be auto-saved.
-
+//
 // Resolve path starting from `$XDG_RUNTIME_DIR`, or `nil` when the runtime dir is unusable. The runtime dir is tmpfs,
 // so state is cleared on reboot and on logout.
 //
 // Caller is responsible for freeing the returned string.
-ephemeral_state_path :: proc() -> Maybe(string) {
-    path, ok := lib.env_path_or_none(lib.RUNTIME_ENV_VAR, lib.CLIPBENDER_SUBDIR, REGISTERS_FILENAME)
+ephemeral_state_dir :: proc() -> Maybe(string) {
+    path, ok := lib.env_dir_or_none(lib.RUNTIME_ENV_VAR, lib.CLIPBENDER_SUBDIR)
     if !ok {
         log.warnf(
             "$%s does not resolve to a directory, running without a state file (registers will not survive a daemon restart)",
@@ -41,19 +45,19 @@ ephemeral_state_path :: proc() -> Maybe(string) {
 // state that survives reboots, so hard-error if we can't resolve a valid path.
 //
 // Caller is responsible for freeing the returned string when `err` is nil.
-persistent_state_path :: proc() -> (path: string, err: Maybe(string)) {
+persistent_state_dir :: proc() -> (path: string, err: Maybe(string)) {
     // TODO (config): allow user to pass their own path
     state_home := os.get_env(STATE_ENV_VAR, context.allocator)
     defer delete(state_home)
     if len(state_home) > 0 && os.is_directory(state_home) {
-        return lib.private_dir_path(state_home, lib.CLIPBENDER_SUBDIR, REGISTERS_FILENAME), nil
+        return lib.private_dir(state_home, lib.CLIPBENDER_SUBDIR), nil
     }
 
     home := os.get_env(HOME_ENV_VAR, context.allocator)
     defer delete(home)
     if len(home) > 0 && os.is_directory(home) {
         state_dir := fmt.tprintf("%s/%s", home, XDG_STATE_SUBDIR)
-        return lib.private_dir_path(state_dir, lib.CLIPBENDER_SUBDIR, REGISTERS_FILENAME), nil
+        return lib.private_dir(state_dir, lib.CLIPBENDER_SUBDIR), nil
     }
 
 

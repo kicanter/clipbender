@@ -124,12 +124,13 @@ backend_commit_selection :: proc(backend: Backend_State, store: ^Register_Store,
 
 // All otherwise-global daemon state, threaded explicitly through the event loop and its handlers.
 Server_State :: struct {
-    backend:    Backend_State,
-    registers:  Register_Store,
-    debounces:  [Debounce_Event]Debounce,
-    // `nil` when no usable state directory exists, in which case registers live in memory only and are lost on
-    // daemon restart. See `clipbender_state_path`. Owned by `main`, which frees it when set.
-    state_path: Maybe(string),
+    backend:   Backend_State,
+    registers: Register_Store,
+    debounces: [Debounce_Event]Debounce,
+    // `nil` when no usable state directory exists, in which case registers live in memory only and are lost on daemon
+    // restart. The state file and the blob directory are both built from `state_dir`. Owned by `main`, which frees it
+    // when set.
+    state_dir: Maybe(string),
 }
 
 // Initialize the debounce timers with their configured durations.
@@ -454,8 +455,10 @@ arm_debounce :: proc(server: ^Server_State, ring: ^uring.Ring, debounce_event: D
 // Serialize the current register state (recency rings + named registers, excluding live selections) to the state file.
 save_state :: proc(server: ^Server_State) {
     // No resolvable state directory. Registers stay in memory only.
-    path, ok := server.state_path.?
+    dir, ok := server.state_dir.?
     if !ok {return}
+    path := state_file_path(dir)
+    defer delete(path)
 
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
     regs := get_registers(&server.registers, filter)
