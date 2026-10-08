@@ -2,6 +2,7 @@ package libclipbender
 
 import "core:fmt"
 import "core:slice"
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -135,7 +136,7 @@ test_marshal_unmarshal_cmd_set_inline :: proc(t: ^testing.T) {
 test_marshal_unmarshal_cmd_get_ranked :: proc(t: ^testing.T) {
     buf: [MAX_MSG_SIZE]byte
     filter := CMD_GET_FILTER_NUMBERED + CMD_GET_FILTER_NAMED
-    groups := [?]Cmd_Get_Group{{filter = filter, pref = Ranked_Mime.PRINTABLE}}
+    groups := [?]Cmd_Get_Group{{filter = filter, policy = Ranked_Policy.TEXTUAL}}
 
     // A ranked group carries no mime: [1b version][1b type][1b count][8b filter][1b tag]
     n := marshal_cmd_get(groups[:], buf[:])
@@ -149,7 +150,7 @@ test_marshal_unmarshal_cmd_get_ranked :: proc(t: ^testing.T) {
     testing.expect_value(t, err, nil)
     testing.expect_value(t, count, 1)
     testing.expect_value(t, dec[0].filter, filter)
-    testing.expect_value(t, dec[0].pref, Mime_Pref(Ranked_Mime.PRINTABLE))
+    testing.expect_value(t, dec[0].policy, Mime_Policy(Ranked_Policy.TEXTUAL))
 }
 
 @(test)
@@ -158,8 +159,8 @@ test_marshal_unmarshal_cmd_get_mixed_groups :: proc(t: ^testing.T) {
     a := reg_id_from_named_index(0)
     b := reg_id_from_named_index(1)
     groups := [?]Cmd_Get_Group {
-        {filter = transmute(Cmd_Get_Filter)(u64(1) << u64(a)), pref = Exact_Mime("image/png")},
-        {filter = transmute(Cmd_Get_Filter)(u64(1) << u64(b)), pref = Ranked_Mime.RICHEST},
+        {filter = transmute(Cmd_Get_Filter)(u64(1) << u64(a)), policy = Exact_Mime("image/png")},
+        {filter = transmute(Cmd_Get_Filter)(u64(1) << u64(b)), policy = Ranked_Policy.VISUAL},
     }
 
     // 2 header + (8+1+1+9) exact + (8+1) ranked
@@ -170,8 +171,8 @@ test_marshal_unmarshal_cmd_get_mixed_groups :: proc(t: ^testing.T) {
     count, err := unmarshal_cmd_get(buf[CMD_VERSION_SIZE + 1:n], &dec)
     testing.expect_value(t, err, nil)
     testing.expect_value(t, count, 2)
-    testing.expect_value(t, dec[0].pref, Mime_Pref(Exact_Mime("image/png")))
-    testing.expect_value(t, dec[1].pref, Mime_Pref(Ranked_Mime.RICHEST))
+    testing.expect_value(t, dec[0].policy, Mime_Policy(Exact_Mime("image/png")))
+    testing.expect_value(t, dec[1].policy, Mime_Policy(Ranked_Policy.VISUAL))
     testing.expect_value(t, dec[0].filter, groups[0].filter)
     testing.expect_value(t, dec[1].filter, groups[1].filter)
 }
@@ -181,14 +182,14 @@ test_unmarshal_cmd_get_max_mime :: proc(t: ^testing.T) {
     buf: [MAX_MSG_SIZE]byte
     long: [MAX_MIME_LEN]byte
     for &c in long {c = 'x'}
-    groups := [?]Cmd_Get_Group{{filter = CMD_GET_FILTER_ALL, pref = Exact_Mime(string(long[:]))}}
+    groups := [?]Cmd_Get_Group{{filter = CMD_GET_FILTER_ALL, policy = Exact_Mime(string(long[:]))}}
 
     n := marshal_cmd_get(groups[:], buf[:])
     dec: [MAX_REGS]Cmd_Get_Group
     count, err := unmarshal_cmd_get(buf[CMD_VERSION_SIZE + 1:n], &dec)
     testing.expect_value(t, err, nil)
     testing.expect_value(t, count, 1)
-    testing.expect_value(t, dec[0].pref, Mime_Pref(Exact_Mime(string(long[:]))))
+    testing.expect_value(t, dec[0].policy, Mime_Policy(Exact_Mime(string(long[:]))))
 }
 
 @(test)
@@ -208,20 +209,20 @@ test_unmarshal_cmd_get_rejects_bad_group_count :: proc(t: ^testing.T) {
 
 @(test)
 test_unmarshal_cmd_get_rejects_unknown_pref :: proc(t: ^testing.T) {
-    // One group whose pref tag is above EXACT_MIME_TAG. Group size depends on this byte, so it must be rejected
+    // One group whose policy tag is above EXACT_MIME_TAG. Group size depends on this byte, so it must be rejected
     // rather than defaulted -- otherwise the next group's filter is read as a mime length.
     msg: [10]byte
     msg[0] = 1 // group_count
-    msg[9] = 99 // bogus pref tag
+    msg[9] = 99 // bogus policy tag
     dec: [MAX_REGS]Cmd_Get_Group
     _, err := unmarshal_cmd_get(msg[:], &dec)
-    testing.expect(t, err != nil, "unknown pref tag should be rejected")
+    testing.expect(t, err != nil, "unknown policy tag should be rejected")
 }
 
 @(test)
 test_unmarshal_cmd_get_rejects_truncated :: proc(t: ^testing.T) {
     buf: [MAX_MSG_SIZE]byte
-    groups := [?]Cmd_Get_Group{{filter = CMD_GET_FILTER_ALL, pref = Exact_Mime("text/plain")}}
+    groups := [?]Cmd_Get_Group{{filter = CMD_GET_FILTER_ALL, policy = Exact_Mime("text/plain")}}
     n := marshal_cmd_get(groups[:], buf[:])
     dec: [MAX_REGS]Cmd_Get_Group
 
@@ -229,7 +230,7 @@ test_unmarshal_cmd_get_rejects_truncated :: proc(t: ^testing.T) {
     _, err_mime := unmarshal_cmd_get(buf[CMD_VERSION_SIZE + 1:n - 4], &dec)
     testing.expect(t, err_mime != nil, "truncated mime should be rejected")
 
-    // Chop mid-filter, before the pref byte is even reachable.
+    // Chop mid-filter, before the policy byte is even reachable.
     _, err_filter := unmarshal_cmd_get(buf[CMD_VERSION_SIZE + 1:CMD_VERSION_SIZE + 6], &dec)
     testing.expect(t, err_filter != nil, "truncated filter should be rejected")
 }
@@ -281,8 +282,8 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
     reg_ptrs[named3] = &regs[named3]
     reg_ptrs[primary2] = &regs[primary2]
 
-    prefs: [MAX_REGS]Mime_Pref // PRINTABLE is the zero value of the union's first variant
-    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    policies: [MAX_REGS]Mime_Policy // TEXTUAL is the zero value of the union's first variant
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
     testing.expect(t, ok, "response should fit")
     testing.expect(t, n > 0)
     testing.expect_value(t, Resp_Status(buf[0]), Resp_Status.REGISTERS)
@@ -307,7 +308,7 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
 
 @(test)
 test_resp_registers_sent_mime_in_own_slot :: proc(t: ^testing.T) {
-    // RICHEST picks the png at index 1, so it must be written first: `reprs[0]` is the one `data` belongs to, and the
+    // VISUAL picks the png at index 1, so it must be written first: `reprs[0]` is the one `data` belongs to, and the
     // client should never have to search for the repr with non-empty data.
     buf: [1024]byte
     m_html := [?]string{"text/html"}
@@ -321,10 +322,10 @@ test_resp_registers_sent_mime_in_own_slot :: proc(t: ^testing.T) {
     id := reg_id_from_named_index(0)
     reg_ptrs: [MAX_REGS]^Reg_Entry
     reg_ptrs[id] = &entry
-    prefs: [MAX_REGS]Mime_Pref
-    prefs[id] = Ranked_Mime.RICHEST
+    policies: [MAX_REGS]Mime_Policy
+    policies[id] = Ranked_Policy.VISUAL
 
-    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
     testing.expect(t, ok)
 
     dec: [MAX_REGS]Resp_Reg
@@ -344,7 +345,7 @@ test_resp_registers_sent_mime_in_own_slot :: proc(t: ^testing.T) {
 
 @(test)
 test_resp_registers_mime_preview_when_nothing_matched :: proc(t: ^testing.T) {
-    // A PNG-only register under PRINTABLE: no bytes, but the mime still travels so the caller knows `image/png` is
+    // A PNG-only register under TEXTUAL: no bytes, but the mime still travels so the caller knows `image/png` is
     // there to request. Without that the client could not distinguish this from an empty register.
     buf: [1024]byte
     m_png := [?]string{"image/png"}
@@ -357,9 +358,9 @@ test_resp_registers_mime_preview_when_nothing_matched :: proc(t: ^testing.T) {
     id := reg_id_from_named_index(1)
     reg_ptrs: [MAX_REGS]^Reg_Entry
     reg_ptrs[id] = &entry
-    prefs: [MAX_REGS]Mime_Pref // PRINTABLE
+    policies: [MAX_REGS]Mime_Policy // TEXTUAL
 
-    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
     testing.expect(t, ok)
 
     dec: [MAX_REGS]Resp_Reg
@@ -390,9 +391,9 @@ test_resp_registers_all_mimes_travel :: proc(t: ^testing.T) {
     id := reg_id_from_named_index(2)
     reg_ptrs: [MAX_REGS]^Reg_Entry
     reg_ptrs[id] = &entry
-    prefs: [MAX_REGS]Mime_Pref // PRINTABLE picks the text repr
+    policies: [MAX_REGS]Mime_Policy // TEXTUAL picks the text repr
 
-    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
     testing.expect(t, ok)
 
     dec: [MAX_REGS]Resp_Reg
@@ -427,9 +428,9 @@ test_marshal_resp_registers_rejects_oversize :: proc(t: ^testing.T) {
 
     reg_ptrs: [MAX_REGS]^Reg_Entry
     reg_ptrs[reg_id_from_named_index(0)] = &entry
-    prefs: [MAX_REGS]Mime_Pref
+    policies: [MAX_REGS]Mime_Policy
 
-    _, ok := marshal_resp_registers(reg_ptrs, prefs, small[:])
+    _, ok := marshal_resp_registers(reg_ptrs, policies, small[:])
     testing.expect(t, !ok, "oversize response should be rejected")
 }
 
@@ -603,20 +604,20 @@ data_repr_of :: proc(data: string, mimes: []string) -> Data_Repr {
 
 // resolve_repr returns (index, ok). These wrap the pair so each case reads as one assertion and a miss is checked as a
 // miss rather than as a sentinel index.
-expect_repr :: proc(t: ^testing.T, entry: ^Reg_Entry, pref: Mime_Pref, want: int, loc := #caller_location) {
-    i, ok := resolve_repr(entry, pref)
+expect_repr :: proc(t: ^testing.T, entry: ^Reg_Entry, policy: Mime_Policy, want: int, loc := #caller_location) {
+    i, ok := resolve_repr(entry, policy)
     testing.expect(t, ok, "expected a repr to resolve", loc = loc)
     testing.expect_value(t, i, want, loc)
 }
 
-expect_no_repr :: proc(t: ^testing.T, entry: ^Reg_Entry, pref: Mime_Pref, loc := #caller_location) {
-    _, ok := resolve_repr(entry, pref)
+expect_no_repr :: proc(t: ^testing.T, entry: ^Reg_Entry, policy: Mime_Policy, loc := #caller_location) {
+    _, ok := resolve_repr(entry, policy)
     testing.expect(t, !ok, "expected no repr to resolve", loc = loc)
 }
 
 @(test)
 test_resolve_blob_ranked_beats_storage_order :: proc(t: ^testing.T) {
-    // The ordering test: html is stored first, but RICHEST ranks images above markup. If the resolution loops were
+    // The ordering test: html is stored first, but VISUAL ranks images above markup. If the resolution loops were
     // inverted (reprs outer), this would return 0 -- and every single-repr test would still pass.
     html_mimes := [?]string{"text/html"}
     png_mimes := [?]string{"image/png"}
@@ -625,13 +626,16 @@ test_resolve_blob_ranked_beats_storage_order :: proc(t: ^testing.T) {
         reprs = reprs[:],
     }
 
-    expect_repr(t, &entry, Ranked_Mime.RICHEST, 1)
-    // PRINTABLE excludes images entirely, so it takes the markup it can print.
-    expect_repr(t, &entry, Ranked_Mime.PRINTABLE, 0)
+    expect_repr(t, &entry, Ranked_Policy.VISUAL, 1)
+    // TEXTUAL excludes images entirely, so it takes the markup it can print.
+    expect_repr(t, &entry, Ranked_Policy.TEXTUAL, 0)
 }
 
 @(test)
-test_resolve_blob_printable_prefers_plain_over_markup :: proc(t: ^testing.T) {
+test_resolve_blob_both_policies_prefer_plain_over_markup :: proc(t: ^testing.T) {
+    // The ghostty case: a terminal copy offers `text/html` alongside `text/plain`, holding the same content wrapped in
+    // markup. *Both* policies must take the plain text -- markup is never the better answer for display when a
+    // plain-text sibling exists. This previously asserted VISUAL took the markup, which encoded the bug.
     html_mimes := [?]string{"text/html"}
     plain_mimes := [?]string{"text/plain"}
     reprs := [?]Data_Repr{data_repr_of("<p>hi</p>", html_mimes[:]), data_repr_of("hi", plain_mimes[:])}
@@ -639,27 +643,67 @@ test_resolve_blob_printable_prefers_plain_over_markup :: proc(t: ^testing.T) {
         reprs = reprs[:],
     }
 
-    expect_repr(t, &entry, Ranked_Mime.PRINTABLE, 1)
-    expect_repr(t, &entry, Ranked_Mime.RICHEST, 0)
+    expect_repr(t, &entry, Ranked_Policy.TEXTUAL, 1)
+    expect_repr(t, &entry, Ranked_Policy.VISUAL, 1)
+}
+
+@(test)
+test_resolve_blob_markup_is_the_last_resort :: proc(t: ^testing.T) {
+    // Markup still resolves when it is all the register offers, under both policies -- demoting it must not make it
+    // unreachable.
+    html_mimes := [?]string{"text/html"}
+    reprs := [?]Data_Repr{data_repr_of("<p>hi</p>", html_mimes[:])}
+    entry := Reg_Entry {
+        reprs = reprs[:],
+    }
+
+    expect_repr(t, &entry, Ranked_Policy.TEXTUAL, 0)
+    expect_repr(t, &entry, Ranked_Policy.VISUAL, 0)
+}
+
+@(test)
+test_resolve_blob_media_resolves_under_richest :: proc(t: ^testing.T) {
+    // Audio and video are recognised by the magic table but had no ranking group, so a media-only register resolved to
+    // nothing under every policy. VISUAL now ranks it; TEXTUAL still excludes it, as it does images.
+    flac_mimes := [?]string{"audio/flac"}
+    reprs := [?]Data_Repr{data_repr_of("fLaC", flac_mimes[:])}
+    entry := Reg_Entry {
+        reprs = reprs[:],
+    }
+
+    expect_repr(t, &entry, Ranked_Policy.VISUAL, 0)
+    expect_no_repr(t, &entry, Ranked_Policy.TEXTUAL)
+}
+
+@(test)
+test_resolve_blob_image_beats_media :: proc(t: ^testing.T) {
+    flac_mimes := [?]string{"audio/flac"}
+    png_mimes := [?]string{"image/png"}
+    reprs := [?]Data_Repr{data_repr_of("fLaC", flac_mimes[:]), data_repr_of("\x89PNG", png_mimes[:])}
+    entry := Reg_Entry {
+        reprs = reprs[:],
+    }
+
+    expect_repr(t, &entry, Ranked_Policy.VISUAL, 1)
 }
 
 @(test)
 test_resolve_blob_printable_empty_for_image_only :: proc(t: ^testing.T) {
-    // A GIMP-style PNG-only register: PRINTABLE is a filter plus a ranking, so it legitimately matches nothing rather
-    // than spraying binary into a terminal. RICHEST has no boundary and takes it.
+    // A GIMP-style PNG-only register: TEXTUAL is a filter plus a ranking, so it legitimately matches nothing rather
+    // than spraying binary into a terminal. VISUAL has no boundary and takes it.
     png_mimes := [?]string{"image/png"}
     reprs := [?]Data_Repr{data_repr_of("\x89PNG", png_mimes[:])}
     entry := Reg_Entry {
         reprs = reprs[:],
     }
 
-    expect_no_repr(t, &entry, Ranked_Mime.PRINTABLE)
-    expect_repr(t, &entry, Ranked_Mime.RICHEST, 0)
+    expect_no_repr(t, &entry, Ranked_Policy.TEXTUAL)
+    expect_repr(t, &entry, Ranked_Policy.VISUAL, 0)
 }
 
 @(test)
 test_resolve_blob_structured_only :: proc(t: ^testing.T) {
-    // application/json has no text/plain form but is printable, so both prefs must resolve it -- the case that would
+    // application/json has no text/plain form but is printable, so both policies must resolve it -- the case that would
     // return -1 if the structured category were missing from either policy.
     json_mimes := [?]string{"application/json"}
     reprs := [?]Data_Repr{data_repr_of(`{"a":1}`, json_mimes[:])}
@@ -667,8 +711,8 @@ test_resolve_blob_structured_only :: proc(t: ^testing.T) {
         reprs = reprs[:],
     }
 
-    expect_repr(t, &entry, Ranked_Mime.PRINTABLE, 0)
-    expect_repr(t, &entry, Ranked_Mime.RICHEST, 0)
+    expect_repr(t, &entry, Ranked_Policy.TEXTUAL, 0)
+    expect_repr(t, &entry, Ranked_Policy.VISUAL, 0)
 }
 
 @(test)
@@ -681,8 +725,8 @@ test_resolve_blob_app_private_never_wins_ranked :: proc(t: ^testing.T) {
         reprs = reprs[:],
     }
 
-    expect_no_repr(t, &entry, Ranked_Mime.PRINTABLE)
-    expect_no_repr(t, &entry, Ranked_Mime.RICHEST)
+    expect_no_repr(t, &entry, Ranked_Policy.TEXTUAL)
+    expect_no_repr(t, &entry, Ranked_Policy.VISUAL)
 
     // ...but an explicit request names the full string, so there is no accident to prevent.
     expect_repr(t, &entry, Exact_Mime("chromium/x-web-custom-data"), 0)
@@ -711,15 +755,15 @@ test_resolve_blob_matches_any_name_on_blob :: proc(t: ^testing.T) {
         reprs = reprs[:],
     }
 
-    expect_repr(t, &entry, Ranked_Mime.PRINTABLE, 0)
+    expect_repr(t, &entry, Ranked_Policy.TEXTUAL, 0)
     expect_repr(t, &entry, Exact_Mime("STRING"), 0)
 }
 
 @(test)
 test_resolve_blob_empty_entry :: proc(t: ^testing.T) {
     entry: Reg_Entry
-    expect_no_repr(t, &entry, Ranked_Mime.PRINTABLE)
-    expect_no_repr(t, &entry, Ranked_Mime.RICHEST)
+    expect_no_repr(t, &entry, Ranked_Policy.TEXTUAL)
+    expect_no_repr(t, &entry, Ranked_Policy.VISUAL)
     expect_no_repr(t, &entry, Exact_Mime("text/plain"))
 }
 
@@ -733,8 +777,8 @@ test_resolve_blob_svg_is_an_image_not_printable :: proc(t: ^testing.T) {
         reprs = reprs[:],
     }
 
-    expect_no_repr(t, &entry, Ranked_Mime.PRINTABLE)
-    expect_repr(t, &entry, Ranked_Mime.RICHEST, 0)
+    expect_no_repr(t, &entry, Ranked_Policy.TEXTUAL)
+    expect_repr(t, &entry, Ranked_Policy.VISUAL, 0)
 }
 
 @(test)
@@ -1046,7 +1090,7 @@ test_marshal_cmds_all_carry_protocol_version :: proc(t: ^testing.T) {
     // prefix sends a body byte as the version and gets the whole message rejected.
     dest := reg_id_from_named_index(0)
     source := reg_id_from_named_index(1)
-    groups := []Cmd_Get_Group{{filter = CMD_GET_FILTER_NAMED, pref = Ranked_Mime.PRINTABLE}}
+    groups := []Cmd_Get_Group{{filter = CMD_GET_FILTER_NAMED, policy = Ranked_Policy.TEXTUAL}}
 
     buf: [MAX_MSG_SIZE]byte
     check :: proc(t: ^testing.T, buf: []byte, n: int, name: string) {
@@ -1194,7 +1238,7 @@ test_sniff_svg :: proc(t: ^testing.T) {
     sniffed(t, `<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>`, "image/svg+xml")
 
     // SVG must beat XML: an SVG opens with `<?xml`, so testing XML first would classify it as plain XML and it would
-    // never rank as an image under `pref=richest`, which is the whole reason SVG sniffing is worth having.
+    // never rank as an image under the VISUAL policy, which is the whole reason SVG sniffing is worth having.
     mimes := resolve_mimes(transmute([]byte)string(`<?xml version="1.0"?><svg/>`))
     testing.expect_value(t, mimes[0], "image/svg+xml")
     testing.expect_value(t, mimes[1], "application/xml")
@@ -1760,7 +1804,7 @@ test_repr_meta_rejects_truncation :: proc(t: ^testing.T) {
 
 @(test)
 test_resp_registers_oversize_payload_degrades_to_descriptor :: proc(t: ^testing.T) {
-    // The `pref=richest` failure: a blob can exceed the response buffer on its own, and refusing the whole response left
+    // The VISUAL-policy failure: a blob can exceed the response buffer on its own, and refusing the whole response left
     // the client with a zero-length message and no way to know why. The entry must still travel, described but
     // unselected, so it renders as `[image/png ...]` rather than vanishing.
     big := make([]byte, 4096)
@@ -1775,12 +1819,12 @@ test_resp_registers_oversize_payload_degrades_to_descriptor :: proc(t: ^testing.
     id := reg_id_from_named_index(0)
     reg_ptrs: [MAX_REGS]^Reg_Entry
     reg_ptrs[id] = &entry
-    prefs: [MAX_REGS]Mime_Pref
-    prefs[id] = Ranked_Mime.RICHEST
+    policies: [MAX_REGS]Mime_Policy
+    policies[id] = Ranked_Policy.VISUAL
 
     // Room for the descriptors, nowhere near enough for the 4 KiB payload.
     buf: [128]byte
-    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
     testing.expect(t, ok, "descriptors alone fit, so the response should succeed")
 
     dec: [MAX_REGS]Resp_Reg
@@ -1820,12 +1864,12 @@ test_resp_registers_oversize_payload_keeps_later_entries :: proc(t: ^testing.T) 
     reg_ptrs: [MAX_REGS]^Reg_Entry
     reg_ptrs[big_id] = &big_entry
     reg_ptrs[small_id] = &small_entry
-    prefs: [MAX_REGS]Mime_Pref
-    prefs[big_id] = Ranked_Mime.RICHEST
-    prefs[small_id] = Ranked_Mime.RICHEST
+    policies: [MAX_REGS]Mime_Policy
+    policies[big_id] = Ranked_Policy.VISUAL
+    policies[small_id] = Ranked_Policy.VISUAL
 
     buf: [256]byte
-    n, ok := marshal_resp_registers(reg_ptrs, prefs, buf[:])
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
     testing.expect(t, ok)
 
     dec: [MAX_REGS]Resp_Reg
@@ -1835,4 +1879,50 @@ test_resp_registers_oversize_payload_keeps_later_entries :: proc(t: ^testing.T) 
     testing.expect_value(t, count, 2)
     testing.expect(t, resp_reg_selected(dec[big_id]) == nil, "the oversize entry is described but unselected")
     testing.expect_value(t, string(dec[small_id].data), "hi")
+}
+
+// Every mime the magic table can emit is either rankable by a policy or deliberately not. This guards the gap that
+// already bit twice: audio/video belonged to no group, and `image/avif`/`heic`/`jxl` were missing from `IMAGE_MIMES`,
+// so a register holding one resolved to nothing under *every* policy.
+//
+// Archives and documents stay unrankable on purpose: there is no sensible display for a zip, and an unselected repr now
+// renders as its descriptor (`[application/pdf 812 kiB]`) rather than as a blank row.
+@(test)
+test_every_detectable_image_and_media_mime_is_rankable :: proc(t: ^testing.T) {
+    rankable :: proc(mime: string) -> bool {
+        for group in ([][]string {
+                IMAGE_MIMES[:],
+                MEDIA_MIMES[:],
+                URI_MIMES[:],
+                TEXT_MIMES[:],
+                STRUCTURED_MIMES[:],
+                MARKUP_MIMES[:],
+            }) {
+            for m in group {
+                if m == mime {return true}
+            }
+        }
+        return false
+    }
+
+    check :: proc(t: ^testing.T, magics: []Magic, rankable: proc(_: string) -> bool, source: string) {
+        for magic in magics {
+            for mime in magic.mimes {
+                is_visual :=
+                    strings.has_prefix(mime, "image/") ||
+                    strings.has_prefix(mime, "audio/") ||
+                    strings.has_prefix(mime, "video/")
+                if is_visual {
+                    testing.expectf(t, rankable(mime), "%s (%s) is detectable but no policy can rank it", mime, source)
+                }
+            }
+        }
+    }
+
+    check(t, MAGICS[:], rankable, "MAGICS")
+    // Container magics are where this is most likely to go wrong: webp, wav, avi, avif and heic all live behind a RIFF
+    // or ftyp marker rather than in the top-level table, so a check that only walked `MAGICS` would miss exactly the
+    // mimes most prone to the gap. `image/avif` was in fact already missing when this test was first written.
+    check(t, RIFF_CONTAINER.magics, rankable, "RIFF_CONTAINER")
+    check(t, FTYP_CONTAINER.magics, rankable, "FTYP_CONTAINER")
 }

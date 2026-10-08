@@ -80,7 +80,7 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
         )
     case .GET:
         fmt.eprintln(
-            "Usage: clipbender get <filter...> [fmt=<table|json|raw>] [pref=<printable|richest>]\n\n" +
+            "Usage: clipbender get <filter...> [fmt=<table|json|raw>]\n\n" +
             "Retrieve the content, mime type, and timestamp of the registers matching `filter`. `fmt=table` (the default)\n" +
             "prints an aligned table, `fmt=json` emits structured JSON, and `fmt=raw` emits just the register contents\n" +
             "separated by NUL bytes (recoverable with `read -d ''`, `xargs -0`; use `fmt=json` for binary contents).\n\n" +
@@ -109,7 +109,6 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
             "\tclipbender get ++selection                           Print the live clipboard selection.\n" +
             "\tclipbender get +a fmt=raw | wl-copy                  Pipe only the contents of register `a` into wl-copy.\n" +
             "\tclipbender get +a fmt=raw > <file>                   Redirect the contents of register `a` to `file`.\n" +
-            "\tclipbender get ++all pref=richest                    Prefer the highest-fidelity representation of each register.\n" +
             "\tclipbender get +a=image/png fmt=raw > out.png        Write register `a`'s PNG representation to a file.\n",
         )
     case .CLEAR:
@@ -480,13 +479,12 @@ parse_cmd_get_keyword :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err: M
 // * Ranges of registers may be denoted with a `:` delimiting two ends of an inclusive range following a prefix token
 // within the same "kind" (Clipboard Numbered, Primary Numbered, or Named) e.g. `+d:g`.
 // * An exact mime attaches to any `+`/`++` token with `=`, e.g. `+a=image/png` or `++named=text/html`.
-// * Flags are `key=value`: `fmt=table|json|raw` (output shape) and `pref=printable|richest` (mime ranking).
+// * Flags are `key=value`: `fmt=table|json|raw` (output shape).
 parse_cmd_get :: proc(
     filter_args: []string,
 ) -> (
     filter: lib.Cmd_Get_Filter,
     format: Get_Cmd_Format,
-    pref: lib.Ranked_Mime,
     err: Maybe(string),
 ) {
     incl: lib.Cmd_Get_Filter
@@ -495,8 +493,6 @@ parse_cmd_get :: proc(
     // Flag defaults
     format = .TABLE // fmt= default TODO (config): allow user to set default format
     format_set := false
-    pref = .PRINTABLE // pref= default TODO (config): allow user to set default mime preference
-    pref_set := false
 
     for &arg in filter_args {
         if len(arg) == 0 {     // empty string arg should just be skipped, no-op
@@ -504,7 +500,7 @@ parse_cmd_get :: proc(
         }
 
         if len(arg) == 1 {
-            return {}, {}, {}, "incomplete token"
+            return {}, {}, "incomplete token"
         }
 
         switch arg[0] {     // every arg must start with one of the prefix tokens
@@ -513,7 +509,7 @@ parse_cmd_get :: proc(
             // mime itself is re-read by `resolve_mime_groups`; validated here so a bad one is rejected once, up front.
             token, mime, has_mime := split_mime_suffix(arg)
             if has_mime {
-                if err = validate_exact_mime(mime); err != nil {return {}, {}, {}, err}
+                if err = validate_exact_mime(mime); err != nil {return {}, {}, err}
             }
             if token[1] == '+' {     // double prefix include token
                 err = parse_cmd_get_keyword(&incl, token[2:])
@@ -525,7 +521,7 @@ parse_cmd_get :: proc(
             if has_mime {
                 // Exclusion operates on register *presence*, so "exclude `a`, but as plain text" has no coherent
                 // meaning. Silently dropping the mime would look like it worked.
-                return {}, {}, {}, fmt.tprintf("cannot attach a mime to an exclusion token (got `%v`)", arg)
+                return {}, {}, fmt.tprintf("cannot attach a mime to an exclusion token (got `%v`)", arg)
             }
             if token[1] == '-' {     // double prefix exclude token
                 err = parse_cmd_get_keyword(&excl, token[2:])
@@ -537,13 +533,13 @@ parse_cmd_get :: proc(
             // namespace -- a bare `a=text/plain` is a flag named `a`, not register `a`.
             eq_idx := strings.index_byte(arg, '=')
             if eq_idx < 0 {
-                return {}, {}, {}, fmt.tprintf("invalid arg, expected key=value flag (got `%v`)", arg)
+                return {}, {}, fmt.tprintf("invalid arg, expected key=value flag (got `%v`)", arg)
             }
             key := arg[:eq_idx]
             value := arg[eq_idx + 1:]
             switch key {
             case "fmt":
-                if format_set {return {}, {}, {}, "you may only specify one format flag"}
+                if format_set {return {}, {}, "you may only specify one format flag"}
                 switch value {
                 case "table":
                     format = .TABLE
@@ -552,32 +548,21 @@ parse_cmd_get :: proc(
                 case "raw":
                     format = .RAW
                 case:
-                    return {}, {}, {}, fmt.tprintf("invalid format value, expected `table`, `json`, or `raw` (got `%v`)", value)
+                    return {}, {}, fmt.tprintf("invalid format value, expected `table`, `json`, or `raw` (got `%v`)", value)
                 }
                 format_set = true
-            case "pref":
-                if pref_set {return {}, {}, {}, "you may only specify one pref flag"}
-                switch value {
-                case "printable":
-                    pref = .PRINTABLE
-                case "richest":
-                    pref = .RICHEST
-                case:
-                    return {}, {}, {}, fmt.tprintf("invalid pref value, expected `printable` or `richest` (got `%v`)", value)
-                }
-                pref_set = true
             case:
-                return {}, {}, {}, fmt.tprintf("unknown flag `%v`", key)
+                return {}, {}, fmt.tprintf("unknown flag `%v`", key)
             }
         case:
-            return {}, {}, {}, fmt.tprintf("invalid arg, each arg should start with `+`, `-`, or be a key=value flag (got `%v`)", arg)
+            return {}, {}, fmt.tprintf("invalid arg, each arg should start with `+`, `-`, or be a key=value flag (got `%v`)", arg)
         }
 
-        if err != nil {return {}, {}, {}, err}
+        if err != nil {return {}, {}, err}
     }
 
     filter = incl & ~excl
-    return filter, format, pref, {}
+    return filter, format, {}
 }
 
 // Split a register token from a trailing `=mime`. Splits on the first `=` because mimes can contain them (e.g.
@@ -603,7 +588,7 @@ is_set_mime_flag :: proc(arg: string) -> bool {
 //
 // **Replaces detection, never augments it.** Naming mimes asserts what the payload is, so appending `text/plain`
 // behind the user's back would relabel data they deliberately described. `mime=application/rtf` alone therefore
-// yields a register claiming only RTF -- which reads as `[no printable mime]` under the default `pref=printable`.
+// yields a register claiming only RTF -- which renders as its descriptor under the default TEXTUAL policy.
 // Honest rather than surprising, and `mime=application/rtf mime=text/plain` is how you ask for both.
 parse_set_mime_flags :: proc(args: []string) -> (mimes: []string, err: Maybe(string)) {
     collected := make([dynamic]string)
@@ -620,7 +605,7 @@ parse_set_mime_flags :: proc(args: []string) -> (mimes: []string, err: Maybe(str
             return
         }
 
-        // Repeats are redundant rather than contradictory -- unlike `fmt=`/`pref=`, accumulating is the whole point --
+        // Repeats are redundant rather than contradictory -- unlike `fmt=`, accumulating is the whole point --
         // so drop them silently, matching how the Wayland layer dedupes advertised mimes on append.
         already := false
         for existing in collected {
@@ -647,7 +632,7 @@ validate_exact_mime :: proc(mime: string) -> Maybe(string) {
         return fmt.tprintf("mime is %d bytes, the maximum is %d (got `%v`)", len(mime), lib.MAX_MIME_LEN, mime)
     }
     if !strings.contains(mime, "/") {
-        // Deliberately no prefix matching, unlike wl-paste's `-t image`: that discards the ranked order `pref=richest`
+        // Deliberately no prefix matching, unlike wl-paste's `-t image`: that discards the ranked order the VISUAL policy
         // exists to provide, since alphabetically `image/gif` would beat `image/png`.
         return fmt.tprintf("mime must be a full `type/subtype` (got `%v`)", mime)
     }
@@ -676,7 +661,7 @@ Mime_Token :: struct {
 resolve_mime_groups :: proc(
     filter_args: []string,
     presence: lib.Cmd_Get_Filter,
-    default_pref: lib.Mime_Pref,
+    default_policy: lib.Mime_Policy,
     groups: ^[lib.MAX_REGS]lib.Cmd_Get_Group,
 ) -> (
     count: int,
@@ -761,10 +746,10 @@ resolve_mime_groups :: proc(
         }
         emitted += set
 
-        pref: lib.Mime_Pref = default_pref if mime == "" else lib.Exact_Mime(mime)
+        policy: lib.Mime_Policy = default_policy if mime == "" else lib.Exact_Mime(mime)
         groups[count] = lib.Cmd_Get_Group {
             filter = set,
-            pref   = pref,
+            policy = policy,
         }
         count += 1
     }
@@ -829,30 +814,27 @@ mime_for_path :: proc(path: string) -> string {
 infer_output :: proc(
     filter: lib.Cmd_Get_Filter,
     format: Get_Cmd_Format,
-    pref: lib.Mime_Pref,
+    policy: lib.Mime_Policy,
     format_stated: bool,
-    pref_stated: bool,
 ) -> (
     Get_Cmd_Format,
-    lib.Mime_Pref,
+    lib.Mime_Policy,
 ) {
-    if card(filter) != 1 || stdout_is_terminal() {return format, pref}
+    if card(filter) != 1 || stdout_is_terminal() {return format, policy}
 
     format := format
-    pref := pref
+    policy := policy
     if !format_stated {format = .RAW}
 
     // Only override the preference when the output is actually raw bytes.
-    if !pref_stated && format == .RAW {
-        // An unrecognised or absent extension leaves RICHEST, which still gets the bytes out -- it just cannot honour
+    if format == .RAW {
+        // An unrecognised or absent extension leaves TEXTUAL; `cmd_get` retries with VISUAL when that selects
         // the extension when a register holds several image formats.
         if mime := mime_for_path(stdout_path()); mime != "" {
-            pref = lib.Exact_Mime(mime)
-        } else {
-            pref = lib.Ranked_Mime.RICHEST
+            policy = lib.Exact_Mime(mime)
         }
     }
-    return format, pref
+    return format, policy
 }
 
 // Whether the user wrote a `key=` flag.
@@ -1170,17 +1152,17 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         print_cmd_usage_and_exit(.GET)
     }
 
-    filter, format, pref, err := parse_cmd_get(args)
+    filter, format, err := parse_cmd_get(args)
     if err != nil {
         fmt.eprintfln("Error: %v", err.?)
         print_cmd_usage_and_exit(.GET)
     }
 
     // Try to infer the output preference for a single-register request that isn't going to stdout.
-    out_format, out_pref := infer_output(filter, format, pref, has_flag(args, "fmt="), has_flag(args, "pref="))
+    out_format, out_policy := infer_output(filter, format, lib.Ranked_Policy.TEXTUAL, has_flag(args, "fmt="))
 
     groups: [lib.MAX_REGS]lib.Cmd_Get_Group
-    group_count, group_err := resolve_mime_groups(args, filter, out_pref, &groups)
+    group_count, group_err := resolve_mime_groups(args, filter, out_policy, &groups)
     if group_err != nil {
         fmt.eprintfln("Error: %v", group_err.?)
         os.exit(1)
@@ -1191,38 +1173,22 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
         os.exit(1)
     }
 
-    // Send GET message
-    msg: [lib.MAX_MSG_SIZE]byte
-    written := lib.marshal_cmd_get(groups[:group_count], msg[:])
-    _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
-    if send_err != nil {
-        fmt.eprintfln("Error: failed sending GET to daemon: errno %v", send_err)
-        os.exit(1)
-    }
+    regs := get_registers_or_exit(client_fd, groups[:group_count])
 
-    // Receive response from daemon
-    resp_buf: [lib.MAX_MSG_SIZE]u8
-    bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
-    if recv_err != .NONE || bytes_read <= 0 {
-        fmt.eprintfln("Error: no response from daemon for `get` command: errno %v", recv_err)
-        os.exit(1)
-    }
-
-    regs: [lib.MAX_REGS]lib.Resp_Reg // buffer to store the response data, indexed by Reg_Id
-    status := lib.Resp_Status(resp_buf[0])
-    switch status {
-    case .OK:
-        fmt.eprintln("Error: unexpected OK response for `get` command")
-        os.exit(1)
-    case .ERROR:
-        err_msg := string(resp_buf[1:bytes_read])
-        fmt.eprintfln("Error: %v", err_msg)
-        os.exit(1)
-    case .REGISTERS:
-        _, unmarshal_err := lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &regs)
-        if unmarshal_err != nil {
-            fmt.eprintfln("Error: malformed response from daemon: %v", unmarshal_err.?)
-            os.exit(1)
+    // A single register redirected to a file whose extension named nothing, holding only content TEXTUAL excludes (an
+    // image, say), retry with VISUAL rather than writing an empty file.
+    if out_format == .RAW && card(filter) == 1 {
+        if _, is_ranked := out_policy.(lib.Ranked_Policy); is_ranked {
+            for reg_id in 0 ..< lib.Reg_Id(lib.MAX_REGS) {
+                if !lib.resp_reg_is_empty(regs[reg_id]) && lib.resp_reg_selected(regs[reg_id]) == nil {
+                    for &entry in regs {lib.free_resp_reg(&entry)}
+                    retry_count, retry_err := resolve_mime_groups(args, filter, lib.Ranked_Policy.VISUAL, &groups)
+                    if retry_err == nil && retry_count > 0 {
+                        regs = get_registers_or_exit(client_fd, groups[:retry_count])
+                    }
+                    break
+                }
+            }
         }
     }
 
@@ -1241,6 +1207,41 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     for &entry in regs {
         lib.free_resp_reg(&entry)
     }
+}
+
+// One GET round trip. Exits on any failure, so callers never see a partial result.
+get_registers_or_exit :: proc(client_fd: linux.Fd, groups: []lib.Cmd_Get_Group) -> [lib.MAX_REGS]lib.Resp_Reg {
+    msg: [lib.MAX_MSG_SIZE]byte
+    written := lib.marshal_cmd_get(groups, msg[:])
+    _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
+    if send_err != nil {
+        fmt.eprintfln("Error: failed sending GET to daemon: errno %v", send_err)
+        os.exit(1)
+    }
+
+    resp_buf: [lib.MAX_MSG_SIZE]u8
+    bytes_read, recv_err := linux.recv(client_fd, resp_buf[:], {})
+    if recv_err != .NONE || bytes_read <= 0 {
+        fmt.eprintfln("Error: no response from daemon for `get` command: errno %v", recv_err)
+        os.exit(1)
+    }
+
+    regs: [lib.MAX_REGS]lib.Resp_Reg
+    switch lib.Resp_Status(resp_buf[0]) {
+    case .OK:
+        fmt.eprintln("Error: unexpected OK response for `get` command")
+        os.exit(1)
+    case .ERROR:
+        fmt.eprintfln("Error: %v", string(resp_buf[1:bytes_read]))
+        os.exit(1)
+    case .REGISTERS:
+        _, unmarshal_err := lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &regs)
+        if unmarshal_err != nil {
+            fmt.eprintfln("Error: malformed response from daemon: %v", unmarshal_err.?)
+            os.exit(1)
+        }
+    }
+    return regs
 }
 
 parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, err: Maybe(string)) {

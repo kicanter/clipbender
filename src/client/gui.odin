@@ -766,7 +766,7 @@ keyboard_listener := wl.keyboard_listener {
 gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (err: Maybe(string)) {
     // Send GET message for all registers. The GUI renders content, so it wants the richest representation.
     msg: [lib.MAX_MSG_SIZE]byte
-    groups := [?]lib.Cmd_Get_Group{{filter = lib.CMD_GET_FILTER_ALL, pref = lib.Ranked_Mime.RICHEST}}
+    groups := [?]lib.Cmd_Get_Group{{filter = lib.CMD_GET_FILTER_ALL, policy = lib.Ranked_Policy.VISUAL}}
     written := lib.marshal_cmd_get(groups[:], msg[:])
     _, send_err := linux.send(client_fd, msg[:written], {.NOSIGNAL})
     if send_err != nil {

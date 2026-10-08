@@ -258,7 +258,7 @@ clipbender_lock_path :: proc() -> string {
 // SET (REGISTER): `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b source Reg_Id]`
 // SET (INLINE):   `[1b Message_Type][1b destination Reg_Id][1b Set_Mode][1b Source_Kind][1b mime type len][M mime type][N data]`
 // GET:            `[1b Message_Type][1b group count]` then per group:
-//                 `[8b Cmd_Get_Filter][1b mime pref tag]` plus `[1b mime type len][M mime type]` for EXACT only
+//                 `[8b Cmd_Get_Filter][1b mime policy tag]` plus `[1b mime type len][M mime type]` for EXACT only
 // CLEAR:          `[1b Message_Type][1b Reg_Id]`
 // SHUTDOWN:       `[1b Message_Type]`
 //
@@ -330,30 +330,29 @@ MAX_REGS :: 64
 // Preference of mime type to pass data for from daemon -> client. Clients use this in their GET IPC request to indicate
 // whether they want the daemon to handle picking the best mime that the repr provides or if the client wants to pass
 // the exact mime they want to receive.
-//
-// `Ranked_Mime` represents the daemon picking the highest priority mime. `RICHEST` is a pure ranking with no boundary
-// that degrades all the way to plain text, so it is effectively never empty. `PRINTABLE` is a filter *plus* a ranking
-// e.g. an image is not a worse answer for a terminal, it is a wrong one that corrupts the output, so it will only
-// include terminal-safe mimes.
-Mime_Pref :: union #no_nil {
-    Ranked_Mime, // daemon is in charge of selecting the highest prioritized mime
-    Exact_Mime, // client passes exactly what mime type they want to receive
+Mime_Policy :: union #no_nil {
+    Ranked_Policy, // daemon picks by the named ordering
+    Exact_Mime, // client names exactly what mime it wants
 }
-Ranked_Mime :: enum u8 {
-    PRINTABLE, // safe to write to a terminal or redirect; excludes images, so it CAN come up empty
-    RICHEST, // highest fidelity available; no boundary, degrades to plain text, effectively never empty
+Ranked_Policy :: enum u8 {
+    // For output a terminal or pipe consumes: {text, structured, URIs, markup}. A filter *plus* a ranking -- an image is
+    // not a worse answer here but a wrong one that corrupts the output -- so it can legitimately match nothing.
+    TEXTUAL,
+    // For a visual preview: {images, media, URIs, text, structured, markup}. No boundary, degrades all the way to
+    // markup, so it is effectively never empty.
+    VISUAL,
 }
 Exact_Mime :: distinct string // specify exactly what mime to receive
-// Wire tag for the `Mime_Pref` union. `Ranked_Mime` variants encode as their own ordinals (PRINTABLE=0, RICHEST=1) and
+// Wire tag for the `Mime_Policy` union. `Ranked_Policy` variants encode as their own ordinals (TEXTUAL=0, VISUAL=1) and
 // `Exact_Mime` takes the next value after them, derived so that adding a ranked variant shifts the sentinel
 // automatically instead of silently colliding with it.
 //
 // This is the value one past the last ranked variant, not a count of wire tags. Deriving it from `len` only works while
-// `Ranked_Mime` stays contiguous from zero -- assigning explicit values would leave `len` unchanged while moving the
-// variants, so `Ranked_Mime(tag)` would decode garbage. The assert pins that down.
-EXACT_MIME_TAG :: u8(len(Ranked_Mime))
-// ensure the tag for `Exact_Mime` is one more than the last in `Ranked_Mime`
-#assert(u8(max(Ranked_Mime)) + 1 == EXACT_MIME_TAG)
+// `Ranked_Policy` stays contiguous from zero -- assigning explicit values would leave `len` unchanged while moving the
+// variants, so `Ranked_Policy(tag)` would decode garbage. The assert pins that down.
+EXACT_MIME_TAG :: u8(len(Ranked_Policy))
+// ensure the tag for `Exact_Mime` is one more than the last in `Ranked_Policy`
+#assert(u8(max(Ranked_Policy)) + 1 == EXACT_MIME_TAG)
 
 // Max byte length of a mime string on the wire. Real mimes are typically far shorter ("text/plain;charset=utf-8" is 24)
 MAX_MIME_LEN :: int(max(u8))
@@ -388,10 +387,24 @@ URI_MIMES := [?]string{"text/uri-list"}
 MARKUP_MIMES := [?]string{"text/html", "text/markdown", "text/rtf", "application/rtf"}
 
 @(rodata)
+MEDIA_MIMES := [?]string {
+    "audio/flac",
+    "audio/wav",
+    "audio/ogg",
+    "audio/mpeg",
+    "video/mp4",
+    "video/x-matroska",
+    "video/x-msvideo",
+}
+
+@(rodata)
 IMAGE_MIMES := [?]string {
     "image/png",
     "image/webp",
     "image/jpeg",
+    "image/avif",
+    "image/heic",
+    "image/jxl",
     "image/tiff",
     "image/bmp",
     "image/gif",
@@ -403,11 +416,11 @@ IMAGE_MIMES := [?]string {
 // rather than by register is what keeps ranges cheap: `+a:z=text/plain` is one group (22 bytes) because the mime string
 // appears once and the registers collapse into the bitmask; keying by register would repeat the mime 26 times.
 //
-// The mime lives inside `pref` (as `Exact_Mime`) rather than in a separate field, so "ranked but with a mime" and
+// The mime lives inside `policy` (as `Exact_Mime`) rather than in a separate field, so "ranked but with a mime" and
 // "exact but with no mime" are both unrepresentable.
 Cmd_Get_Group :: struct {
     filter: Cmd_Get_Filter,
-    pref:   Mime_Pref,
+    policy: Mime_Policy,
 }
 
 // A GET request cannot exceed MAX_MSG_SIZE by construction: every group must claim at least one register bit, so there
@@ -422,18 +435,18 @@ Cmd_Get_Group :: struct {
 )
 
 // Pick which stored mime repr a GET group gets, as an index into `entry.reprs`. An `Exact_Mime` miss never falls back.
-resolve_repr :: proc(entry: ^Reg_Entry, pref: Mime_Pref) -> (int, bool) {
-    switch p in pref {
+resolve_repr :: proc(entry: ^Reg_Entry, policy: Mime_Policy) -> (int, bool) {
+    switch p in policy {
     case Exact_Mime:
         return repr_with_mime(entry, string(p))
-    case Ranked_Mime:
+    case Ranked_Policy:
         switch p {
-        case .PRINTABLE:
+        case .TEXTUAL:
             return first_match(entry, {TEXT_MIMES[:], STRUCTURED_MIMES[:], URI_MIMES[:], MARKUP_MIMES[:]})
-        case .RICHEST:
+        case .VISUAL:
             return first_match(
                 entry,
-                {IMAGE_MIMES[:], MARKUP_MIMES[:], STRUCTURED_MIMES[:], URI_MIMES[:], TEXT_MIMES[:]},
+                {IMAGE_MIMES[:], MEDIA_MIMES[:], URI_MIMES[:], TEXT_MIMES[:], STRUCTURED_MIMES[:], MARKUP_MIMES[:]},
             )
         }
     }
@@ -1041,7 +1054,7 @@ cmd_set_inline_size :: proc(mimes: []string, data: []byte) -> int {
 }
 
 // GET: `[1b Message_Type][1b group_count]` then per group:
-//      `[8b Cmd_Get_Filter][1b mime pref tag]` followed by `[1b mime len][M mime]` for EXACT only.
+//      `[8b Cmd_Get_Filter][1b mime policy tag]` followed by `[1b mime len][M mime]` for EXACT only.
 //
 // The trailing mime is present only for EXACT, so a ranked group is 9 bytes and `get ++all` is 11.
 // Callers must reject mimes longer than MAX_MIME_LEN before calling; this truncates rather than failing, matching
@@ -1062,18 +1075,18 @@ marshal_cmd_get :: proc(groups: []Cmd_Get_Group, buf: []byte) -> int {
         copy(body[written:][:size_of(Cmd_Get_Filter)], filter_bytes[:])
         written += size_of(Cmd_Get_Filter)
 
-        // Mime preference: a tag alone when ranked, a tag plus the name when exact
-        switch pref in group.pref {
-        case Ranked_Mime:
-            body[written] = u8(pref)
+        // Mime policy: a tag alone when ranked, a tag plus the name when exact
+        switch policy in group.policy {
+        case Ranked_Policy:
+            body[written] = u8(policy)
             written += size_of(EXACT_MIME_TAG)
         case Exact_Mime:
             body[written] = EXACT_MIME_TAG
             written += size_of(EXACT_MIME_TAG)
-            mime_len := u8(min(len(pref), MAX_MIME_LEN))
+            mime_len := u8(min(len(policy), MAX_MIME_LEN))
             body[written] = byte(mime_len)
             written += size_of(mime_len)
-            copy(body[written:][:int(mime_len)], string(pref))
+            copy(body[written:][:int(mime_len)], string(policy))
             written += int(mime_len)
         }
     }
@@ -1294,13 +1307,13 @@ marshal_resp_error :: proc(message: string, buf: []byte) -> int {
 }
 
 // REGISTERS: `[1 byte Response_Status][1 byte u8 count][count * entry]`
-// `regs` is indexed by Reg_Id; only non-empty slots are packed onto the wire, each tagged with its Reg_Id. `prefs` is
+// `regs` is indexed by Reg_Id; only non-empty slots are packed onto the wire, each tagged with its Reg_Id. `policies` is
 // indexed the same way and says which representation each register should contribute.
 //
 // Returns `ok = false` if a complete response does not fit in `buf`.
 marshal_resp_registers :: proc(
     regs: [MAX_REGS]^Reg_Entry,
-    prefs: [MAX_REGS]Mime_Pref,
+    policies: [MAX_REGS]Mime_Policy,
     buf: []byte,
 ) -> (
     written: int,
@@ -1319,7 +1332,7 @@ marshal_resp_registers :: proc(
         if entry_ptr == nil {continue}
 
         // Which repr contributes its bytes. Every repr is still described.
-        chosen, has_blob := resolve_repr(entry_ptr, prefs[id])
+        chosen, has_blob := resolve_repr(entry_ptr, policies[id])
         data: []byte
         if has_blob {data = entry_ptr.reprs[chosen].data}
 
@@ -1497,11 +1510,11 @@ unmarshal_cmd_set_inline :: proc(buf: []byte) -> (mimes: []string, data: []byte,
 }
 
 // GET: `[1b Message_Type][1b group_count]` then per group:
-//      `[8b Cmd_Get_Filter][1b mime pref tag]` followed by `[1b mime len][M mime]` for EXACT only.
+//      `[8b Cmd_Get_Filter][1b mime policy tag]` followed by `[1b mime len][M mime]` for EXACT only.
 // buf starts after first Message_Type byte
 //
 // Decodes into a caller-provided fixed array so an untrusted `group_count` cannot drive an allocation. Every length is
-// bounds-checked against `buf` before use, and an unknown pref tag is rejected *before* the offset advances: group size
+// bounds-checked against `buf` before use, and an unknown policy tag is rejected *before* the offset advances: group size
 // depends on that byte, so guessing it would read the next group's filter bytes as a mime length and desync the rest of
 // the message.
 //
@@ -1534,10 +1547,10 @@ unmarshal_cmd_get :: proc(buf: []byte, groups: ^[MAX_REGS]Cmd_Get_Group) -> (cou
         if tag > EXACT_MIME_TAG {
             return 0, fmt.tprintf("GET request group %d has unknown mime preference %d", i, tag)
         }
-        pref: Mime_Pref = Ranked_Mime(tag) if tag < EXACT_MIME_TAG else Ranked_Mime{}
+        policy: Mime_Policy = Ranked_Policy(tag) if tag < EXACT_MIME_TAG else Ranked_Policy{}
         offset += size_of(EXACT_MIME_TAG)
 
-        // Exact prefs carry a trailing mime name; ranked ones do not
+        // Exact policies carry a trailing mime name; ranked ones do not
         if tag == EXACT_MIME_TAG {
             if offset + size_of(u8) > len(buf) {
                 return 0, fmt.tprintf("GET request truncated: group %d missing mime length", i)
@@ -1555,13 +1568,13 @@ unmarshal_cmd_get :: proc(buf: []byte, groups: ^[MAX_REGS]Cmd_Get_Group) -> (cou
                     len(buf) - offset,
                 )
             }
-            pref = Exact_Mime(string(buf[offset:][:mime_len]))
+            policy = Exact_Mime(string(buf[offset:][:mime_len]))
             offset += mime_len
         }
 
         groups[i] = Cmd_Get_Group {
             filter = filter,
-            pref   = pref,
+            policy = policy,
         }
     }
 

@@ -656,12 +656,12 @@ test_multi_repr_resolves_per_preference :: proc(t: ^testing.T) {
     set_named_reg(&store, reg, multi_repr({{"PNGDATA", {"image/png"}}, {"fallback text", {"text/plain"}}}), .OVERWRITE)
     entry := get_reg(&store, reg)
 
-    printable, ok_p := lib.resolve_repr(entry, lib.Ranked_Mime.PRINTABLE)
-    testing.expect(t, ok_p, "PRINTABLE should find the text repr")
+    printable, ok_p := lib.resolve_repr(entry, lib.Ranked_Policy.TEXTUAL)
+    testing.expect(t, ok_p, "TEXTUAL should find the text repr")
     testing.expect_value(t, string(entry.reprs[printable].data), "fallback text")
 
-    richest, ok_r := lib.resolve_repr(entry, lib.Ranked_Mime.RICHEST)
-    testing.expect(t, ok_r, "RICHEST should find the image repr")
+    richest, ok_r := lib.resolve_repr(entry, lib.Ranked_Policy.VISUAL)
+    testing.expect(t, ok_r, "VISUAL should find the image repr")
     testing.expect_value(t, string(entry.reprs[richest].data), "PNGDATA")
 
     exact, ok_e := lib.resolve_repr(entry, lib.Exact_Mime("image/png"))

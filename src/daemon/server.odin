@@ -371,14 +371,14 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         // Flatten the groups: one preference per register, plus the union of every filter for `get_registers`. Groups
         // do not survive parsing, so the register store keeps its single-mask signature.
         filter: lib.Cmd_Get_Filter
-        prefs: [lib.MAX_REGS]lib.Mime_Pref
+        policies: [lib.MAX_REGS]lib.Mime_Policy
         assigned: lib.Cmd_Get_Filter
         for group in groups[:count] {
             filter += group.filter
             for bit in group.filter {
                 if bit in assigned {continue}
                 assigned += {bit}
-                prefs[bit] = group.pref
+                policies[bit] = group.policy
             }
         }
 
@@ -391,7 +391,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         regs := get_registers(store, filter)
 
         // Send REGISTERS response back to client (marshal packs only non-empty slots).
-        resp_written, resp_ok := lib.marshal_resp_registers(regs, prefs, resp_buf[:])
+        resp_written, resp_ok := lib.marshal_resp_registers(regs, policies, resp_buf[:])
         if !resp_ok {
             errmsg := fmt.tprintf("response does not fit in %d bytes", lib.MAX_MSG_SIZE)
             log.warn(errmsg)
