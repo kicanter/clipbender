@@ -245,11 +245,20 @@ test_write_pipe_blob_times_out_on_stalled_receiver :: proc(t: ^testing.T) {
 
 // `reprs_are_equal` dedup comparison. Mime order is not semantically load-bearing, so two offers naming the same mimes
 // in a different order are the same representation and must not both be stored.
+// Builds a repr over borrowed bytes. `reprs_are_equal` only reads, so these never reach `free_data_repr` and the blob
+// header is temp-allocated.
+borrowed_repr :: proc(data: []byte, mimes: []string) -> lib.Data_Repr {
+    return lib.Data_Repr {
+        blob = new_clone(lib.Rc_Blob{data = data, refcount = 1}, context.temp_allocator),
+        mimes = mimes,
+    }
+}
+
 @(test)
 test_reprs_are_equal_ignores_mime_order :: proc(t: ^testing.T) {
     data := transmute([]byte)string("hello")
-    a := []lib.Data_Repr{{data = data, mimes = []string{"text/plain;charset=utf-8", "text/plain"}}}
-    b := []lib.Data_Repr{{data = data, mimes = []string{"text/plain", "text/plain;charset=utf-8"}}}
+    a := []lib.Data_Repr{borrowed_repr(data, []string{"text/plain;charset=utf-8", "text/plain"})}
+    b := []lib.Data_Repr{borrowed_repr(data, []string{"text/plain", "text/plain;charset=utf-8"})}
     testing.expect(t, reprs_are_equal(a, b), "same mimes in a different order should compare equal")
     testing.expect(t, reprs_are_equal(b, a), "comparison should be symmetric")
 }
@@ -257,22 +266,20 @@ test_reprs_are_equal_ignores_mime_order :: proc(t: ^testing.T) {
 @(test)
 test_reprs_are_equal_rejects_differences :: proc(t: ^testing.T) {
     data := transmute([]byte)string("hello")
-    base := []lib.Data_Repr{{data = data, mimes = []string{"text/plain", "text/html"}}}
+    base := []lib.Data_Repr{borrowed_repr(data, []string{"text/plain", "text/html"})}
 
-    diff_bytes := []lib.Data_Repr {
-        {data = transmute([]byte)string("hellO"), mimes = []string{"text/plain", "text/html"}},
-    }
+    diff_bytes := []lib.Data_Repr{borrowed_repr(transmute([]byte)string("hellO"), []string{"text/plain", "text/html"})}
     testing.expect(t, !reprs_are_equal(base, diff_bytes), "differing data should not compare equal")
 
-    diff_mime := []lib.Data_Repr{{data = data, mimes = []string{"text/plain", "text/xml"}}}
+    diff_mime := []lib.Data_Repr{borrowed_repr(data, []string{"text/plain", "text/xml"})}
     testing.expect(t, !reprs_are_equal(base, diff_mime), "a differing mime name should not compare equal")
 
-    fewer := []lib.Data_Repr{{data = data, mimes = []string{"text/plain"}}}
+    fewer := []lib.Data_Repr{borrowed_repr(data, []string{"text/plain"})}
     testing.expect(t, !reprs_are_equal(base, fewer), "a differing mime count should not compare equal")
 
     two_reprs := []lib.Data_Repr {
-        {data = data, mimes = []string{"text/plain", "text/html"}},
-        {data = data, mimes = []string{"image/png"}},
+        borrowed_repr(data, []string{"text/plain", "text/html"}),
+        borrowed_repr(data, []string{"image/png"}),
     }
     testing.expect(t, !reprs_are_equal(base, two_reprs), "a differing repr count should not compare equal")
 }
@@ -282,9 +289,9 @@ test_reprs_are_equal_rejects_differences :: proc(t: ^testing.T) {
 @(test)
 test_reprs_are_equal_whitespace_is_significant :: proc(t: ^testing.T) {
     mimes := []string{"text/plain"}
-    a := []lib.Data_Repr{{data = transmute([]byte)string("foo"), mimes = mimes}}
-    b := []lib.Data_Repr{{data = transmute([]byte)string("foo "), mimes = mimes}}
-    c := []lib.Data_Repr{{data = transmute([]byte)string("foo  "), mimes = mimes}}
+    a := []lib.Data_Repr{borrowed_repr(transmute([]byte)string("foo"), mimes)}
+    b := []lib.Data_Repr{borrowed_repr(transmute([]byte)string("foo "), mimes)}
+    c := []lib.Data_Repr{borrowed_repr(transmute([]byte)string("foo  "), mimes)}
     testing.expect(t, !reprs_are_equal(a, b), "one trailing space is a real difference")
     testing.expect(t, !reprs_are_equal(b, c), "two trailing spaces differ from one")
 }

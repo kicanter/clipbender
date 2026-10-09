@@ -283,8 +283,8 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 return running, dirty
             }
 
-            // Deep-copy every representation: source and destination own their content independently, so freeing one
-            // must not disturb the other.
+            // Share (refcounted) every representation. Source and destination own their content independently, so
+            // freeing one must not disturb the other.
             reprs = lib.clone_data_reprs(source.reprs)
             log.debug("REGISTER:")
             log.debugf("\tSource Reg: `%s`", lib.reg_id_to_string(source_reg))
@@ -307,14 +307,14 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             // SET INLINE carries one payload under possibly several names, so it is one repr with every mime.
             reprs = make([]lib.Data_Repr, 1)
             reprs[0] = lib.Data_Repr {
-                data  = data,
+                blob  = lib.new_rc_blob(data),
                 mimes = mimes,
             }
             log.debug("INLINE:")
         }
 
         for repr in reprs {
-            log.debugf("\tContent: %d bytes", len(repr.data))
+            log.debugf("\tContent: %d bytes", len(repr.blob.data))
             log.debugf("\tMimes: %v", repr.mimes)
         }
         log.debugf(

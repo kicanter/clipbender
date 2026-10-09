@@ -3,6 +3,7 @@ package libclipbender
 import "core:encoding/endian"
 import "core:encoding/json"
 import "core:fmt"
+import "core:hash/xxhash"
 import "core:log"
 import "core:mem"
 import "core:os"
@@ -56,10 +57,49 @@ print_version :: proc() {
 // copying bytes).
 MAX_MSG_SIZE :: 128 * 1024 // 128 KiB
 
+// Refcounted data blob. Data is hashed for state-writing purposes (large blobs are written to disk at
+// <state-dir>/blobs/<hash>). So multiple `Data_Repr`s may point to the same data blob, and the data is only released
+// when refcount hits 0.
+Rc_Blob :: struct {
+    data:     []byte,
+    refcount: uint,
+    hash:     xxhash.XXH3_128_hash,
+}
+
+// Allocates a new Rc_Blob and returns the pointer to it.
+// Caller is responsible for freeing.
+new_rc_blob :: proc(data: []byte) -> ^Rc_Blob {
+    rc_blob := new(Rc_Blob)
+    rc_blob^ = Rc_Blob {
+        data     = data,
+        refcount = 1,
+        hash     = xxhash.XXH3_128_default(data),
+    }
+    return rc_blob
+}
+
+// Increments refcount and returns a new pointer to `rc_blob`.
+copy_rc_blob :: proc(rc_blob: ^Rc_Blob) -> ^Rc_Blob {
+    rc_blob.refcount += 1
+    return rc_blob
+}
+
+free_rc_blob :: proc(rc_blob: ^Rc_Blob) {
+    // Ensure we cannot double-free the backed data
+    assert(rc_blob.refcount > 0)
+
+    rc_blob.refcount -= 1
+    if rc_blob.refcount == 0 {
+        zero_and_delete(rc_blob.data)
+        free(rc_blob)
+    }
+}
+
 // One unique data blob plus every mime name it answers to. A register holds several of these when an application
-// offers the same selection in more than one format.
+// offers the same selection in more than one format. Data blob is refcounted so multiple `Data_Repr`s may point to the
+// same data.
 Data_Repr :: struct {
-    data:  []byte,
+    blob:  ^Rc_Blob,
     mimes: []string,
 }
 
@@ -729,7 +769,7 @@ webp_dimensions :: proc(data: []byte) -> (dims: Image_Dims, ok: bool) {
 // Metadata for a repr, derived from its bytes and names. `NONE` whenever nothing is known, which is the common case.
 repr_meta :: proc(repr: Data_Repr) -> Repr_Meta {
     for mime in repr.mimes {
-        if dims, ok := image_dimensions(repr.data, mime); ok {return dims}
+        if dims, ok := image_dimensions(repr.blob.data, mime); ok {return dims}
     }
     return nil
 }
@@ -955,23 +995,25 @@ data_repr_single :: proc(data: []byte, mime: string) -> []Data_Repr {
 
     reprs := make([]Data_Repr, 1)
     reprs[0] = Data_Repr {
-        data  = data,
+        blob  = new_rc_blob(data),
         mimes = mimes,
     }
     return reprs
 }
 
 // Clones a `Data_Repr`, caller is responsible for freeing returned value.
+// Note: data blobs are refcounted so they are not deep-copied.
 clone_data_repr :: proc(repr: Data_Repr) -> Data_Repr {
-    cloned_data := slice.clone(repr.data)
+    cloned_blob := copy_rc_blob(repr.blob)
     cloned_mimes := make([]string, len(repr.mimes))
     for i in 0 ..< len(repr.mimes) {
         cloned_mimes[i] = strings.clone(repr.mimes[i])
     }
-    return Data_Repr{data = cloned_data, mimes = cloned_mimes}
+    return Data_Repr{blob = cloned_blob, mimes = cloned_mimes}
 }
 
 // Clones a slice of `Data_Repr`s, caller is responsible for freeing returned value.
+// Note: data blobs are refcounted so they are not deep-copied.
 clone_data_reprs :: proc(reprs: []Data_Repr) -> []Data_Repr {
     cloned_reprs := make([]Data_Repr, len(reprs))
     for repr, i in reprs {
@@ -1006,7 +1048,7 @@ zero_and_delete :: proc {
 
 // Only `data` is zeroed: the mimes are format names, not content.
 free_data_repr :: proc(repr: Data_Repr) {
-    zero_and_delete(repr.data)
+    free_rc_blob(repr.blob)
     for mime in repr.mimes {
         delete(mime)
     }
@@ -1361,7 +1403,7 @@ marshal_resp_registers :: proc(
         // Which repr contributes its bytes. Every repr is still described.
         chosen, has_blob := resolve_repr(entry_ptr, policies[id])
         data: []byte
-        if has_blob {data = entry_ptr.reprs[chosen].data}
+        if has_blob {data = entry_ptr.reprs[chosen].blob.data}
 
         // Pre-size the descriptors, which are written all-or-nothing.
         size := size_of(Reg_Id) + size_of(i64) + size_of(u8)
@@ -1405,7 +1447,7 @@ marshal_resp_registers :: proc(
             }
 
             // Size u64, whether or not these bytes are being sent
-            size_bytes := transmute([size_of(u64)]byte)u64(len(repr.data))
+            size_bytes := transmute([size_of(u64)]byte)u64(len(repr.blob.data))
             copy(buf[written:][:size_of(u64)], size_bytes[:])
             written += size_of(u64)
 
@@ -1646,7 +1688,7 @@ state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
             for mime in repr.mimes {
                 size += size_of(u8) + len(mime)
             }
-            size += size_of(u64) + len(repr.data)
+            size += size_of(u64) + len(repr.blob.data)
         }
     }
     return size
@@ -1693,11 +1735,11 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
             }
 
             // Data length u64 + data bytes
-            data_len := u64(len(repr.data))
+            data_len := u64(len(repr.blob.data))
             data_len_bytes := transmute([size_of(u64)]byte)data_len
             copy(body[written:][:size_of(u64)], data_len_bytes[:])
             written += size_of(u64)
-            copy(body[written:][:int(data_len)], repr.data)
+            copy(body[written:][:int(data_len)], repr.blob.data)
             written += int(data_len)
         }
 
@@ -1869,7 +1911,7 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
             offset += data_len
 
             reprs[b] = Data_Repr {
-                data  = data,
+                blob  = new_rc_blob(data),
                 mimes = mimes,
             }
             reprs_filled += 1

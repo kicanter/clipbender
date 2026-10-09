@@ -367,7 +367,7 @@ append_named_reg :: proc(reg_entry: ^lib.Reg_Entry, repr: lib.Data_Repr) -> bool
         return false
     }
 
-    new_data, err := slice.concatenate([][]byte{dest.data, repr.data})
+    new_data, err := slice.concatenate([][]byte{dest.blob.data, repr.blob.data})
     if err != nil {
         log.errorf("allocator error when appending to named reg: errno %v", err)
         lib.free_data_repr(repr)
@@ -381,7 +381,7 @@ append_named_reg :: proc(reg_entry: ^lib.Reg_Entry, repr: lib.Data_Repr) -> bool
 
     reprs := make([]lib.Data_Repr, 1)
     reprs[0] = lib.Data_Repr {
-        data  = new_data,
+        blob  = lib.new_rc_blob(new_data),
         mimes = new_mimes,
     }
     reg_entry^ = lib.Reg_Entry {

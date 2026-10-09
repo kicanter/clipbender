@@ -1,6 +1,7 @@
 package libclipbender
 
 import "core:fmt"
+import "core:hash/xxhash"
 import "core:slice"
 import "core:strings"
 import "core:testing"
@@ -301,8 +302,8 @@ test_marshal_unmarshal_resp_registers :: proc(t: ^testing.T) {
         testing.expect_value(t, len(dec[id].reprs), 1)
         testing.expect_value(t, dec[id].selected, 0)
         testing.expect_value(t, dec[id].reprs[0].mimes[0], regs[id].reprs[0].mimes[0])
-        testing.expect_value(t, dec[id].reprs[0].size, u64(len(regs[id].reprs[0].data)))
-        testing.expect(t, slice.equal(dec[id].data, regs[id].reprs[0].data))
+        testing.expect_value(t, dec[id].reprs[0].size, u64(len(regs[id].reprs[0].blob.data)))
+        testing.expect(t, slice.equal(dec[id].data, regs[id].reprs[0].blob.data))
     }
 }
 
@@ -599,7 +600,13 @@ test_marshal_unmarshal_cmd_set_inline_max_mime :: proc(t: ^testing.T) {
 // backs its slice with storage valid only for the duration of the call, so a `Data_Repr` built that way would hold a
 // dangling `mimes` slice by the time the entry is used.
 data_repr_of :: proc(data: string, mimes: []string) -> Data_Repr {
-    return Data_Repr{data = transmute([]byte)data, mimes = mimes}
+    return Data_Repr{blob = borrowed_blob(transmute([]byte)data), mimes = mimes}
+}
+
+// Wraps borrowed bytes in a blob header. The bytes are static or stack-owned, so a repr built this way must never reach
+// `free_data_repr` -- the header is temp-allocated because nothing releases it.
+borrowed_blob :: proc(data: []byte) -> ^Rc_Blob {
+    return new_clone(Rc_Blob{data = data, refcount = 1, hash = xxhash.XXH3_128_default(data)}, context.temp_allocator)
 }
 
 // resolve_repr returns (index, ok). These wrap the pair so each case reads as one assertion and a miss is checked as a
@@ -1014,7 +1021,7 @@ test_resolve_mimes_every_magic_self_matches :: proc(t: ^testing.T) {
 state_fixture :: proc(buf: []byte) -> int {
     data := transmute([]byte)string("hello")
     mimes := []string{"text/plain"}
-    reprs := []Data_Repr{{data = data, mimes = mimes}}
+    reprs := []Data_Repr{{blob = borrowed_blob(data), mimes = mimes}}
     entry := Reg_Entry {
         reprs     = reprs,
         timestamp = 1234,
@@ -1038,7 +1045,7 @@ test_unmarshal_state_round_trips :: proc(t: ^testing.T) {
     entry := dec[reg_id_from_named_index(0)]
     testing.expect_value(t, entry.timestamp, 1234)
     testing.expect_value(t, len(entry.reprs), 1)
-    testing.expect_value(t, string(entry.reprs[0].data), "hello")
+    testing.expect_value(t, string(entry.reprs[0].blob.data), "hello")
     testing.expect_value(t, entry.reprs[0].mimes[0], "text/plain")
 }
 
@@ -1197,7 +1204,7 @@ test_marshal_state_clamps_over_long_mime :: proc(t: ^testing.T) {
 
     data := transmute([]byte)string("x")
     mimes := []string{string(long[:])}
-    reprs := []Data_Repr{{data = data, mimes = mimes}}
+    reprs := []Data_Repr{{blob = borrowed_blob(data), mimes = mimes}}
     entry := Reg_Entry {
         reprs     = reprs,
         timestamp = 1,
@@ -1811,7 +1818,7 @@ test_resp_registers_oversize_payload_degrades_to_descriptor :: proc(t: ^testing.
     big := make([]byte, 4096)
     defer delete(big)
     m_png := [?]string{"image/png"}
-    reprs := [?]Data_Repr{{data = big, mimes = m_png[:]}}
+    reprs := [?]Data_Repr{{blob = borrowed_blob(big), mimes = m_png[:]}}
     entry := Reg_Entry {
         reprs     = reprs[:],
         timestamp = 11,
@@ -1851,8 +1858,8 @@ test_resp_registers_oversize_payload_keeps_later_entries :: proc(t: ^testing.T) 
     small := transmute([]byte)string("hi")
     m_png := [?]string{"image/png"}
     m_txt := [?]string{"text/plain"}
-    big_reprs := [?]Data_Repr{{data = big, mimes = m_png[:]}}
-    small_reprs := [?]Data_Repr{{data = small, mimes = m_txt[:]}}
+    big_reprs := [?]Data_Repr{{blob = borrowed_blob(big), mimes = m_png[:]}}
+    small_reprs := [?]Data_Repr{{blob = borrowed_blob(small), mimes = m_txt[:]}}
     big_entry := Reg_Entry {
         reprs = big_reprs[:],
     }

@@ -513,7 +513,7 @@ reprs_are_equal :: proc(a: []lib.Data_Repr, b: []lib.Data_Repr) -> bool {
             }
             return false
         }
-        if !slice.equal(repr.data, b[i].data) {return false}
+        if !slice.equal(repr.blob.data, b[i].blob.data) {return false}
     }
     return true
 }
@@ -621,7 +621,7 @@ wayland_read_offer_reprs :: proc(
         // probably not _super_ common.
         coalesced := false
         for &repr in reprs {
-            if slice.equal(repr.data, data) {
+            if slice.equal(repr.blob.data, data) {
                 names := make([]string, len(repr.mimes) + 1)
                 copy(names, repr.mimes)
                 names[len(repr.mimes)] = strings.clone(mime)
@@ -638,7 +638,7 @@ wayland_read_offer_reprs :: proc(
         // This is a new repr, so it'll start with a new mime list of length 1 which includes the new unique mime.
         new_mime_slice := make([]string, 1)
         new_mime_slice[0] = strings.clone(mime)
-        append(&reprs, lib.Data_Repr{data = data, mimes = new_mime_slice})
+        append(&reprs, lib.Data_Repr{blob = lib.new_rc_blob(data), mimes = new_mime_slice})
     }
 
     return reprs[:]
@@ -781,7 +781,7 @@ wayland_send_source :: proc(selection: ^Selection_State, mime_type: string, writ
     for repr in selection.source.reprs {
         for mime in repr.mimes {
             if mime == mime_type {
-                write_pipe_blob(write_fd, mime, repr.data)
+                write_pipe_blob(write_fd, mime, repr.blob.data)
                 return
             }
         }

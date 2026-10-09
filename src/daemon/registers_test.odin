@@ -36,7 +36,7 @@ set_live_selection_clone :: proc(store: ^Register_Store, type: lib.Selection_Typ
 
 // M1 test helpers: entries hold a single repr with a single mime.
 entry_data :: proc(entry: ^lib.Reg_Entry) -> []byte {
-    return entry.reprs[0].data
+    return entry.reprs[0].blob.data
 }
 entry_mime :: proc(entry: ^lib.Reg_Entry) -> string {
     return entry.reprs[0].mimes[0]
@@ -462,14 +462,14 @@ test_state_roundtrip_multi_repr :: proc(t: ^testing.T) {
         m0[0] = strings.clone("text/plain")
         m0[1] = strings.clone("STRING")
         src.reprs[0] = lib.Data_Repr {
-            data  = slice.clone(transmute([]byte)string("hello")),
+            blob  = lib.new_rc_blob(slice.clone(transmute([]byte)string("hello"))),
             mimes = m0,
         }
 
         m1 := make([]string, 1)
         m1[0] = strings.clone("text/html")
         src.reprs[1] = lib.Data_Repr {
-            data  = slice.clone(transmute([]byte)string("<p>hello</p>")),
+            blob  = lib.new_rc_blob(slice.clone(transmute([]byte)string("<p>hello</p>"))),
             mimes = m1,
         }
     }
@@ -491,10 +491,10 @@ test_state_roundtrip_multi_repr :: proc(t: ^testing.T) {
     testing.expect_value(t, len(got.reprs[0].mimes), 2)
     testing.expect_value(t, got.reprs[0].mimes[0], "text/plain")
     testing.expect_value(t, got.reprs[0].mimes[1], "STRING")
-    testing.expect_value(t, string(got.reprs[0].data), "hello")
+    testing.expect_value(t, string(got.reprs[0].blob.data), "hello")
     testing.expect_value(t, len(got.reprs[1].mimes), 1)
     testing.expect_value(t, got.reprs[1].mimes[0], "text/html")
-    testing.expect_value(t, string(got.reprs[1].data), "<p>hello</p>")
+    testing.expect_value(t, string(got.reprs[1].blob.data), "<p>hello</p>")
 }
 
 @(test)
@@ -560,11 +560,11 @@ test_append_narrows_mimes_and_drops_other_reprs :: proc(t: ^testing.T) {
     png_mimes[0] = strings.clone("image/png")
     reprs := make([]lib.Data_Repr, 2)
     reprs[0] = lib.Data_Repr {
-        data  = slice.clone(transmute([]byte)string("first")),
+        blob  = lib.new_rc_blob(slice.clone(transmute([]byte)string("first"))),
         mimes = text_mimes,
     }
     reprs[1] = lib.Data_Repr {
-        data  = slice.clone(transmute([]byte)string("PNGDATA")),
+        blob  = lib.new_rc_blob(slice.clone(transmute([]byte)string("PNGDATA"))),
         mimes = png_mimes,
     }
     overwrite_named_reg(&store, idx, reprs)
@@ -582,7 +582,7 @@ test_append_narrows_mimes_and_drops_other_reprs :: proc(t: ^testing.T) {
     testing.expect(t, entry != nil)
     // Text-only afterwards: the PNG described the pre-append content.
     testing.expect_value(t, len(entry.reprs), 1)
-    testing.expect_value(t, string(entry.reprs[0].data), "first second")
+    testing.expect_value(t, string(entry.reprs[0].blob.data), "first second")
     // The register must stop claiming charset=utf-8, which the appended bytes were never declared to satisfy.
     testing.expect_value(t, len(entry.reprs[0].mimes), 1)
     testing.expect_value(t, entry.reprs[0].mimes[0], "text/plain")
@@ -605,7 +605,7 @@ test_append_non_text_repr_is_rejected :: proc(t: ^testing.T) {
     testing.expect(t, !ok, "appending an image should be rejected")
 
     entry := get_reg(&store, reg)
-    testing.expect_value(t, string(entry.reprs[0].data), "text") // unchanged
+    testing.expect_value(t, string(entry.reprs[0].blob.data), "text") // unchanged
 }
 
 // Multi-repr entries.
@@ -620,7 +620,7 @@ multi_repr :: proc(specs: []struct {
         mimes := make([]string, len(spec.mimes))
         for mime, m in spec.mimes {mimes[m] = strings.clone(mime)}
         reprs[i] = lib.Data_Repr {
-            data  = slice.clone(transmute([]byte)spec.data),
+            blob  = lib.new_rc_blob(slice.clone(transmute([]byte)spec.data)),
             mimes = mimes,
         }
     }
@@ -642,7 +642,7 @@ test_named_reg_holds_several_reprs :: proc(t: ^testing.T) {
 
     entry := get_reg(&store, reg)
     testing.expect_value(t, len(entry.reprs), 2)
-    testing.expect_value(t, string(entry.reprs[0].data), "<b>hi</b>")
+    testing.expect_value(t, string(entry.reprs[0].blob.data), "<b>hi</b>")
     testing.expect_value(t, len(entry.reprs[1].mimes), 2)
 }
 
@@ -658,15 +658,15 @@ test_multi_repr_resolves_per_preference :: proc(t: ^testing.T) {
 
     printable, ok_p := lib.resolve_repr(entry, lib.Ranked_Policy.TEXTUAL)
     testing.expect(t, ok_p, "TEXTUAL should find the text repr")
-    testing.expect_value(t, string(entry.reprs[printable].data), "fallback text")
+    testing.expect_value(t, string(entry.reprs[printable].blob.data), "fallback text")
 
     richest, ok_r := lib.resolve_repr(entry, lib.Ranked_Policy.VISUAL)
     testing.expect(t, ok_r, "VISUAL should find the image repr")
-    testing.expect_value(t, string(entry.reprs[richest].data), "PNGDATA")
+    testing.expect_value(t, string(entry.reprs[richest].blob.data), "PNGDATA")
 
     exact, ok_e := lib.resolve_repr(entry, lib.Exact_Mime("image/png"))
     testing.expect(t, ok_e, "an exact mime should match regardless of ranking")
-    testing.expect_value(t, string(entry.reprs[exact].data), "PNGDATA")
+    testing.expect_value(t, string(entry.reprs[exact].blob.data), "PNGDATA")
 }
 
 @(test)
@@ -689,7 +689,7 @@ test_append_intersects_mimes_across_reprs :: proc(t: ^testing.T) {
 
     entry := get_reg(&store, reg)
     testing.expect_value(t, len(entry.reprs), 1)
-    testing.expect_value(t, string(entry.reprs[0].data), "hi there")
+    testing.expect_value(t, string(entry.reprs[0].blob.data), "hi there")
     testing.expect_value(t, len(entry.reprs[0].mimes), 1)
     testing.expect_value(t, entry.reprs[0].mimes[0], "text/plain")
 }
@@ -724,7 +724,7 @@ test_append_to_image_only_register_fails :: proc(t: ^testing.T) {
     testing.expect(t, !ok, "appending to an image-only register should fail")
 
     entry := get_reg(&store, reg)
-    testing.expect_value(t, string(entry.reprs[0].data), "PNGDATA") // untouched
+    testing.expect_value(t, string(entry.reprs[0].blob.data), "PNGDATA") // untouched
 }
 
 @(test)
@@ -760,7 +760,7 @@ test_multi_repr_survives_state_round_trip :: proc(t: ^testing.T) {
 
     restored := dec[reg]
     testing.expect_value(t, len(restored.reprs), 3)
-    testing.expect_value(t, string(restored.reprs[0].data), "PNGDATA")
+    testing.expect_value(t, string(restored.reprs[0].blob.data), "PNGDATA")
     testing.expect_value(t, restored.reprs[0].mimes[0], "image/png")
     testing.expect_value(t, len(restored.reprs[2].mimes), 2)
     testing.expect_value(t, restored.reprs[2].mimes[1], "text/plain")
