@@ -252,7 +252,10 @@ CLIPBENDER_FILE_PERMS :: os.Permissions{.Read_User, .Write_User} // 0600
 
 // Create `dir` and any missing parents, owner-only.
 make_private_directory :: proc(dir: string) {
-    os.make_directory_all(dir, CLIPBENDER_DIR_PERMS)
+    // `Exist` is the expected answer for a directory we already created, so only anything else is a real failure.
+    if err := os.make_directory_all(dir, CLIPBENDER_DIR_PERMS); err != nil && err != os.General_Error.Exist {
+        log.warnf("Failed to create %s: %v", dir, err)
+    }
     // chmod the directory in case it already existed with different perms
     if err := os.chmod(dir, CLIPBENDER_DIR_PERMS); err != nil {
         log.warnf("Failed to restrict permissions on %s (do we own it?): %v", dir, err)
@@ -1685,9 +1688,11 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
     return Reg_Id(buf[0])
 }
 
-// State-file serialization. Distinct from the GET response format: state persists FULL fidelity (every repr and every
-// mime of every entry), whereas GET (marshal_resp_registers) is a query that packs a single mime/data per entry.
-// Keeping them separate lets the GET format change without touching persistence.
+// State-file Serialization
+//
+// Distinct from the GET response format: state persists FULL fidelity (every repr and every mime of every entry),
+// whereas GET (marshal_resp_registers) is a query that packs a single mime/data per entry. Keeping them separate lets
+// the GET format change without touching persistence.
 //
 // The wire format consists of the state header (magic + version), followed by a blob table and register table. The blob
 // table effectively replicates our sharing of blob data within clipbender such that we don't have to duplicate inline

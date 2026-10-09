@@ -117,9 +117,10 @@ write_state_blobs :: proc(dir: string, table: []^lib.Rc_Blob) -> os.Error {
     }
     if !needs_dir {return nil}
 
+    // Ensure state directory
     blobs_dir := blobs_dir_path(dir)
     defer delete(blobs_dir)
-    if err := os.make_directory_all(blobs_dir, lib.CLIPBENDER_DIR_PERMS); err != nil {return err}
+    lib.make_private_directory(blobs_dir)
 
     for blob in table {
         if !lib.blob_is_file_backed(blob) {continue}

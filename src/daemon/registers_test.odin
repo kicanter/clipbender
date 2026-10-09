@@ -564,6 +564,75 @@ test_save_load_round_trips_file_backed_blob :: proc(t: ^testing.T) {
     testing.expect_value(t, string(entry_data(small)), "small")
 }
 
+// Saving twice must work: `blobs/` already exists on the second pass, and `make_directory_all` reports `Exist` for
+// that, which an earlier version treated as fatal -- so every save after the first aborted and state stopped
+// persisting entirely.
+@(test)
+test_save_is_idempotent_over_existing_blobs_dir :: proc(t: ^testing.T) {
+    dir := fmt.tprintf("/tmp/clipbender-resave-%d", os.get_pid())
+    if err := os.make_directory_all(dir, lib.CLIPBENDER_DIR_PERMS); err != nil {
+        testing.fail_now(t, "could not create the temp state dir")
+    }
+    defer os.remove_all(dir)
+
+    big := make([]byte, lib.BLOB_INLINE_MAX + 1)
+    defer delete(big)
+
+    src: Register_Store
+    defer cleanup_registers(&src)
+    set_named_reg_clone(&src, lib.reg_id_from_named_index(0), big, "image/png", .OVERWRITE)
+
+    filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
+    regs := get_registers(&src, filter)
+
+    _, first := save_registers_state(dir, regs)
+    testing.expect_value(t, first, nil)
+    _, second := save_registers_state(dir, regs)
+    testing.expect_value(t, second, nil)
+
+    // The index must still be loadable after the re-save, not just the error free.
+    dec: [lib.MAX_REGS]lib.Reg_Entry
+    defer for &entry in dec {lib.free_reg_entry(&entry)}
+    read_err, parse_err := load_registers_state(dir, &dec)
+    testing.expect_value(t, read_err, nil)
+    testing.expect_value(t, parse_err, nil)
+    testing.expect_value(t, len(dec[lib.reg_id_from_named_index(0)].reprs), 1)
+}
+
+// `make_private_directory` only warns, so the hard failure has to surface from the write that needed the directory --
+// otherwise a save would report success having written neither the blobs nor an index naming them.
+@(test)
+test_save_reports_failure_when_blobs_dir_is_unusable :: proc(t: ^testing.T) {
+    dir := fmt.tprintf("/tmp/clipbender-badblobs-%d", os.get_pid())
+    if err := os.make_directory_all(dir, lib.CLIPBENDER_DIR_PERMS); err != nil {
+        testing.fail_now(t, "could not create the temp state dir")
+    }
+    defer os.remove_all(dir)
+
+    // A plain file where `blobs/` belongs, so creating it and writing into it both fail.
+    blobs := blobs_dir_path(dir)
+    defer delete(blobs)
+    if err := os.write_entire_file(blobs, []byte{0}, lib.CLIPBENDER_FILE_PERMS); err != nil {
+        testing.fail_now(t, "could not plant a file at the blobs path")
+    }
+
+    big := make([]byte, lib.BLOB_INLINE_MAX + 1)
+    defer delete(big)
+
+    src: Register_Store
+    defer cleanup_registers(&src)
+    set_named_reg_clone(&src, lib.reg_id_from_named_index(0), big, "image/png", .OVERWRITE)
+
+    filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
+    _, err := save_registers_state(dir, get_registers(&src, filter))
+    testing.expect(t, err != nil, "an unusable blobs dir should fail the save")
+
+    // Blobs are written first, so the index must not exist: it would name a file that was never written.
+    index := state_file_path(dir)
+    defer delete(index)
+    testing.expect(t, !os.exists(index), "no index should be written when its blobs could not be")
+}
+
 @(test)
 test_get_registers_filter_mixed :: proc(t: ^testing.T) {
     store: Register_Store
