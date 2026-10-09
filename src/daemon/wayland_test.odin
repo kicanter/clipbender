@@ -22,13 +22,7 @@ pipe_with :: proc(chunks: [][]byte) -> linux.Fd {
         fd:     linux.Fd,
         chunks: [][]byte,
     }
-    w := new(Writer)
-    w^ = Writer {
-        fd     = fds[1],
-        chunks = chunks,
-    }
-
-    thread.create_and_start_with_poly_data(w, proc(w: ^Writer) {
+    write_chunks :: proc(w: Writer) {
         for chunk in w.chunks {
             sent := 0
             for sent < len(chunk) {
@@ -38,8 +32,12 @@ pipe_with :: proc(chunks: [][]byte) -> linux.Fd {
             }
         }
         linux.close(w.fd)
-        free(w)
-    })
+    }
+
+    // `Writer` goes by value and `self_cleanup` releases the thread, so nothing here is freed by hand. Freeing either
+    // one from the thread leaked: its default context frees through a different allocator than the test runner's
+    // tracking one allocated from.
+    thread.create_and_start_with_poly_data(Writer{fd = fds[1], chunks = chunks}, write_chunks, self_cleanup = true)
 
     return fds[0]
 }
