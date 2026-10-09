@@ -457,17 +457,15 @@ save_state :: proc(server: ^Server_State) {
     // No resolvable state directory. Registers stay in memory only.
     dir, ok := server.state_dir.?
     if !ok {return}
-    path := state_file_path(dir)
-    defer delete(path)
 
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
     regs := get_registers(&server.registers, filter)
 
-    written, err := save_registers_state(path, regs)
+    written, err := save_registers_state(dir, regs)
     if err != os.General_Error.None {
-        log.errorf("Failed to save register state to %s: errno %v", path, err)
+        log.errorf("Failed to save register state to %s: errno %v", dir, err)
     } else {
-        log.debugf("Saved state, wrote %d bytes to %s", written, path)
+        log.debugf("Saved state, wrote %d index bytes to %s", written, dir)
     }
 }
 

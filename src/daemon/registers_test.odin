@@ -1,5 +1,7 @@
 package main
 
+import "core:fmt"
+import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:testing"
@@ -495,6 +497,71 @@ test_state_roundtrip_multi_repr :: proc(t: ^testing.T) {
     testing.expect_value(t, len(got.reprs[1].mimes), 1)
     testing.expect_value(t, got.reprs[1].mimes[0], "text/html")
     testing.expect_value(t, string(got.reprs[1].blob.data), "<p>hello</p>")
+}
+
+// A blob over the inline cap is written to `blobs/<hash>` and read back from it, which the lib-level tests cannot cover
+// because they never touch the filesystem. Also pins the split: the index holds the digest, the file holds the bytes.
+@(test)
+test_save_load_round_trips_file_backed_blob :: proc(t: ^testing.T) {
+    dir := fmt.tprintf("/tmp/clipbender-blobtest-%d", os.get_pid())
+    if err := os.make_directory_all(dir, lib.CLIPBENDER_DIR_PERMS); err != nil {
+        testing.fail_now(t, "could not create the temp state dir")
+    }
+    defer os.remove_all(dir)
+
+    // One oversized payload, plus a small one that must stay inline.
+    big := make([]byte, lib.BLOB_INLINE_MAX + 1)
+    defer delete(big)
+    for &b, i in big {b = byte(i)}
+
+    src: Register_Store
+    defer cleanup_registers(&src)
+    set_named_reg_clone(&src, lib.reg_id_from_named_index(0), big, "image/png", .OVERWRITE)
+    set_named_reg_clone(
+        &src,
+        lib.reg_id_from_named_index(1),
+        transmute([]byte)string("small"),
+        "text/plain",
+        .OVERWRITE,
+    )
+
+    filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
+    written, save_err := save_registers_state(dir, get_registers(&src, filter))
+    testing.expect_value(t, save_err, nil)
+
+    // The index carries the digest, not the payload, so it stays small no matter how large the blob is.
+    testing.expect(t, written < lib.BLOB_INLINE_MAX, "the index should not contain the file-backed blob's bytes")
+
+    // The blob landed under its hash, with no temp file left behind.
+    blobs_dir := blobs_dir_path(dir)
+    defer delete(blobs_dir)
+    name_buf: lib.Blob_Name
+    expected := fmt.tprintf(
+        "%s/%s",
+        blobs_dir,
+        lib.blob_filename(name_buf[:], src.named_registers[0].reprs[0].blob.hash),
+    )
+    testing.expect(t, os.exists(expected), "the blob should be written under its hash")
+    tmp_leftover := fmt.tprintf("%s.tmp", expected)
+    testing.expect(t, !os.exists(tmp_leftover), "no temp file should survive the rename")
+
+    dec: [lib.MAX_REGS]lib.Reg_Entry
+    read_err, parse_err := load_registers_state(dir, &dec)
+    testing.expect_value(t, read_err, nil)
+    testing.expect_value(t, parse_err, nil)
+
+    dst: Register_Store
+    defer cleanup_registers(&dst)
+    load_registers(&dst, &dec)
+
+    restored := get_reg(&dst, lib.reg_id_from_named_index(0))
+    testing.expect(t, restored != nil, "the file-backed register should be restored")
+    testing.expect(t, slice.equal(entry_data(restored), big), "the payload should survive the file round trip")
+    testing.expect_value(t, restored.reprs[0].blob.hash, src.named_registers[0].reprs[0].blob.hash)
+
+    small := get_reg(&dst, lib.reg_id_from_named_index(1))
+    testing.expect(t, small != nil, "the inline register should be restored")
+    testing.expect_value(t, string(entry_data(small)), "small")
 }
 
 @(test)

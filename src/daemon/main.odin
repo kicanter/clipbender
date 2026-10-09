@@ -86,7 +86,7 @@ main :: proc() {
         path := state_file_path(dir)
         defer delete(path)
         regs: [lib.MAX_REGS]lib.Reg_Entry
-        err, parse_err := load_registers_state(path, &regs)
+        err, parse_err := load_registers_state(dir, &regs)
         switch {
         case err != os.General_Error.None:
             // Expected on a first run, when no state file exists yet.

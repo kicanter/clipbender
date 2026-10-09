@@ -814,7 +814,8 @@ test_state_size_matches_marshal :: proc(t: ^testing.T) {
 @(test)
 test_state_size_empty :: proc(t: ^testing.T) {
     regs: [MAX_REGS]^Reg_Entry
-    testing.expect_value(t, state_size(regs), STATE_HEADER_SIZE + size_of(u8)) // magic + version + entry count
+    // magic + version + blob count + entry count, both counts zero
+    testing.expect_value(t, state_size(regs), STATE_HEADER_SIZE + size_of(u16) + size_of(u8))
 }
 
 @(test)
@@ -1018,9 +1019,12 @@ test_resolve_mimes_every_magic_self_matches :: proc(t: ^testing.T) {
 // over from an older format, or crafted by another local user if the state directory is ever reachable.
 
 // Round-trip a single entry so the tests below can truncate and corrupt a *valid* encoding rather than a guess at one.
+FIXTURE_DATA :: "hello"
+FIXTURE_MIME :: "text/plain"
+
 state_fixture :: proc(buf: []byte) -> int {
-    data := transmute([]byte)string("hello")
-    mimes := []string{"text/plain"}
+    data := transmute([]byte)string(FIXTURE_DATA)
+    mimes := []string{FIXTURE_MIME}
     reprs := []Data_Repr{{blob = borrowed_blob(data), mimes = mimes}}
     entry := Reg_Entry {
         reprs     = reprs,
@@ -1030,6 +1034,14 @@ state_fixture :: proc(buf: []byte) -> int {
     regs[reg_id_from_named_index(0)] = &entry
     return marshal_state(regs, buf)
 }
+
+// Offsets of `state_fixture`'s fields, in `buf` rather than body coordinates. Derived from the field widths so a format
+// change moves them together instead of silently retargeting a corruption test at the wrong byte.
+FIXTURE_BLOB_LEN_AT :: STATE_HEADER_SIZE + size_of(u16) + size_of(Blob_Tag)
+FIXTURE_REG_COUNT_AT :: FIXTURE_BLOB_LEN_AT + size_of(u64) + len(FIXTURE_DATA)
+FIXTURE_REG_ID_AT :: FIXTURE_REG_COUNT_AT + size_of(u8)
+FIXTURE_MIME_COUNT_AT :: FIXTURE_REG_ID_AT + size_of(Reg_Id) + size_of(i64) + size_of(u8)
+FIXTURE_BLOB_INDEX_AT :: FIXTURE_MIME_COUNT_AT + size_of(u8) + size_of(u8) + len(FIXTURE_MIME)
 
 @(test)
 test_unmarshal_state_round_trips :: proc(t: ^testing.T) {
@@ -1140,7 +1152,7 @@ test_unmarshal_state_rejects_invalid_reg_id :: proc(t: ^testing.T) {
     // `regs[reg_id]` indexed a fixed array with a byte straight from the file: 200 is past `MAX_REGS`.
     buf: [256]byte
     n := state_fixture(buf[:])
-    buf[STATE_HEADER_SIZE + 1] = 200
+    buf[FIXTURE_REG_ID_AT] = 200
 
     dec: [MAX_REGS]Reg_Entry
     _, err := unmarshal_state(buf[:n], &dec)
@@ -1155,9 +1167,8 @@ test_unmarshal_state_rejects_oversized_data_len :: proc(t: ^testing.T) {
     buf: [256]byte
     n := state_fixture(buf[:])
 
-    // Walk to the u32 data length: count + reg_id + timestamp + blob_count + mime_count + [len]"text/plain"
-    data_len_at := STATE_HEADER_SIZE + 1 + 1 + size_of(i64) + 1 + 1 + 1 + len("text/plain")
-    for i in 0 ..< size_of(u32) {buf[data_len_at + i] = 0xFF}
+    // The inline blob's length now lives in the blob table rather than beside the repr.
+    for i in 0 ..< size_of(u64) {buf[FIXTURE_BLOB_LEN_AT + i] = 0xFF}
 
     dec: [MAX_REGS]Reg_Entry
     _, err := unmarshal_state(buf[:n], &dec)
@@ -1170,8 +1181,7 @@ test_unmarshal_state_rejects_zero_mimes :: proc(t: ^testing.T) {
     // A repr with no mime cannot be resolved by anything downstream, and `mimes[0]` uses would panic on it.
     buf: [256]byte
     n := state_fixture(buf[:])
-    mime_count_at := STATE_HEADER_SIZE + 1 + 1 + size_of(i64) + 1
-    buf[mime_count_at] = 0
+    buf[FIXTURE_MIME_COUNT_AT] = 0
 
     dec: [MAX_REGS]Reg_Entry
     _, err := unmarshal_state(buf[:n], &dec)
@@ -1193,6 +1203,140 @@ test_unmarshal_state_zeroes_regs_on_error :: proc(t: ^testing.T) {
     for entry in dec {
         testing.expect_value(t, len(entry.reprs), 0)
     }
+}
+
+// The blob table's whole reason for existing: bytes shared in memory must still be shared after a save/load cycle.
+// Embedding them per repr wrote one blob twice and loaded it as two, so every restart undid the sharing.
+@(test)
+test_state_round_trip_preserves_sharing :: proc(t: ^testing.T) {
+    shared := borrowed_blob(transmute([]byte)string("shared bytes"))
+    m_text := []string{"text/plain"}
+    m_html := []string{"text/html"}
+
+    // One blob, three reprs naming it, spread over two registers.
+    reprs_a := []Data_Repr{{blob = shared, mimes = m_text}}
+    reprs_b := []Data_Repr{{blob = shared, mimes = m_text}, {blob = shared, mimes = m_html}}
+    entry_a := Reg_Entry {
+        reprs     = reprs_a,
+        timestamp = 1,
+    }
+    entry_b := Reg_Entry {
+        reprs     = reprs_b,
+        timestamp = 2,
+    }
+
+    regs: [MAX_REGS]^Reg_Entry
+    id_a := reg_id_from_named_index(0)
+    id_b := reg_id_from_named_index(1)
+    regs[id_a] = &entry_a
+    regs[id_b] = &entry_b
+
+    // One table entry despite three reprs
+    table := build_blob_table(regs, context.temp_allocator)
+    testing.expect_value(t, len(table), 1)
+
+    buf := make([]byte, state_size(regs))
+    defer delete(buf)
+    n := marshal_state(regs, buf)
+
+    dec: [MAX_REGS]Reg_Entry
+    defer for &entry in dec {free_reg_entry(&entry)}
+    count, err := unmarshal_state(buf[:n], &dec)
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, count, 2)
+
+    // All three reprs point at one blob, whose refcount is exactly the number of reprs naming it.
+    loaded := dec[id_a].reprs[0].blob
+    testing.expect(t, dec[id_b].reprs[0].blob == loaded, "reprs sharing an index should share the blob")
+    testing.expect(t, dec[id_b].reprs[1].blob == loaded, "reprs sharing an index should share the blob")
+    testing.expect_value(t, loaded.refcount, 3)
+    testing.expect_value(t, string(loaded.data), "shared bytes")
+}
+
+@(test)
+test_unmarshal_state_rejects_blob_index_past_table :: proc(t: ^testing.T) {
+    // The index is a byte straight from the file, and `table[index]` would read past the slice.
+    buf: [256]byte
+    n := state_fixture(buf[:])
+    buf[FIXTURE_BLOB_INDEX_AT] = 99
+
+    dec: [MAX_REGS]Reg_Entry
+    _, err := unmarshal_state(buf[:n], &dec)
+    for &entry in dec {free_reg_entry(&entry)}
+    testing.expect(t, err != nil, "a blob index past the table should be rejected")
+}
+
+@(test)
+test_unmarshal_state_rejects_unknown_blob_tag :: proc(t: ^testing.T) {
+    // Tags come from the file, so an unrecognised one must stop the parse rather than fall through a `switch`.
+    buf: [256]byte
+    n := state_fixture(buf[:])
+    buf[STATE_HEADER_SIZE + size_of(u16)] = 0xEE // the first blob's tag
+
+    dec: [MAX_REGS]Reg_Entry
+    _, err := unmarshal_state(buf[:n], &dec)
+    for &entry in dec {free_reg_entry(&entry)}
+    testing.expect(t, err != nil, "an unknown blob tag should be rejected")
+}
+
+@(test)
+test_state_inline_threshold_is_inclusive :: proc(t: ^testing.T) {
+    // `BLOB_INLINE_MAX` is the largest size still written inline, so the boundary is `>` not `>=`. Getting this
+    // backwards sends 1023-byte blobs to `blobs/` and silently changes what the index contains.
+    at_max := make([]byte, BLOB_INLINE_MAX)
+    defer delete(at_max)
+    over_max := make([]byte, BLOB_INLINE_MAX + 1)
+    defer delete(over_max)
+
+    testing.expect(t, !blob_is_file_backed(borrowed_blob(at_max)), "exactly BLOB_INLINE_MAX stays inline")
+    testing.expect(t, blob_is_file_backed(borrowed_blob(over_max)), "one byte over goes to a file")
+
+    // An inline blob carries its bytes; a file-backed one costs only tag + digest.
+    m := []string{"text/plain"}
+    inline_reprs := []Data_Repr{{blob = borrowed_blob(at_max), mimes = m}}
+    file_reprs := []Data_Repr{{blob = borrowed_blob(over_max), mimes = m}}
+    inline_entry := Reg_Entry {
+        reprs     = inline_reprs,
+        timestamp = 1,
+    }
+    file_entry := Reg_Entry {
+        reprs     = file_reprs,
+        timestamp = 1,
+    }
+
+    inline_regs, file_regs: [MAX_REGS]^Reg_Entry
+    inline_regs[reg_id_from_named_index(0)] = &inline_entry
+    file_regs[reg_id_from_named_index(0)] = &file_entry
+
+    inline_blob := size_of(Blob_Tag) + size_of(u64) + BLOB_INLINE_MAX
+    file_blob := size_of(Blob_Tag) + size_of(Blob_Hash)
+    testing.expect_value(t, state_size(inline_regs) - state_size(file_regs), inline_blob - file_blob)
+}
+
+@(test)
+test_unmarshal_state_rejects_file_blob_without_dir :: proc(t: ^testing.T) {
+    // A HASH entry names a file, so with nowhere to read it from the blob would otherwise load empty and silently lose
+    // the register's content.
+    big := make([]byte, BLOB_INLINE_MAX + 1)
+    defer delete(big)
+    m := []string{"image/png"}
+    reprs := []Data_Repr{{blob = borrowed_blob(big), mimes = m}}
+    entry := Reg_Entry {
+        reprs     = reprs,
+        timestamp = 7,
+    }
+
+    regs: [MAX_REGS]^Reg_Entry
+    regs[reg_id_from_named_index(0)] = &entry
+
+    buf := make([]byte, state_size(regs))
+    defer delete(buf)
+    n := marshal_state(regs, buf)
+
+    dec: [MAX_REGS]Reg_Entry
+    _, err := unmarshal_state(buf[:n], &dec) // no blobs dir
+    for &decoded in dec {free_reg_entry(&decoded)}
+    testing.expect(t, err != nil, "a file-backed blob with no blob directory should be rejected")
 }
 
 @(test)
@@ -1964,4 +2108,27 @@ test_unmarshal_state_rejects_bad_magic :: proc(t: ^testing.T) {
         _, err := unmarshal_state(buf[:cut], &d)
         testing.expectf(t, err != nil, "a %d-byte file should be rejected", cut)
     }
+}
+
+@(test)
+test_unmarshal_state_rejects_oversized_blob_count :: proc(t: ^testing.T) {
+    // The blob count is `u16`, so unlike the `u8` counts it can name far more entries than the file could hold --
+    // 0xFFFF would allocate 512 KiB of pointers before the first missing tag stopped the parse.
+    buf: [STATE_HEADER_SIZE + size_of(u16)]byte
+    copy(buf[:], STATE_MAGIC)
+    buf[len(STATE_MAGIC)] = byte(STATE_VERSION)
+    buf[STATE_HEADER_SIZE] = 0xFF
+    buf[STATE_HEADER_SIZE + 1] = 0xFF
+
+    dec: [MAX_REGS]Reg_Entry
+    _, err := unmarshal_state(buf[:], &dec)
+    for &entry in dec {free_reg_entry(&entry)}
+    testing.expect(t, err != nil, "a blob count larger than the file could hold should be rejected")
+    // Such a file is rejected either way, just deeper in the loop and after the allocation, so the message is what
+    // pins that the count was range-checked up front.
+    testing.expect(
+        t,
+        strings.contains(err.?, "blob count"),
+        "the count should be rejected before it drives the allocation",
+    )
 }

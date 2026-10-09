@@ -57,6 +57,24 @@ print_version :: proc() {
 // copying bytes).
 MAX_MSG_SIZE :: 128 * 1024 // 128 KiB
 
+// *******************
+// Data blob stuff
+// *******************
+
+Blob_Hash :: xxhash.XXH3_128_hash
+BLOB_FILENAME_LEN :: size_of(Blob_Hash) * 2 // we need two hex characters (two bytes) per byte of the hash
+Blob_Name :: [BLOB_FILENAME_LEN]byte
+BLOB_INLINE_MAX :: 1023 // max size of a blob allowed to be inline in blob table, anything greater goes to `blobs/` dir
+BLOB_NONE :: u16(0xFFFF) // only used for responses, indicates no blob bytes were sent, only description of repr
+Blob_Tag :: enum u8 {
+    // is blob data inline or point at a `blobs/<hash>` file?
+    INLINE, // blob data is <= `BLOB_INLINE_MAX`
+    HASH, // blob data is > `BLOB_INLINE_MAX`
+}
+blob_filename :: proc(buf: []byte, hash: Blob_Hash) -> string {
+    return fmt.bprintf(buf, "%0*x", BLOB_FILENAME_LEN, hash)
+}
+
 // Refcounted data blob. Data is hashed for state-writing purposes (large blobs are written to disk at
 // <state-dir>/blobs/<hash>). So multiple `Data_Repr`s may point to the same data blob, and the data is only released
 // when refcount hits 0.
@@ -69,13 +87,24 @@ Rc_Blob :: struct {
 // Allocates a new Rc_Blob and returns the pointer to it.
 // Caller is responsible for freeing.
 new_rc_blob :: proc(data: []byte) -> ^Rc_Blob {
+    return new_rc_blob_hashed(data, xxhash.XXH3_128_default(data))
+}
+
+// For a blob read back from `blobs/<hash>`, where the digest is the filename we just opened. Re-hashing would walk the
+// whole payload to recompute a value we already have.
+new_rc_blob_hashed :: proc(data: []byte, hash: Blob_Hash) -> ^Rc_Blob {
     rc_blob := new(Rc_Blob)
     rc_blob^ = Rc_Blob {
         data     = data,
         refcount = 1,
-        hash     = xxhash.XXH3_128_default(data),
+        hash     = hash,
     }
     return rc_blob
+}
+
+// True when this blob's bytes live in `blobs/<hash>` rather than inline in the blob table.
+blob_is_file_backed :: proc(rc_blob: ^Rc_Blob) -> bool {
+    return len(rc_blob.data) > BLOB_INLINE_MAX
 }
 
 // Increments refcount and returns a new pointer to `rc_blob`.
@@ -1660,50 +1689,128 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 // mime of every entry), whereas GET (marshal_resp_registers) is a query that packs a single mime/data per entry.
 // Keeping them separate lets the GET format change without touching persistence.
 //
+// The wire format consists of the state header (magic + version), followed by a blob table and register table. The blob
+// table effectively replicates our sharing of blob data within clipbender such that we don't have to duplicate inline
+// data or hashes for reprs that contain the same data.
+//
 // Wire format:
 //   ["IROH" magic][1b STATE_VERSION]
-//   [1b count]
-//   for entry in count:
-//     [1b Reg_Id][8b i64 timestamp][1b blob_count]
-//     for repr in blob_count:
-//       [1b mime_count]
-//       for mime in mime_count: [1b mime_len][mime_len bytes]
-//       [8b u64 data_len][data_len bytes]
+//   `blob table` [2b count], per blob:
+//      [1b tag] INLINE: [8b u64 size][size bytes] | HASH: [16b Blob_Hash]
+//   `register table` [1b count], per register:
+//      [1b Reg_Id][8b i64 timestamp][1b repr count], per repr:
+//          [1b mime count][[1b len][len mime]...][2b blob index]
 
 // Our state file magic.
 STATE_MAGIC :: "IROH"
-
-// Bytes the magic and version prefix occupy. Everything after is the state *body*, so the per-entry offsets above are
+// Bytes the magic and version prefix occupy. Everything after is the state body, so the per-entry offsets above are
 // independent of the prefix.
 STATE_HEADER_SIZE :: len(STATE_MAGIC) + size_of(Monotonic_Version)
 
-// Exact serialized size of `regs` in the state format, so a caller can allocate a buffer that fits instead of guessing.
-state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
-    size := STATE_HEADER_SIZE + size_of(u8) // magic + version + entry count
+// Unique blobs in the order they are first named. A blob's position here is its wire index.
+build_blob_table :: proc(regs: [MAX_REGS]^Reg_Entry, allocator := context.allocator) -> [dynamic]^Rc_Blob {
+    // We could count the number of reprs we have and pre-allocate the dynamic array capacity to save on allocations,
+    // but the difference is negligible (pre-allocating only wins with a smaller number of unique blobs). We may also be
+    // passed an arena allocator which would greatly improve the speed anyhow.
+    table := make([dynamic]^Rc_Blob, allocator)
     for entry in regs {
         if entry == nil {continue}
-        size += size_of(Reg_Id) + size_of(i64) + size_of(u8)
         for repr in entry.reprs {
-            size += size_of(u8)
-            for mime in repr.mimes {
-                size += size_of(u8) + len(mime)
+            // Shared blobs earn one entry, named by every repr that points at them
+            if _, seen_before := blob_table_index(table[:], repr.blob); !seen_before {
+                append(&table, repr.blob)
             }
-            size += size_of(u64) + len(repr.blob.data)
+        }
+    }
+    return table
+}
+
+// Position of `blob` in the table. Pointer equality, so sharing is found without hashing or comparing bytes.
+blob_table_index :: proc(table: []^Rc_Blob, blob: ^Rc_Blob) -> (index: u16, found: bool) {
+    for entry, i in table {
+        if entry == blob {return u16(i), true}
+    }
+    return 0, false
+}
+
+// Exact serialized size of `regs` in the state format, so a caller can allocate a buffer that fits instead of guessing.
+state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
+    table := build_blob_table(regs, context.temp_allocator)
+    return state_size_with_blob_table(regs, table[:])
+}
+
+state_size_with_blob_table :: proc(regs: [MAX_REGS]^Reg_Entry, blob_table: []^Rc_Blob) -> int {
+    size := STATE_HEADER_SIZE + size_of(u16) + size_of(u8) // magic + version + blob count + register count
+
+    // Blob table: a file-backed blob costs only its digest, an inline one carries its bytes
+    for blob in blob_table {
+        size += size_of(Blob_Tag)
+        if blob_is_file_backed(blob) {
+            size += size_of(Blob_Hash)
+        } else {
+            size += size_of(u64) + len(blob.data)
+        }
+    }
+
+    // Register table: every repr is described, shared blob or not
+    for entry in regs {
+        if entry == nil {continue}
+        size += size_of(Reg_Id) + size_of(i64) + size_of(u8) // reg ID + timestamp + repr count
+        for repr in entry.reprs {
+            size += size_of(u8) // mime count
+            for mime in repr.mimes {
+                size += size_of(u8) + len(mime) // mime len + mime
+            }
+            size += size_of(u16) // blob index
         }
     }
     return size
 }
 
 marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
+    blob_table := build_blob_table(regs, context.temp_allocator)
+
     // Every write below is unchecked, so a short buffer would run off the end. Size it with `state_size`.
-    assert(len(buf) >= state_size(regs), "marshal_state buffer too small; size it with state_size()")
+    assert(
+        len(buf) >= state_size_with_blob_table(regs, blob_table[:]),
+        "marshal_state buffer too small; size it with state_size()",
+    )
 
     // Version prefix
     copy(buf[:len(STATE_MAGIC)], STATE_MAGIC)
     buf[len(STATE_MAGIC)] = byte(STATE_VERSION)
     body := buf[STATE_HEADER_SIZE:] // every offset below is relative to the body, not the file
 
-    written := size_of(u8) // reserve count byte
+    // Blob count u16
+    blob_count_bytes := transmute([size_of(u16)]byte)u16(len(blob_table))
+    copy(body[:size_of(u16)], blob_count_bytes[:])
+    written := size_of(u16)
+
+    // One blob per iteration, in table order so the index a repr writes below is the position read back
+    for blob in blob_table {
+        // A file-backed blob just includes its hash, an inline one carries the bytes directly
+        if blob_is_file_backed(blob) {
+            body[written] = byte(Blob_Tag.HASH)
+            written += size_of(Blob_Tag)
+
+            hash_bytes := transmute([size_of(Blob_Hash)]byte)blob.hash
+            copy(body[written:][:size_of(Blob_Hash)], hash_bytes[:])
+            written += size_of(Blob_Hash)
+        } else {
+            body[written] = byte(Blob_Tag.INLINE)
+            written += size_of(Blob_Tag)
+
+            data_len := u64(len(blob.data))
+            data_len_bytes := transmute([size_of(u64)]byte)data_len
+            copy(body[written:][:size_of(u64)], data_len_bytes[:])
+            written += size_of(u64)
+            copy(body[written:][:int(data_len)], blob.data)
+            written += int(data_len)
+        }
+    }
+
+    reg_count_offset := written
+    written += size_of(u8) // reserve register count byte
     count: u8 = 0
 
     // One non-empty register per iteration
@@ -1719,7 +1826,7 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
         copy(body[written:][:size_of(i64)], time_bytes[:])
         written += size_of(i64)
 
-        // Blob count u8
+        // Repr count u8
         body[written] = u8(len(entry_ptr.reprs))
         written += size_of(u8)
 
@@ -1734,33 +1841,142 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
                 written += write_resp_mime(body[written:], mime)
             }
 
-            // Data length u64 + data bytes
-            data_len := u64(len(repr.blob.data))
-            data_len_bytes := transmute([size_of(u64)]byte)data_len
-            copy(body[written:][:size_of(u64)], data_len_bytes[:])
-            written += size_of(u64)
-            copy(body[written:][:int(data_len)], repr.blob.data)
-            written += int(data_len)
+            // Blob index u16. Every repr's blob was collected by `build_blob_table`, so the lookup cannot miss.
+            index, found := blob_table_index(blob_table[:], repr.blob)
+            assert(found, "repr's blob is missing from the blob table")
+            index_bytes := transmute([size_of(u16)]byte)index
+            copy(body[written:][:size_of(u16)], index_bytes[:])
+            written += size_of(u16)
         }
 
         count += 1
     }
 
-    // Backfill the reserved count byte
-    body[0] = byte(count)
+    // Backfill the reserved register count byte
+    body[reg_count_offset] = byte(count)
     return STATE_HEADER_SIZE + written
+}
+
+// Read the blob table into blobs the caller owns one reference to each of. `offset` is advanced past the table.
+//
+// INLINE entries carry their bytes; HASH entries name a file under `blobs_dir`, whose digest is the filename, so the
+// hash is assigned rather than recomputed over the payload.
+read_blob_table :: proc(
+    body: []byte,
+    offset: ^int,
+    blobs_dir: Maybe(string),
+) -> (
+    table: []^Rc_Blob,
+    err: Maybe(string),
+) {
+    if offset^ + size_of(u16) > len(body) {
+        return nil, "state file has no blob count"
+    }
+    count_bytes: [size_of(u16)]byte
+    copy(count_bytes[:], body[offset^:][:size_of(u16)])
+    count := int(transmute(u16)count_bytes)
+    offset^ += size_of(u16)
+
+    // Bound the count by the bytes left before allocating for it. Every entry costs at least a tag plus the smaller
+    // of its two bodies.
+    min_entry := size_of(Blob_Tag) + min(size_of(u64), size_of(Blob_Hash))
+    if count * min_entry > len(body) - offset^ {
+        return nil, fmt.tprintf(
+            "blob count %d needs at least %d bytes, %d remain",
+            count,
+            count * min_entry,
+            len(body) - offset^,
+        )
+    }
+
+    blobs := make([]^Rc_Blob, count)
+    filled := 0
+    // Only frees on the error paths below; on success ownership passes to the caller.
+    defer if err != nil {
+        for i in 0 ..< filled {free_rc_blob(blobs[i])}
+        delete(blobs)
+    }
+
+    // One blob per iteration, in the order the reprs index them by
+    for b in 0 ..< count {
+        if offset^ + size_of(Blob_Tag) > len(body) {
+            return nil, fmt.tprintf("blob %d: missing tag", b)
+        }
+        tag := Blob_Tag(body[offset^])
+        offset^ += size_of(Blob_Tag)
+
+        switch tag {
+        case .INLINE:
+            if offset^ + size_of(u64) > len(body) {
+                return nil, fmt.tprintf("blob %d: missing data length", b)
+            }
+            data_len_bytes: [size_of(u64)]byte
+            copy(data_len_bytes[:], body[offset^:][:size_of(u64)])
+            data_len_u64 := transmute(u64)data_len_bytes
+            offset^ += size_of(u64)
+
+            // Range-check against what is left before trusting the length as an index.
+            if data_len_u64 > u64(len(body) - offset^) {
+                return nil, fmt.tprintf(
+                    "blob %d: data length %d exceeds the %d bytes remaining",
+                    b,
+                    data_len_u64,
+                    len(body) - offset^,
+                )
+            }
+            data_len := int(data_len_u64)
+
+            blobs[b] = new_rc_blob(slice.clone(body[offset^:][:data_len]))
+            offset^ += data_len
+
+        case .HASH:
+            if offset^ + size_of(Blob_Hash) > len(body) {
+                return nil, fmt.tprintf("blob %d: missing hash", b)
+            }
+            hash_bytes: [size_of(Blob_Hash)]byte
+            copy(hash_bytes[:], body[offset^:][:size_of(Blob_Hash)])
+            hash := transmute(Blob_Hash)hash_bytes
+            offset^ += size_of(Blob_Hash)
+
+            dir, has_dir := blobs_dir.?
+            if !has_dir {
+                return nil, fmt.tprintf("blob %d: file-backed blob but no blob directory to read it from", b)
+            }
+
+            name_buf: Blob_Name
+            name := blob_filename(name_buf[:], hash)
+            path := fmt.tprintf("%s/%s", dir, name)
+            data, read_err := os.read_entire_file(path, context.allocator)
+            if read_err != nil {
+                return nil, fmt.tprintf("blob %d: cannot read %s: %v", b, path, read_err)
+            }
+
+            blobs[b] = new_rc_blob_hashed(data, hash)
+
+        case:
+            return nil, fmt.tprintf("blob %d: unknown tag %d", b, u8(tag))
+        }
+        filled += 1
+    }
+
+    return blobs, nil
 }
 
 // Deserialize state into owned entries indexed by Reg_Id. Slots not present are left zeroed.
 //
 // On error, entries decoded so far are freed and `regs` is zeroed, so the caller never sees a half-populated array.
 // NOTE: on success the caller is responsible for freeing all entries in `regs`.
-unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8, err: Maybe(string)) {
-    count, err = unmarshal_state_entries(buf, regs)
+unmarshal_state :: proc(
+    buf: []byte,
+    regs: ^[MAX_REGS]Reg_Entry,
+    blobs_dir: Maybe(string) = nil,
+) -> (
+    count: u8,
+    err: Maybe(string),
+) {
+    count, err = unmarshal_state_entries(buf, regs, blobs_dir)
     if err != nil {
-        // Discard whatever parsed before the failure. `free_reg_entry` is a no-op on a zeroed entry, so sweeping the
-        // whole array is simpler than tracking which slots were filled -- and this is the only place that can honestly
-        // report `count = 0`, since an Odin `defer` cannot modify a return value.
+        // Discard whatever parsed before the failure.
         for &entry in regs {free_reg_entry(&entry)}
         regs^ = {}
         return 0, err
@@ -1768,8 +1984,15 @@ unmarshal_state :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8, 
     return count, nil
 }
 
-// Decoding half of `unmarshal_state`. Leaves `regs` partially filled on error; the caller sweeps it.
-unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (count: u8, err: Maybe(string)) {
+// Decoding half of `unmarshal_state`. Leaves `regs` partially filled on error, the caller sweeps it.
+unmarshal_state_entries :: proc(
+    buf: []byte,
+    regs: ^[MAX_REGS]Reg_Entry,
+    blobs_dir: Maybe(string) = nil,
+) -> (
+    count: u8,
+    err: Maybe(string),
+) {
     regs^ = {}
     if len(buf) < STATE_HEADER_SIZE {
         return 0, "state file is empty"
@@ -1791,13 +2014,26 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
     }
     body := buf[STATE_HEADER_SIZE:] // every offset below is relative to the body, not the file
 
-    if len(body) == 0 {
+    offset := 0
+    // Blob table, which the reprs below reference by index
+    table, table_err := read_blob_table(body, &offset, blobs_dir)
+    if table_err != nil {
+        return 0, table_err
+    }
+    // Free all references to blobs in the table so we don't have an extra ref counted for each blob still sitting in
+    // this table.
+    defer {
+        for blob in table {free_rc_blob(blob)}
+        delete(table)
+    }
+
+    if offset + size_of(u8) > len(body) {
         return 0, "state file has no entry count"
     }
     // Entry count
-    count = u8(body[0])
+    count = u8(body[offset])
+    offset += size_of(u8)
 
-    offset := 1
     // One register per iteration
     for entry_idx in 0 ..< int(count) {
         // Reg_Id + timestamp + blob count, read together since they are fixed-width.
@@ -1822,7 +2058,7 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
         offset += size_of(i64)
 
         // Repr count
-        blob_count := int(body[offset])
+        repr_count := int(body[offset])
         offset += size_of(u8)
 
         // Counts are `u8`, so they cannot drive a large allocation,  but a repeated `reg_id` would leak the entry
@@ -1832,7 +2068,7 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
             return
         }
 
-        reprs := make([]Data_Repr, blob_count)
+        reprs := make([]Data_Repr, repr_count)
         // In-flight work needs its own cleanup: this entry is not in `regs` yet, so `unmarshal_state`'s sweep cannot
         // see it. These defers only free, they never assign to `err` or `count`.
         reprs_filled := 0
@@ -1842,16 +2078,16 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
         }
 
         // One repr per iteration
-        for b in 0 ..< blob_count {
+        for repr_index in 0 ..< repr_count {
             // Mime count
             if offset + size_of(u8) > len(body) {
-                err = fmt.tprintf("entry %d repr %d: missing mime count", entry_idx, b)
+                err = fmt.tprintf("entry %d repr %d: missing mime count", entry_idx, repr_index)
                 return
             }
             mime_count := int(body[offset])
             offset += size_of(u8)
             if mime_count == 0 {
-                err = fmt.tprintf("entry %d repr %d: no mimes", entry_idx, b)
+                err = fmt.tprintf("entry %d repr %d: no mimes", entry_idx, repr_index)
                 return
             }
 
@@ -1862,60 +2098,45 @@ unmarshal_state_entries :: proc(buf: []byte, regs: ^[MAX_REGS]Reg_Entry) -> (cou
                 delete(mimes)
             }
 
-            // Each name for this repr
-            for m in 0 ..< mime_count {
+            // Each mime for this repr
+            for mime_index in 0 ..< mime_count {
                 mime, mime_err := read_resp_mime(body, &offset)
                 if mime_err != nil {
-                    err = fmt.tprintf("entry %d repr %d mime %d: %s", entry_idx, b, m, mime_err.?)
+                    err = fmt.tprintf("entry %d repr %d mime %d: %s", entry_idx, repr_index, mime_index, mime_err.?)
                     return
                 }
-                mimes[m] = mime
+                mimes[mime_index] = mime
                 mimes_filled += 1
             }
 
-            // Data length
-            if offset + size_of(u64) > len(body) {
-                err = fmt.tprintf("entry %d repr %d: missing data length", entry_idx, b)
+            // Blob index
+            if offset + size_of(u16) > len(body) {
+                err = fmt.tprintf("entry %d repr %d: missing blob index", entry_idx, repr_index)
                 return
             }
-            data_len_bytes: [size_of(u64)]byte
-            copy(data_len_bytes[:], body[offset:][:size_of(u64)])
-            data_len_u64 := transmute(u64)data_len_bytes
-            offset += size_of(u64)
+            index_bytes: [size_of(u16)]byte
+            copy(index_bytes[:], body[offset:][:size_of(u16)])
+            index := int(transmute(u16)index_bytes)
+            offset += size_of(u16)
 
-            // Range-check data length is not larger than the rest of the bytes in the blob.
-            if data_len_u64 > u64(len(body) - offset) {
+            if index >= len(table) {
                 err = fmt.tprintf(
-                    "entry %d repr %d: data length %d exceeds the %d bytes remaining",
+                    "entry %d repr %d: blob index %d is past the %d-entry blob table",
                     entry_idx,
-                    b,
-                    data_len_u64,
-                    len(body) - offset,
+                    repr_index,
+                    index,
+                    len(table),
                 )
                 return
             }
-            data_len := int(data_len_u64)
 
-            if offset + data_len > len(body) {
-                err = fmt.tprintf(
-                    "entry %d repr %d: data needs %d bytes, %d remain",
-                    entry_idx,
-                    b,
-                    data_len,
-                    len(body) - offset,
-                )
-                return
-            }
-            // Payload
-            data := slice.clone(body[offset:][:data_len])
-            offset += data_len
-
-            reprs[b] = Data_Repr {
-                blob  = new_rc_blob(data),
+            // Reprs sharing an index share the blob, which is the sharing this format exists to preserve.
+            reprs[repr_index] = Data_Repr {
+                blob  = copy_rc_blob(table[index]),
                 mimes = mimes,
             }
             reprs_filled += 1
-            mimes_filled = 0 // ownership moved into `reprs[b]`, freed by the outer cleanup from here on
+            mimes_filled = 0 // ownership moved into `reprs[repr_index]`, freed by the outer cleanup from here on
         }
 
         regs[reg_id] = Reg_Entry {
