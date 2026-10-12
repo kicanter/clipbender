@@ -1957,8 +1957,8 @@ test_repr_meta_rejects_truncation :: proc(t: ^testing.T) {
 @(test)
 test_resp_registers_oversize_payload_degrades_to_descriptor :: proc(t: ^testing.T) {
     // The VISUAL-policy failure: a blob can exceed the response buffer on its own, and refusing the whole response left
-    // the client with a zero-length message and no way to know why. The entry must still travel, described but
-    // unselected, so it renders as `[image/png ...]` rather than vanishing.
+    // the client with a zero-length message and no way to know why. The entry must still travel, described and with
+    // its match named, so it renders as `[image/png ...]` rather than vanishing.
     big := make([]byte, 4096)
     defer delete(big)
     m_png := [?]string{"image/png"}
@@ -1985,7 +1985,13 @@ test_resp_registers_oversize_payload_degrades_to_descriptor :: proc(t: ^testing.
     testing.expect_value(t, derr, nil)
     testing.expect_value(t, count, 1)
 
-    testing.expect(t, resp_reg_selected(dec[id]) == nil, "payload did not fit, so nothing is selected")
+    // The policy *did* match -- `selected` says which repr -- but the bytes did not fit, which `BLOB_NONE` says
+    // separately. Collapsing both into `RESP_SELECTED_NONE` is what left a client unable to tell "ask for a different
+    // mime" from "ask for fewer registers".
+    testing.expect(t, resp_reg_selected(dec[id]) != nil, "the policy matched a repr, so it stays selected")
+    testing.expect_value(t, dec[id].selected, 0)
+    testing.expect(t, !dec[id].data_sent, "payload did not fit, so no bytes arrived")
+    testing.expect(t, !dec[id].data_sent, "the selected repr's bytes did not travel")
     testing.expect_value(t, len(dec[id].data), 0)
     // The descriptor still reports the real size, so a client can say what it could not fetch.
     testing.expect_value(t, len(dec[id].reprs), 1)
@@ -2029,8 +2035,107 @@ test_resp_registers_oversize_payload_keeps_later_entries :: proc(t: ^testing.T) 
     count, derr := unmarshal_resp_registers(buf[1:n], &dec)
     testing.expect_value(t, derr, nil)
     testing.expect_value(t, count, 2)
-    testing.expect(t, resp_reg_selected(dec[big_id]) == nil, "the oversize entry is described but unselected")
+    testing.expect(t, !dec[big_id].data_sent, "the oversize entry is described but carries no bytes")
+    testing.expect(t, !dec[big_id].data_sent, "the oversize repr's bytes did not travel")
+    testing.expect(t, dec[small_id].data_sent, "the small entry after it still gets its bytes")
     testing.expect_value(t, string(dec[small_id].data), "hi")
+}
+
+// The reason the response grew a blob table: registers holding the same bytes used to send them once each. Measured
+// before the change, three registers sharing one 43388-byte image put 130164 payload bytes on the wire.
+@(test)
+test_resp_registers_shares_one_blob_across_registers :: proc(t: ^testing.T) {
+    payload := make([]byte, 4096)
+    defer delete(payload)
+    for &b, i in payload {b = byte(i % 251)}
+
+    // One blob, named by three registers -- the sharing the daemon's live selection and recency head already create.
+    shared := borrowed_blob(payload)
+    m_png := [?]string{"image/png"}
+    reprs := [?]Data_Repr{{blob = shared, mimes = m_png[:]}}
+    entry := Reg_Entry {
+        reprs     = reprs[:],
+        timestamp = 5,
+    }
+
+    ids := [?]Reg_Id{reg_id_from_named_index(0), reg_id_from_named_index(1), reg_id_from_named_index(2)}
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    policies: [MAX_REGS]Mime_Policy
+    for id in ids {
+        reg_ptrs[id] = &entry
+        policies[id] = Ranked_Policy.VISUAL
+    }
+
+    // Room for one copy plus descriptors, nowhere near three copies.
+    buf: [6144]byte
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
+    testing.expect(t, ok, "one shared payload plus three descriptors should fit")
+    testing.expect(t, n < 2 * len(payload), "the payload should appear once, not once per register")
+
+    dec: [MAX_REGS]Resp_Reg
+    defer for &r in dec {free_resp_reg(&r)}
+    count, derr := unmarshal_resp_registers(buf[1:n], &dec)
+    testing.expect_value(t, derr, nil)
+    testing.expect_value(t, count, len(ids))
+
+    // All three resolve the full payload despite it travelling once.
+    for id in ids {
+        testing.expect(t, dec[id].data_sent, "every register naming the blob should get its bytes")
+        testing.expect(t, slice.equal(dec[id].data, payload), "the shared payload should arrive intact")
+    }
+}
+
+@(test)
+test_unmarshal_resp_registers_rejects_blob_index_past_table :: proc(t: ^testing.T) {
+    // The index comes off the wire, so `table[index]` would read past the slice.
+    data := transmute([]byte)string("hi")
+    m_txt := [?]string{"text/plain"}
+    reprs := [?]Data_Repr{{blob = borrowed_blob(data), mimes = m_txt[:]}}
+    entry := Reg_Entry {
+        reprs     = reprs[:],
+        timestamp = 1,
+    }
+
+    id := reg_id_from_named_index(0)
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[id] = &entry
+    policies: [MAX_REGS]Mime_Policy
+    policies[id] = Ranked_Policy.TEXTUAL
+
+    buf: [256]byte
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
+    testing.expect(t, ok)
+
+    // One repr, so the message ends `[2b blob index][1b selected]`: the index is the two bytes before the last.
+    buf[n - 3] = 0x7F
+    buf[n - 2] = 0x7F
+
+    dec: [MAX_REGS]Resp_Reg
+    _, derr := unmarshal_resp_registers(buf[1:n], &dec)
+    for &r in dec {free_resp_reg(&r)}
+    testing.expect(t, derr != nil, "a blob index past the table should be rejected")
+}
+
+@(test)
+test_unmarshal_resp_registers_rejects_oversized_blob_count :: proc(t: ^testing.T) {
+    // The blob count is `u16` so it matches the index width, which means two untrusted bytes can name far more entries
+    // than the message could hold -- 0xFFFF would allocate ~1 MB of slice headers before the first missing size field.
+    buf: [4]byte
+    buf[0] = byte(Resp_Status.REGISTERS)
+    buf[1] = 0 // register count
+    buf[2] = 0xFF // blob count low
+    buf[3] = 0xFF // blob count high
+
+    dec: [MAX_REGS]Resp_Reg
+    _, err := unmarshal_resp_registers(buf[1:], &dec)
+    for &r in dec {free_resp_reg(&r)}
+    testing.expect(t, err != nil, "a blob count larger than the message could hold should be rejected")
+    // Rejected either way once the sizes run out, so the message is what pins that the count was checked up front.
+    testing.expect(
+        t,
+        strings.contains(err.?, "blob count"),
+        "the count should be rejected before it drives the allocation",
+    )
 }
 
 // Every mime the magic table can emit is either rankable by a policy or deliberately not. This guards the gap that

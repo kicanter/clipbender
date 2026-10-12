@@ -907,10 +907,12 @@ ALIAS_MARK :: '+'
 // The content cell for one register. Non-text content is described rather than rendered: replacement characters are
 // noise, and their widths would skew the column even after escaping.
 display_content :: proc(entry: lib.Resp_Reg, width: int) -> string {
-    if lib.resp_reg_selected(entry) == nil {
-        // Nothing matched the preference, so describe the first repr instead of leaving the cell blank. Uses size and
-        // meta tag to determine what data to show.
-        return table_cell(describe_repr(entry.reprs[0]), width)
+    if !entry.data_sent {
+        // No bytes to render, either because nothing matched the preference or because the match did not fit the
+        // message. Describe the repr the policy chose when there was one, else the first, rather than leaving the cell
+        // blank. Uses size and meta tag to determine what data to show.
+        described := entry.selected if lib.resp_reg_selected(entry) != nil else 0
+        return table_cell(describe_repr(entry.reprs[described]), width)
     }
     if !utf8.valid_string(string(entry.data)) {
         return table_cell(describe_repr(entry.reprs[entry.selected]), width)
@@ -983,9 +985,8 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
                 fmt.println(table_sep)
             }
 
-            // The repr whose bytes arrived heads the mime column, sharing the line with its content. When nothing
-            // matched, the first repr heads it instead, with its description as the content.
-            head := entry.selected if lib.resp_reg_selected(entry) != nil else 0
+            // The first repr is the one chosen by the preference. If none matched, just show the first repr.
+            head := int(entry.selected) if lib.resp_reg_selected(entry) != nil else 0
             fmt.printfln(
                 CONTENT_FMT,
                 lib.reg_id_to_string(id),
@@ -1059,7 +1060,7 @@ json_escape_string :: proc(str: string) -> string {
     return strings.to_string(escaped)
 }
 
-// Render `data` as a JSON value: a string when it is valid UTF-8, else base64 with a sibling `content_encoding` field.
+// Render `data` as a JSON value i.e a string when it is valid UTF-8, else base64 with a sibling `content_encoding` field.
 json_content :: proc(data: []byte) -> (value: string, is_base64: bool) {
     str := string(data)
     if utf8.valid_string(str) {
@@ -1075,17 +1076,18 @@ json_content :: proc(data: []byte) -> (value: string, is_base64: bool) {
 // `reprs`: list<object> = list of data representations for that register
 //     `mimes`: list<string> = list of mimes for a single data representation
 //     `size`: u64 = number of bytes in that data representation (using best-fitting units)
-//     `selected`: bool = whether this data representation is currently selected or not
+//     `selected`: bool = whether this data representation is the one the preference chose
+//     `present`: bool = whether this representation's bytes were sent; a selected repr whose payload exceeded the
+//                message cap is `selected` but not `present`, which is why both are reported
 //     `width`: u32 = (images only) width of the image
 //     `height`: u32 = (images only) height of the image
 print_json_entry :: proc(entry: lib.Resp_Reg, id_str: string, printed: ^bool) {
     if printed^ {fmt.print(", ")}
 
-    selected := lib.resp_reg_selected(entry)
     fmt.printf(`{{"register": "%s", "timestamp": %d`, id_str, entry.timestamp)
 
     fmt.print(`, "data": `)
-    if selected == nil {
+    if !entry.data_sent {
         fmt.print("null")
     } else {
         value, is_base64 := json_content(entry.data)
@@ -1101,7 +1103,7 @@ print_json_entry :: proc(entry: lib.Resp_Reg, id_str: string, printed: ^bool) {
             if m > 0 {fmt.print(", ")}
             fmt.printf(`"%s"`, json_escape_string(mime))
         }
-        fmt.printf(`], "size": %d, "selected": %v`, repr.size, r == entry.selected)
+        fmt.printf(`], "size": %d, "selected": %v`, repr.size, u8(r) == entry.selected)
         switch meta in repr.meta {
         case lib.Image_Dims:
             fmt.printf(`, "width": %d, "height": %d`, meta.width, meta.height)

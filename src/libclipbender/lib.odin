@@ -1,5 +1,6 @@
 package libclipbender
 
+import "base:intrinsics"
 import "core:encoding/endian"
 import "core:encoding/json"
 import "core:fmt"
@@ -578,9 +579,14 @@ repr_with_mime :: proc(entry: ^Reg_Entry, mime: string) -> (int, bool) {
 //
 // OK:    `[1 byte Response_Status]`
 // ERROR: `[1 byte Response_Status][N bytes error message]`
-// REGISTERS:  `[1 byte Response_Status][1 byte u8 count][count * entry]`
+// REGISTERS:  `[1 byte Response_Status][1 byte u8 count][blob table][count * entry]`
 //
-// where each entry in REGISTERS is:
+// where the blob table is:
+//
+//     [2b u16 count]
+//     per blob: [4b u32 size][size bytes]
+//
+// and each entry in REGISTERS is:
 //
 //     [1b Reg_Id][8b i64 timestamp]
 //     [1b u8 repr count]
@@ -588,13 +594,16 @@ repr_with_mime :: proc(entry: ^Reg_Entry, mime: string) -> (int, bool) {
 //         [1b u8 mime count][[1b u8 mime len][mime len bytes]...]  // these names all resolve to one payload
 //         [8b u64 size]                                            // size of this repr, sent or not
 //         [1b Repr_Meta_Tag][1b u8 meta len][meta len bytes]       // NONE carries no payload
+//         [2b u16 blob index]                                      // BLOB_NONE when these bytes were not sent
 //     [1b u8 selected repr index]                                  // RESP_SELECTED_NONE when nothing matched
-//     [selected repr's size bytes]                                 // length read from the selected descriptor
 //
-// Every repr is described, but only one carries bytes. A client showing a register whose image repr was not sent still
-// needs its size and dimensions, and cannot derive them without the payload. It also lets a client that later wants a
-// different mime check whether it already holds that payload e.g. names grouped under one repr share bytes, so no
-// second request is needed.
+// Every repr is described, but only one carries bytes. Mime groupings let a client that later wants a different mime
+// check whether it already holds that payload e.g. names grouped under one repr share bytes, so no second request is
+// needed. Meta tags + metadata are included for extraneous data associated with a repr e.g. a register whose image
+// repr was not sent can still send its dimensions.
+//
+// Payloads live in the blob table and are pointed to in the register table to deduplicate identical blobs. `selected`
+// indicates the repr matching the policy, `blob index` indicates the blob the repr is pointing to.
 Resp_Status :: enum u8 {
     OK,
     ERROR,
@@ -615,11 +624,12 @@ Image_Dims :: struct {
 Repr_Meta :: union {
     Image_Dims,
 }
-
 Repr_Meta_Tag :: enum u8 {
     NONE,
     IMAGE_DIMS,
 }
+// Ensure `Repr_Meta` and `Repr_Meta_Tag` don't deviate
+#assert(len(Repr_Meta_Tag) == intrinsics.type_union_variant_count(Repr_Meta) + 1)
 
 // A single representation in a REGISTERS response.
 Resp_Repr :: struct {
@@ -631,17 +641,15 @@ Resp_Repr :: struct {
 // We use an index value to specify which repr in the list of reprs the associated data blob bytes correlate with, if
 // any. If no data blob bytes were sent (no valid mime for the preference existed for the register), then we use this
 // sentinel to denote it.
-RESP_SELECTED_NONE :: 0xFF
+RESP_SELECTED_NONE :: u8(0xFF)
 
 // A single register in a REGISTERS response.
-//
-// `selected` is the index in `reprs` that the bytes in `data` belong to, or is `RESP_SELECTED_NONE` if no mime was
-// found to be valid for the preference.
 Resp_Reg :: struct {
     reprs:     []Resp_Repr,
-    selected:  int,
     data:      []byte,
     timestamp: i64,
+    selected:  u8, // index in `reprs` that `data` belongs to (`RESP_SELECTED_NONE` if no mime matched policy)
+    data_sent: bool, // whether `selected` repr's bytes were sent with the response
 }
 
 // True for a Reg_Id slot the response did not mention. A register that was returned always describes at least one repr.
@@ -649,9 +657,10 @@ resp_reg_is_empty :: proc(reg: Resp_Reg) -> bool {
     return len(reg.reprs) == 0
 }
 
-// The selected repr, or nil when the preference matched nothing.
+// The selected repr, or nil when the preference matched nothing. Non-nil says which repr the policy chose, not
+// necessarily that the blob of the repr arrived.
 resp_reg_selected :: proc(reg: Resp_Reg) -> ^Resp_Repr {
-    if reg.selected < 0 || reg.selected >= len(reg.reprs) {return nil}
+    if reg.selected == RESP_SELECTED_NONE || int(reg.selected) >= len(reg.reprs) {return nil}
     return &reg.reprs[reg.selected]
 }
 
@@ -1254,6 +1263,13 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (cou
     }
 
     offset := size_of(u8)
+    // Blob table, which the reprs below reference by index. Borrowed from `buf` rather than cloned; the payloads are
+    // cloned per register as they are resolved, so the table itself never outlives this call.
+    table, table_err := read_resp_blob_table(buf, &offset)
+    if table_err != nil {
+        return 0, table_err
+    }
+    defer delete(table)
     // Iterate through registers in response
     for i in 0 ..< count {
         if offset + size_of(Reg_Id) + size_of(i64) > len(buf) {
@@ -1288,6 +1304,8 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (cou
         // Commit before filling so the deferred cleanup can free a partially decoded entry.
         reprs := make([]Resp_Repr, repr_count)
         regs[reg_id].reprs = reprs
+        // Wire indices, kept only until the selected repr's payload is resolved below.
+        indices := make([]u16, repr_count, context.temp_allocator)
         // One descriptor per iteration
         for r in 0 ..< repr_count {
             // Mime count
@@ -1338,41 +1356,125 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (cou
                 return 0, fmt.tprintf("REGISTERS response entry %d repr %d meta: %s", i, r, meta_err.?)
             }
             reprs[r].meta = meta
+
+            // Where this repr's bytes are, if they were sent
+            if offset + size_of(u16) > len(buf) {
+                return 0, fmt.tprintf("REGISTERS response truncated: entry %d repr %d blob index", i, r)
+            }
+            index_bytes: [size_of(u16)]byte
+            copy(index_bytes[:], buf[offset:][:size_of(u16)])
+            index := transmute(u16)index_bytes
+            offset += size_of(u16)
+            if index != BLOB_NONE && int(index) >= len(table) {
+                return 0, fmt.tprintf(
+                    "REGISTERS response entry %d repr %d names blob %d of %d",
+                    i,
+                    r,
+                    index,
+                    len(table),
+                )
+            }
+            indices[r] = index
         }
 
-        // Which repr's bytes follow, if any
+        // Which repr the policy chose, independent of whether its bytes arrived
         if offset + size_of(u8) > len(buf) {
             return 0, fmt.tprintf("REGISTERS response truncated: entry %d selected index", i)
         }
-        selected := int(buf[offset])
+        selected := buf[offset]
         offset += size_of(u8)
         if selected == RESP_SELECTED_NONE {
             regs[reg_id].selected = RESP_SELECTED_NONE
             continue
         }
-        if selected >= repr_count {
+        if int(selected) >= repr_count {
             return 0, fmt.tprintf("REGISTERS response entry %d selects repr %d of %d", i, selected, repr_count)
         }
         regs[reg_id].selected = selected
 
-        // Length of the payload is the selected descriptor's size rather than a second copy of it on the wire.
-        data_len := int(reprs[selected].size)
-        if data_len < 0 || offset + data_len > len(buf) {
-            return 0, fmt.tprintf(
-                "REGISTERS response truncated: entry %d data needs %d bytes, %d remain",
-                i,
-                data_len,
-                len(buf) - offset,
-            )
+        // Only the selected repr may name a blob, since at most one per register carries bytes. A stray index on any
+        // other repr means the sender disagrees with that rule, so reject rather than silently ignoring it.
+        for index, r in indices {
+            if u8(r) != selected && index != BLOB_NONE {
+                return 0, fmt.tprintf(
+                    "REGISTERS response entry %d names a blob on repr %d but selects repr %d",
+                    i,
+                    r,
+                    selected,
+                )
+            }
         }
-        // Skip the clone for an empty payload
-        if data_len > 0 {
-            regs[reg_id].data = slice.clone(buf[offset:][:data_len])
-            offset += data_len
+        regs[reg_id].data_sent = indices[selected] != BLOB_NONE
+
+        // Resolve the selected repr's payload out of the table. `BLOB_NONE` here is the "matched but did not fit"
+        // case, which leaves `data` empty while `selected` still says what was chosen.
+        if regs[reg_id].data_sent {
+            payload := table[indices[selected]]
+            if u64(len(payload)) != reprs[selected].size {
+                return 0, fmt.tprintf(
+                    "REGISTERS response entry %d selects a %d byte repr but its blob holds %d",
+                    i,
+                    reprs[selected].size,
+                    len(payload),
+                )
+            }
+            // Skip the clone for an empty payload
+            if len(payload) > 0 {
+                regs[reg_id].data = slice.clone(payload)
+            }
         }
     }
 
     return count, nil
+}
+
+// Read the response blob table into slices borrowed from `buf`. `offset` is advanced past the table.
+read_resp_blob_table :: proc(buf: []byte, offset: ^int) -> (table: [][]byte, err: Maybe(string)) {
+    if offset^ + size_of(u16) > len(buf) {
+        return nil, "REGISTERS response truncated: missing blob count"
+    }
+    count_bytes: [size_of(u16)]byte
+    copy(count_bytes[:], buf[offset^:][:size_of(u16)])
+    count := int(transmute(u16)count_bytes)
+    offset^ += size_of(u16)
+
+    // Bound the count by the bytes left before allocating for it. Every entry costs at least its size field.
+    if count * size_of(u32) > len(buf) - offset^ {
+        return nil, fmt.tprintf(
+            "REGISTERS response blob count %d needs at least %d bytes, %d remain",
+            count,
+            count * size_of(u32),
+            len(buf) - offset^,
+        )
+    }
+
+    blobs := make([][]byte, count)
+    defer if err != nil {delete(blobs)}
+
+    // One blob per iteration, in the order the reprs index them by
+    for b in 0 ..< count {
+        if offset^ + size_of(u32) > len(buf) {
+            return nil, fmt.tprintf("REGISTERS response truncated: blob %d size", b)
+        }
+        size_bytes: [size_of(u32)]byte
+        copy(size_bytes[:], buf[offset^:][:size_of(u32)])
+        size := int(transmute(u32)size_bytes)
+        offset^ += size_of(u32)
+
+        // Range-check against what is left before trusting the size as an index.
+        if size > len(buf) - offset^ {
+            return nil, fmt.tprintf(
+                "REGISTERS response truncated: blob %d needs %d bytes, %d remain",
+                b,
+                size,
+                len(buf) - offset^,
+            )
+        }
+        blobs[b] = buf[offset^:][:size]
+        offset^ += size
+    }
+
+    return blobs, nil
 }
 
 // Read `[1b mime len][mime len bytes]` at `offset`, advancing it. Returns an owned clone; a length of 0 yields "".
@@ -1420,49 +1522,94 @@ marshal_resp_registers :: proc(
     written: int,
     ok: bool,
 ) {
-    if len(buf) < size_of(Resp_Status) + size_of(u8) {return 0, false}
+    header := size_of(Resp_Status) + size_of(u8) + size_of(u16) // status + register count + blob count
+    if len(buf) < header {return 0, false}
 
-    // Status byte
-    buf[0] = byte(Resp_Status.REGISTERS)
-    // Reserve the count byte, fill it in after we know how many non-empty entries there are
-    written = size_of(Resp_Status) + size_of(u8)
-    count: u8 = 0
+    // What each register resolved to. The blob table precedes the entries on the wire, but which blobs fit depends on
+    // what the descriptors cost, so the first pass resolves and measures every register, the second decides which
+    // payloads fit, and only the third writes.
+    Resolved_Reg :: struct {
+        id:       Reg_Id,
+        metas:    []Repr_Meta,
+        selected: u8, // repr the policy picked
+        blob:     u16, // table index, or BLOB_NONE when the payload did not fit
+    }
+    // At most one per non-nil register, so `MAX_REGS` of capacity means this never grows.
+    resolved := make([dynamic]Resolved_Reg, 0, MAX_REGS, context.temp_allocator)
 
-    // One non-empty register per iteration
+    // Phase 1: resolve each register and size its descriptors.
+    descriptors := 0
     for entry_ptr, id in regs {
         if entry_ptr == nil {continue}
 
-        // Which repr contributes its bytes. Every repr is still described.
-        chosen, has_blob := resolve_repr(entry_ptr, policies[id])
-        data: []byte
-        if has_blob {data = entry_ptr.reprs[chosen].blob.data}
-
-        // Pre-size the descriptors, which are written all-or-nothing.
-        size := size_of(Reg_Id) + size_of(i64) + size_of(u8)
+        chosen, matched := resolve_repr(entry_ptr, policies[id])
+        selected := u8(chosen) if matched else RESP_SELECTED_NONE
         metas := make([]Repr_Meta, len(entry_ptr.reprs), context.temp_allocator)
+
+        size := size_of(Reg_Id) + size_of(i64) + size_of(u8) // reg ID + timestamp + repr count
         for repr, i in entry_ptr.reprs {
             metas[i] = repr_meta(repr)
-            size += size_of(u8)
+            size += size_of(u8) // mime count
             for m in repr.mimes {
-                size += size_of(u8) + min(len(m), MAX_MIME_LEN)
+                size += size_of(u8) + min(len(m), MAX_MIME_LEN) // mime len + mime
             }
-            size += size_of(u64) + size_of(Repr_Meta_Tag) + size_of(u8) + repr_meta_size(metas[i])
+            size += size_of(u64) // repr size
+            size += size_of(Repr_Meta_Tag) + size_of(u8) + repr_meta_size(metas[i])
+            size += size_of(u16) // blob index
         }
         size += size_of(u8) // selected index
 
-        // When the payload will not fit, send the entry described but unselected rather than failing the whole response.
-        if has_blob && written + size + len(data) > len(buf) {
-            has_blob = false
-            data = nil
-        }
-        // Not even the descriptors fit, so there is nothing honest left to send.
-        if written + size > len(buf) {return 0, false}
+        descriptors += size
+        append(&resolved, Resolved_Reg{Reg_Id(id), metas, selected, BLOB_NONE})
+    }
+    if header + descriptors > len(buf) {return 0, false}
 
+    // Phase 2: spend what is left on payloads, in register order so earlier entries keep priority.
+    table := make([dynamic]^Rc_Blob, 0, MAX_REGS, context.temp_allocator)
+    budget := len(buf) - header - descriptors
+    for &reg in resolved {
+        if reg.selected == RESP_SELECTED_NONE {continue}
+        blob := regs[reg.id].reprs[reg.selected].blob
+
+        // Already in the table, so this register just references it
+        if index, found := blob_table_index(table[:], blob); found {
+            reg.blob = index
+            continue
+        }
+        // Otherwise it has to pay for itself. Falling short leaves the repr described but absent rather than failing
+        // the whole response, which is what made one oversized image empty the entire GET.
+        cost := size_of(u32) + len(blob.data)
+        if cost > budget {continue}
+
+        reg.blob = u16(len(table))
+        append(&table, blob)
+        budget -= cost
+    }
+
+    // Phase 3: write it. Status, counts, blob table, then the entries.
+    buf[0] = byte(Resp_Status.REGISTERS)
+    buf[1] = u8(len(resolved))
+    // Blob count u16
+    blob_count_bytes := transmute([size_of(u16)]byte)u16(len(table))
+    copy(buf[size_of(Resp_Status) + size_of(u8):][:size_of(u16)], blob_count_bytes[:])
+    written = header
+
+    for blob in table {
+        size_bytes := transmute([size_of(u32)]byte)u32(len(blob.data))
+        copy(buf[written:][:size_of(u32)], size_bytes[:])
+        written += size_of(u32)
+        copy(buf[written:][:len(blob.data)], blob.data)
+        written += len(blob.data)
+    }
+
+    // One non-empty register per iteration
+    for reg in resolved {
         // Reg ID u8
-        buf[written] = byte(id)
+        buf[written] = byte(reg.id)
         written += size_of(Reg_Id)
 
         // Timestamp i64
+        entry_ptr := regs[reg.id]
         time_bytes := transmute([size_of(i64)]byte)entry_ptr.timestamp
         copy(buf[written:][:size_of(i64)], time_bytes[:])
         written += size_of(i64)
@@ -1484,20 +1631,20 @@ marshal_resp_registers :: proc(
             written += size_of(u64)
 
             // Optional metadata
-            written += write_repr_meta(buf[written:], metas[i])
+            written += write_repr_meta(buf[written:], reg.metas[i])
+
+            // Where this repr's bytes are, if they were sent at all. Only the selected repr can name one.
+            index := reg.blob if u8(i) == reg.selected else BLOB_NONE
+            index_bytes := transmute([size_of(u16)]byte)index
+            copy(buf[written:][:size_of(u16)], index_bytes[:])
+            written += size_of(u16)
         }
 
-        // Which repr's bytes follow, then the bytes themselves. Length is the selected descriptor's size.
-        buf[written] = u8(chosen) if has_blob else u8(RESP_SELECTED_NONE)
+        // Which repr the policy chose, independent of whether its bytes fit
+        buf[written] = reg.selected
         written += size_of(u8)
-        copy(buf[written:][:len(data)], data)
-        written += len(data)
-
-        count += 1
     }
 
-    // Count
-    buf[1] = byte(count)
     return written, true
 }
 
