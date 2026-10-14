@@ -1148,6 +1148,55 @@ cmd_get_format_raw :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     }
 }
 
+// The first register that arrived described but with no repr selected.
+unmatched_reg :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) -> (id: lib.Reg_Id, found: bool) {
+    for reg_id in 0 ..< lib.Reg_Id(lib.MAX_REGS) {
+        if !lib.resp_reg_is_empty(regs[reg_id]) && lib.resp_reg_selected(regs[reg_id]) == nil {
+            return reg_id, true
+        }
+    }
+    return 0, false
+}
+
+// The mime to ask for once a ranked policy has matched nothing. Ranks the descriptors with `VISUAL`, the broadest
+// policy, so the result is the repr a `VISUAL` request would have selected -- without spending a round trip to ask.
+//
+// Reuses `resolve_repr` rather than reimplementing the ranking, which it can because that proc reads only mime names:
+// a descriptor-only `Data_Repr` with a nil blob ranks identically to the real one. Falls back to the first repr the app
+// advertised, its own preference signal, for content no policy covers (archives, documents).
+raw_fallback_mime :: proc(reg: lib.Resp_Reg) -> string {
+    reprs := make([]lib.Data_Repr, len(reg.reprs), context.temp_allocator)
+    for repr, i in reg.reprs {
+        reprs[i] = lib.Data_Repr {
+            mimes = repr.mimes,
+        }
+    }
+    entry := lib.Reg_Entry {
+        reprs = reprs,
+    }
+    if i, ok := lib.resolve_repr(&entry, lib.Ranked_Policy.VISUAL); ok {
+        return reg.reprs[i].mimes[0]
+    }
+    return reg.reprs[0].mimes[0]
+}
+
+// Re-request `regs` under `policy`, replacing them in-place. Leaves the previous response freed and `regs` zeroed when
+// the groups cannot be rebuilt.
+retry_get :: proc(
+    args: []string,
+    filter: lib.Cmd_Get_Filter,
+    policy: lib.Mime_Policy,
+    groups: ^[lib.MAX_REGS]lib.Cmd_Get_Group,
+    regs: ^[lib.MAX_REGS]lib.Resp_Reg,
+    client_fd: linux.Fd,
+) {
+    for &entry in regs {lib.free_resp_reg(&entry)}
+    count, err := resolve_mime_groups(args, filter, policy, groups)
+    if err == nil && count > 0 {
+        regs^ = get_registers_or_exit(client_fd, groups[:count])
+    }
+}
+
 // `args` includes everything after the `clipbender get` subcommand.
 cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     if len(args) < 1 {
@@ -1177,19 +1226,12 @@ cmd_get :: proc(args: []string, client_fd: linux.Fd) {
 
     regs := get_registers_or_exit(client_fd, groups[:group_count])
 
-    // A single register redirected to a file whose extension named nothing, holding only content TEXTUAL excludes (an
-    // image, say), retry with VISUAL rather than writing an empty file.
+    // A single register redirected to a file whose extension named nothing. Retry naming a mime the register actually
+    // holds, which always resolves.
     if out_format == .RAW && card(filter) == 1 {
         if _, is_ranked := out_policy.(lib.Ranked_Policy); is_ranked {
-            for reg_id in 0 ..< lib.Reg_Id(lib.MAX_REGS) {
-                if !lib.resp_reg_is_empty(regs[reg_id]) && lib.resp_reg_selected(regs[reg_id]) == nil {
-                    for &entry in regs {lib.free_resp_reg(&entry)}
-                    retry_count, retry_err := resolve_mime_groups(args, filter, lib.Ranked_Policy.VISUAL, &groups)
-                    if retry_err == nil && retry_count > 0 {
-                        regs = get_registers_or_exit(client_fd, groups[:retry_count])
-                    }
-                    break
-                }
+            if id, found := unmatched_reg(&regs); found {
+                retry_get(args, filter, lib.Exact_Mime(raw_fallback_mime(regs[id])), &groups, &regs, client_fd)
             }
         }
     }

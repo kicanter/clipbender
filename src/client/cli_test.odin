@@ -602,3 +602,67 @@ test_is_set_mime_flag :: proc(t: ^testing.T) {
     testing.expect(t, !is_set_mime_flag("selection"))
     testing.expect(t, !is_set_mime_flag("fmt=json"))
 }
+
+// `unmatched_reg` drives the `fmt=raw` escalation, so it has to separate "the policy matched nothing" -- which a
+// broader preference can fix -- from "the match did not fit", which no preference can.
+@(test)
+test_unmatched_reg_finds_only_unmatched :: proc(t: ^testing.T) {
+    mimes := [?]string{"application/pdf"}
+    reprs := [?]lib.Resp_Repr{{mimes = mimes[:], size = 2048}}
+
+    regs: [lib.MAX_REGS]lib.Resp_Reg
+    id := lib.reg_id_from_named_index(3)
+
+    // Nothing matched: escalating is worth a try.
+    regs[id] = lib.Resp_Reg {
+        reprs    = reprs[:],
+        selected = lib.RESP_SELECTED_NONE,
+    }
+    found_id, found := unmatched_reg(&regs)
+    testing.expect(t, found, "a register with nothing selected should be reported")
+    testing.expect_value(t, found_id, id)
+
+    // Matched but the payload exceeded the message cap. A different preference re-sends the same oversized blob, so
+    // this must NOT be reported as unmatched.
+    regs[id] = lib.Resp_Reg {
+        reprs     = reprs[:],
+        selected  = 0,
+        data_sent = false,
+    }
+    _, found = unmatched_reg(&regs)
+    testing.expect(t, !found, "a match that did not fit is a size problem, not a miss")
+
+    // Matched and sent.
+    regs[id] = lib.Resp_Reg {
+        reprs     = reprs[:],
+        selected  = 0,
+        data_sent = true,
+    }
+    _, found = unmatched_reg(&regs)
+    testing.expect(t, !found, "a register whose bytes arrived is not a miss")
+
+    // A register the response never mentioned is not a miss.
+    regs[id] = {}
+    _, found = unmatched_reg(&regs)
+    testing.expect(t, !found, "an absent register is not a miss")
+}
+
+// `raw_fallback_mime` replaces a round trip that used to re-request under `VISUAL`, so it has to pick the repr a
+// `VISUAL` request would have selected -- and still name something for content no policy ranks.
+@(test)
+test_raw_fallback_mime_matches_visual_ranking :: proc(t: ^testing.T) {
+    // Advertised PDF first, image second. `VISUAL` ranks images above everything, so the order must not decide it.
+    pdf := [?]string{"application/pdf"}
+    png := [?]string{"image/png"}
+    mixed := [?]lib.Resp_Repr{{mimes = pdf[:], size = 2048}, {mimes = png[:], size = 4096}}
+    testing.expect_value(t, raw_fallback_mime(lib.Resp_Reg{reprs = mixed[:]}), "image/png")
+
+    // Nothing ranked at all: fall back to the app's first-advertised repr rather than returning empty.
+    zip := [?]string{"application/zip"}
+    only_archive := [?]lib.Resp_Repr{{mimes = pdf[:], size = 1}, {mimes = zip[:], size = 2}}
+    testing.expect_value(t, raw_fallback_mime(lib.Resp_Reg{reprs = only_archive[:]}), "application/pdf")
+
+    // A single unrankable repr still names itself.
+    lone := [?]lib.Resp_Repr{{mimes = zip[:], size = 9}}
+    testing.expect_value(t, raw_fallback_mime(lib.Resp_Reg{reprs = lone[:]}), "application/zip")
+}
