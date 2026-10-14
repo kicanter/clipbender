@@ -2146,18 +2146,17 @@ test_unmarshal_resp_registers_rejects_oversized_blob_count :: proc(t: ^testing.T
 // renders as its descriptor (`[application/pdf 812 kiB]`) rather than as a blank row.
 @(test)
 test_every_detectable_image_and_media_mime_is_rankable :: proc(t: ^testing.T) {
+    // Asks `resolve_repr` rather than re-listing the group tables: a second list would drift from the policies, and
+    // did -- an earlier version of this test kept passing when `BINARY_MIMES` was removed from both policies, because
+    // the mime was still in the test's own copy of the list.
     rankable :: proc(mime: string) -> bool {
-        for group in ([][]string {
-                IMAGE_MIMES[:],
-                MEDIA_MIMES[:],
-                URI_MIMES[:],
-                TEXT_MIMES[:],
-                STRUCTURED_MIMES[:],
-                MARKUP_MIMES[:],
-            }) {
-            for m in group {
-                if m == mime {return true}
-            }
+        mimes := []string{mime}
+        reprs := []Data_Repr{{blob = borrowed_blob(transmute([]byte)string("x")), mimes = mimes}}
+        entry := Reg_Entry {
+            reprs = reprs,
+        }
+        for policy in ([]Mime_Policy{Ranked_Policy.TEXTUAL, Ranked_Policy.VISUAL}) {
+            if _, ok := resolve_repr(&entry, policy); ok {return true}
         }
         return false
     }
@@ -2182,6 +2181,22 @@ test_every_detectable_image_and_media_mime_is_rankable :: proc(t: ^testing.T) {
     // mimes most prone to the gap. `image/avif` was in fact already missing when this test was first written.
     check(t, RIFF_CONTAINER.magics, rankable, "RIFF_CONTAINER")
     check(t, FTYP_CONTAINER.magics, rankable, "FTYP_CONTAINER")
+
+    // The fallbacks are not in any magic table, so the `check` sweeps above cannot reach them -- which is how
+    // `application/octet-stream` stayed unrankable while this test passed. Unlike the magic mimes these are not
+    // filtered by prefix: every mime `resolve_mimes` can assign must be retrievable, or `set` stores content `get`
+    // cannot return.
+    for mime in BINARY_RESULT {
+        testing.expectf(t, rankable(mime), "%s (BINARY_RESULT) is assignable by `set` but no policy can rank it", mime)
+    }
+    for mime in PLAINTEXT_RESULT {
+        testing.expectf(
+            t,
+            rankable(mime),
+            "%s (PLAINTEXT_RESULT) is assignable by `set` but no policy can rank it",
+            mime,
+        )
+    }
 }
 
 @(test)

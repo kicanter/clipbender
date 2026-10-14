@@ -486,6 +486,10 @@ URI_MIMES := [?]string{"text/uri-list"}
 @(rodata)
 MARKUP_MIMES := [?]string{"text/html", "text/markdown", "text/rtf", "application/rtf"}
 
+// Ranked last by every policy, so a register holding bytes we could not identify is still retrievable.
+@(rodata)
+BINARY_MIMES := [?]string{"application/octet-stream"}
+
 @(rodata)
 MEDIA_MIMES := [?]string {
     "audio/flac",
@@ -542,11 +546,22 @@ resolve_repr :: proc(entry: ^Reg_Entry, policy: Mime_Policy) -> (int, bool) {
     case Ranked_Policy:
         switch p {
         case .TEXTUAL:
-            return first_match(entry, {TEXT_MIMES[:], STRUCTURED_MIMES[:], URI_MIMES[:], MARKUP_MIMES[:]})
+            return first_match(
+                entry,
+                {TEXT_MIMES[:], STRUCTURED_MIMES[:], URI_MIMES[:], MARKUP_MIMES[:], BINARY_MIMES[:]},
+            )
         case .VISUAL:
             return first_match(
                 entry,
-                {IMAGE_MIMES[:], MEDIA_MIMES[:], URI_MIMES[:], TEXT_MIMES[:], STRUCTURED_MIMES[:], MARKUP_MIMES[:]},
+                {
+                    IMAGE_MIMES[:],
+                    MEDIA_MIMES[:],
+                    URI_MIMES[:],
+                    TEXT_MIMES[:],
+                    STRUCTURED_MIMES[:],
+                    MARKUP_MIMES[:],
+                    BINARY_MIMES[:],
+                },
             )
         }
     }
