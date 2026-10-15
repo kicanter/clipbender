@@ -45,22 +45,28 @@ pipe_with :: proc(chunks: [][]byte) -> linux.Fd {
 @(test)
 test_read_pipe_blob_single_chunk :: proc(t: ^testing.T) {
     payload := transmute([]byte)string("hello world")
-    got := read_pipe_blob(pipe_with({payload}), "text/plain")
-    defer delete(got)
-    testing.expect(t, slice.equal(got, payload), "payload should round-trip")
+    buf: [dynamic]byte
+    defer lib.zero_and_delete(buf)
+    testing.expect(t, read_pipe_blob(pipe_with({payload}), &buf, "text/plain"))
+    testing.expect(t, slice.equal(buf[:], payload), "payload should round-trip")
 }
 
 @(test)
 test_read_pipe_blob_reassembles_short_reads :: proc(t: ^testing.T) {
     // Several writes arrive as separate reads, so the loop must concatenate rather than keep only the last chunk.
-    got := read_pipe_blob(
-        pipe_with(
-            {transmute([]byte)string("one "), transmute([]byte)string("two "), transmute([]byte)string("three")},
+    buf: [dynamic]byte
+    defer lib.zero_and_delete(buf)
+    testing.expect(
+        t,
+        read_pipe_blob(
+            pipe_with(
+                {transmute([]byte)string("one "), transmute([]byte)string("two "), transmute([]byte)string("three")},
+            ),
+            &buf,
+            "text/plain",
         ),
-        "text/plain",
     )
-    defer delete(got)
-    testing.expect_value(t, string(got), "one two three")
+    testing.expect_value(t, string(buf[:]), "one two three")
 }
 
 @(test)
@@ -68,9 +74,10 @@ test_read_pipe_blob_has_no_trailing_padding :: proc(t: ^testing.T) {
     // The loop resizes by `PIPE_READ_SIZE` then trims to what arrived. An earlier version never trimmed, so every blob
     // carried up to 64 KiB of zeroes -- which `slice.equal` dedup and every consumer would have seen as real content.
     payload := transmute([]byte)string("tiny")
-    got := read_pipe_blob(pipe_with({payload}), "text/plain")
-    defer delete(got)
-    testing.expect_value(t, len(got), len(payload))
+    buf: [dynamic]byte
+    defer lib.zero_and_delete(buf)
+    testing.expect(t, read_pipe_blob(pipe_with({payload}), &buf, "text/plain"))
+    testing.expect_value(t, len(buf), len(payload))
 }
 
 @(test)
@@ -82,27 +89,31 @@ test_read_pipe_blob_spans_kernel_buffer :: proc(t: ^testing.T) {
     defer delete(payload)
     for &b, i in payload {b = byte(i % 251)}
 
-    got := read_pipe_blob(pipe_with({payload}), "application/octet-stream")
-    defer delete(got)
-    testing.expect_value(t, len(got), size)
-    testing.expect(t, slice.equal(got, payload), "a multi-chunk payload should reassemble byte-exactly")
+    buf: [dynamic]byte
+    defer lib.zero_and_delete(buf)
+    testing.expect(t, read_pipe_blob(pipe_with({payload}), &buf, "application/octet-stream"))
+    testing.expect_value(t, len(buf), size)
+    testing.expect(t, slice.equal(buf[:], payload), "a multi-chunk payload should reassemble byte-exactly")
 }
 
 @(test)
 test_read_pipe_blob_empty_payload_is_nil :: proc(t: ^testing.T) {
     // A source that closes without writing offered nothing, which is distinct from offering zero-length content: the
     // caller skips the repr rather than storing an empty one.
-    got := read_pipe_blob(pipe_with({}), "text/plain")
-    testing.expect_value(t, len(got), 0)
+    buf: [dynamic]byte
+    defer lib.zero_and_delete(buf)
+    testing.expect(t, !read_pipe_blob(pipe_with({}), &buf, "text/plain"), "an empty payload is not a representation")
+    testing.expect_value(t, len(buf), 0)
 }
 
 @(test)
 test_read_pipe_blob_terminates_on_eof :: proc(t: ^testing.T) {
     // The regression guard that matters most: an earlier version resized back on EOF but never `break`ed, so it spun
     // forever after every successful read. If this test hangs rather than fails, that bug is back.
+    buf: [dynamic]byte
+    defer lib.zero_and_delete(buf)
     for _ in 0 ..< 20 {
-        got := read_pipe_blob(pipe_with({transmute([]byte)string("x")}), "text/plain")
-        delete(got)
+        testing.expect(t, read_pipe_blob(pipe_with({transmute([]byte)string("x")}), &buf, "text/plain"))
     }
 }
 
@@ -121,8 +132,10 @@ test_read_pipe_blob_times_out_on_silent_writer :: proc(t: ^testing.T) {
     }
     defer linux.close(fds[1])
 
-    got := read_pipe_blob(fds[0], "text/plain")
-    testing.expect_value(t, len(got), 0)
+    buf: [dynamic]byte
+    defer lib.zero_and_delete(buf)
+    testing.expect(t, !read_pipe_blob(fds[0], &buf, "text/plain"), "a silent writer should time out, not block")
+    testing.expect_value(t, len(buf), 0)
 }
 
 // `write_pipe_blob` tests. The mirror of the above, and the place a bug hid twice: passing the whole slice to every

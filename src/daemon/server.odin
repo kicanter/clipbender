@@ -289,9 +289,9 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             log.debug("REGISTER:")
             log.debugf("\tSource Reg: `%s`", lib.reg_id_to_string(source_reg))
 
-            // Setting a selection from its own recency ring, so to avoid pushing out unique data just to copy the
-            // existing data from source register, move that register to the front and update the timestamp.
-            // Note: duplicating this entry is avoided by self-source check in wayland.odin::wayland_commit_selection()
+            // The selected recency register is now the active selection, so move it to the front of its ring. The
+            // echoed selection event would reach the same state via the ring-wide dedup & move-to-front in
+            // `wayland.odin::wayland_commit_selection()`, but only after the debounce.
             if dest_reg == lib.SELECTION_CLIPBOARD && lib.reg_id_is_clipboard_num(source_reg) {
                 move_recency_reg_to_front(store, .CLIPBOARD, lib.reg_id_to_clipboard_index(source_reg))
             } else if dest_reg == lib.SELECTION_PRIMARY && lib.reg_id_is_primary_num(source_reg) {

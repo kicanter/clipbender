@@ -557,6 +557,7 @@ wayland_commit_selection :: proc(
         reprs = wayland_read_offer_reprs(wl_state, offer, selection.offer.mimes)
         if len(reprs) == 0 {
             log.errorf("No usable representations from debounced %v offer", type)
+            lib.free_data_reprs(reprs)
             return false
         }
     }
@@ -571,7 +572,7 @@ wayland_commit_selection :: proc(
         set_live_selection(store, type, cloned_reprs)
     }
 
-    // Offer-level true-dedup, distinct from the per-mime coalescing in `wayland_read_offer_reprs`
+    // Offer-level deduplication, distinct from the per-mime coalescing in `wayland_read_offer_reprs`.
     head_reg := get_recency_reg(store, type, 0)
     if head_reg != nil && reprs_are_equal(head_reg.reprs, reprs) {
         log.debugf("%v offer matches the recency head, suppressing register push", type)
@@ -601,7 +602,14 @@ wayland_read_offer_reprs :: proc(
     offer: Data_Control_Offer,
     mimes: []string,
 ) -> []lib.Data_Repr {
+    // Preallocate enough space for every mime we were handed, upper bound is every mime has a unique repr.
     reprs := make([dynamic]lib.Data_Repr, 0, len(mimes))
+
+    // Use a scratch buffer for pipe reads so we only have to allocate once (excluding any needed resizes). This helps
+    // with reducing allocations during deduplications, where we'd allocate memory for the data just to memcmp and
+    // delete it if duplicate.
+    scratch := make([dynamic]byte, 0, lib.PIPE_READ_SIZE)
+    defer lib.zero_and_delete(scratch)
 
     for mime in mimes {
         // The one boundary where an application's arbitrary string becomes ours, make sure it's under the limit.
@@ -610,24 +618,24 @@ wayland_read_offer_reprs :: proc(
             continue
         }
 
-        // Returns copied data
-        data := wayland_read_offer_data(offer, wl_state.display, mime)
-        if data == nil {
+        // Fills `scratch`, which the next mime overwrites
+        ok := wayland_read_offer_data(offer, wl_state.display, &scratch, mime)
+        if !ok {
             log.warnf("Couldn't read `%s` from offer, skipping that representation", mime)
             continue
         }
 
-        // Fold into an existing repr when the bytes match one already read. Manually realloc since coalescing is
-        // probably not _super_ common.
+        // Fold into an existing repr when the bytes match one already read. Reallocating the name list per alias keeps
+        // `mimes` an exact-length slice, which every reader depends on; the alternative needs a side array of used
+        // counts and over-allocates every repr for the worst case.
         coalesced := false
         for &repr in reprs {
-            if slice.equal(repr.blob.data, data) {
+            if slice.equal(repr.blob.data, scratch[:]) {
                 names := make([]string, len(repr.mimes) + 1)
                 copy(names, repr.mimes)
                 names[len(repr.mimes)] = strings.clone(mime)
                 delete(repr.mimes)
                 repr.mimes = names
-                delete(data)
                 coalesced = true
                 log.debugf("Coalescing mime `%s`: same bytes as an earlier repr in this offer", mime)
                 break
@@ -638,19 +646,27 @@ wayland_read_offer_reprs :: proc(
         // This is a new repr, so it'll start with a new mime list of length 1 which includes the new unique mime.
         new_mime_slice := make([]string, 1)
         new_mime_slice[0] = strings.clone(mime)
-        append(&reprs, lib.Data_Repr{blob = lib.new_rc_blob(data), mimes = new_mime_slice})
+        // Clone the unique data out of scratch buffer into the reprs list.
+        append(&reprs, lib.Data_Repr{blob = lib.new_rc_blob(slice.clone(scratch[:])), mimes = new_mime_slice})
     }
 
     return reprs[:]
 }
 
-// Caller is responsible for freeing returned data
-wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display, mime: string) -> []u8 {
+// Fills `buf` with the payload the source writes for `mime`, returning false on timeout, read error, empty payload,
+// or a source that exceeds `MAX_READ_SIZE`.
+// `buf` is owned by the caller.
+wayland_read_offer_data :: proc(
+    offer: Data_Control_Offer,
+    display: ^wl.display,
+    buf: ^[dynamic]byte,
+    mime: string,
+) -> bool {
     // Create pipe
     pipe_fds: [2]linux.Fd
     if linux.pipe2(&pipe_fds, {.CLOEXEC}) != nil {
         log.error("Failed to create pipe for data offer read")
-        return nil
+        return false
     }
 
     read_fd := pipe_fds[0]
@@ -661,63 +677,62 @@ wayland_read_offer_data :: proc(offer: Data_Control_Offer, display: ^wl.display,
     linux.close(write_fd)
     wl.display_flush(display)
 
-    return read_pipe_blob(read_fd, mime)
+    return read_pipe_blob(read_fd, buf, mime)
 }
 
 PIPE_TIMEOUT_MS :: 2000 // 2s
 
-// Drain `read_fd` to EOF and return the bytes, or nil on timeout, read error, empty payload, or a source that exceeds
+// Drain `read_fd` to EOF into `buf`, returning false on timeout, read error, empty payload, or a source that exceeds
 // `MAX_READ_SIZE`. Closes `read_fd`.
-read_pipe_blob :: proc(read_fd: linux.Fd, mime: string) -> []u8 {
+// `buf` belongs to the caller so it can be reused across the mimes of one offer.
+read_pipe_blob :: proc(read_fd: linux.Fd, buf: ^[dynamic]byte, mime: string) -> bool {
     // Ensure fd is closed.
     defer linux.close(read_fd)
+
+    // Make sure we don't have leftover/garbage data in the scratch buffer.
+    clear(buf)
 
     // Wait for source app to write data, with timeout to avoid blocking forever on hung apps. Polled before every read.
     poll_fd := [1]linux.Poll_Fd{{fd = read_fd, events = {.IN}}}
 
     // Read all data from pipe until EOF, or until the source exceeds what we are willing to hold. Discard rather than
     // truncate because a half-read blob is not a representation of anything.
-    result: [dynamic]byte
     for {
         // Poll the FD
         poll_ret, poll_err := linux.poll(poll_fd[:], PIPE_TIMEOUT_MS)
         if poll_err != .NONE || poll_ret <= 0 {
             log.errorf("Timed out waiting for source app to write mime `%s`: errno %v", mime, poll_err)
-            lib.zero_and_delete(result)
-            return nil
+            return false
         }
 
-        // Read straight into the tail rather than staging through a scratch buffer, then trim to what actually arrived.
-        old := len(result)
-        resize(&result, old + lib.PIPE_READ_SIZE)
-        bytes_read, err := linux.read(read_fd, result[old:])
+        // Read straight into the tail rather than staging through a second buffer, then trim to what actually arrived.
+        old := len(buf)
+        resize(buf, old + lib.PIPE_READ_SIZE)
+        bytes_read, err := linux.read(read_fd, buf^[old:])
         if err != .NONE {     // boooo :(
             log.errorf("Failed reading mime `%s` from source app after %d bytes: errno %v", mime, old, err)
-            lib.zero_and_delete(result)
-            return nil
+            return false
         } else if bytes_read == 0 {     // EOF success!
-            resize(&result, old) // discard the unfilled tail
+            resize(buf, old) // discard the unfilled tail
             break
         }
-        resize(&result, old + bytes_read)
+        resize(buf, old + bytes_read)
 
-        if len(result) > lib.MAX_READ_SIZE {
+        if len(buf) > lib.MAX_READ_SIZE {
             log.errorf(
                 "Source app wrote more than %d bytes for mime `%s`, discarding this representation",
                 lib.MAX_READ_SIZE,
                 mime,
             )
-            lib.zero_and_delete(result)
-            return nil
+            return false
         }
     }
 
-    if len(result) == 0 {
-        lib.zero_and_delete(result)
-        return nil
+    if len(buf) == 0 {
+        return false
     }
 
-    return result[:]
+    return true
 }
 
 // ============================== Selection Writing (Paste) ==============================

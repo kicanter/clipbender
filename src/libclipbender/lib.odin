@@ -112,20 +112,9 @@ new_bid :: proc(bid_store: ^Bid_Store) -> (Bid, bool) {
     return Bid(next), true
 }
 
-// For a small blob that doesn't need an ID.
-new_rc_blob_without_id :: proc(data: []byte) -> (blob: ^Rc_Blob) {
-    rc_blob := new(Rc_Blob)
-    rc_blob^ = Rc_Blob {
-        data     = data,
-        refcount = 1,
-        id       = nil,
-    }
-    return rc_blob
-}
-
-// For a blob read back from `blobs/<id>`, where the ID came from the index we just parsed. Blobs are only given an ID
-// at save time, by `write_state_blobs`, so this is the only constructor that takes one.
-new_rc_blob_with_id :: proc(data: []byte, id: Bid) -> (blob: ^Rc_Blob) {
+// Allocates a new Rc_Blob and returns the pointer to it.
+// Caller is responsible for freeing.
+new_rc_blob :: proc(data: []byte, id: Maybe(Bid) = nil) -> (blob: ^Rc_Blob) {
     rc_blob := new(Rc_Blob)
     rc_blob^ = Rc_Blob {
         data     = data,
@@ -133,13 +122,6 @@ new_rc_blob_with_id :: proc(data: []byte, id: Bid) -> (blob: ^Rc_Blob) {
         id       = id,
     }
     return rc_blob
-}
-
-// Allocates a new Rc_Blob and returns the pointer to it.
-// Caller is responsible for freeing.
-new_rc_blob :: proc {
-    new_rc_blob_without_id,
-    new_rc_blob_with_id,
 }
 
 // Mark `id` claimed, growing the store to reach it.
@@ -2201,7 +2183,7 @@ read_blob_table :: proc(
                 return nil, fmt.tprintf("blob %d: %s holds %d bytes, the index says %d", b, path, len(data), file_size)
             }
 
-            blobs[b] = new_rc_blob_with_id(data, id)
+            blobs[b] = new_rc_blob(data, id)
 
         case:
             return nil, fmt.tprintf("blob %d: unknown tag %d", b, u8(tag))
