@@ -167,8 +167,8 @@ write_state_blobs :: proc(dir: string, table: []^lib.Rc_Blob, bid_store: ^lib.Bi
     return nil
 }
 
-// Fills `regs` in place with owned entries (caller frees via free_reg_entry). Uses the out-param
-// shape to match unmarshal_state, which it wraps: the deserialize/own path fills a value array.
+// Fills `regs` in place with owned entries (caller frees via `free_reg_entry`). Uses the out-param shape to match
+// `unmarshal_state`, which it wraps. The deserialize/own path fills a value array.
 //
 // A corrupt or truncated file is reported rather than partially applied: `unmarshal_state` frees whatever it decoded
 // and zeroes `regs`, so the caller starts with empty history instead of a half-restored store. `parse_err` is separate

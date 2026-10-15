@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:log"
 import "core:os"
+import "core:slice"
 import "core:sys/linux"
 import "core:sys/linux/uring"
 
@@ -304,10 +305,35 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 send_resp(client_fd, resp_buf[:resp_written])
                 return running, dirty
             }
-            // SET INLINE carries one payload under possibly several names, so it is one repr with every mime.
+
+            // Shared blob dedup similar to that of `wayland_read_offer_reprs()`.
+            // Retrieve all the unique blobs that the register store currently holds so we can point duplicates at their
+            // proper shared `Rc_Blob`.
+            existing_blobs := lib.build_blob_table(
+                get_registers(store, lib.CMD_GET_FILTER_ALL),
+                context.temp_allocator,
+            )
+
+            // Check whether the data blob exists in our table already.
+            rc_blob: ^lib.Rc_Blob
+            for blob in existing_blobs {
+                if slice.equal(blob.data, data) {
+                    rc_blob = lib.copy_rc_blob(blob) // copy the shared blob
+                    break
+                }
+            }
+
+            // If we didn't find the blob already, we must create a new one with the passed data.
+            if rc_blob == nil {
+                rc_blob = lib.new_rc_blob(data)
+            } else {
+                lib.zero_and_delete(data) // free the data since we own it but are using the shared blob
+            }
+
+            // SET INLINE carries one payload under possibly several mimes, so just create a single repr with all mimes.
             reprs = make([]lib.Data_Repr, 1)
             reprs[0] = lib.Data_Repr {
-                blob  = lib.new_rc_blob(data),
+                blob  = rc_blob,
                 mimes = mimes,
             }
             log.debug("INLINE:")
@@ -323,7 +349,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             lib.reg_id_to_string(dest_reg),
         )
 
-        // Destination register must be either named a register or SELECTION_CLIPBOARD/PRIMARY
+        // Destination register must be a named register or SELECTION_CLIPBOARD/PRIMARY
         errmsg := ""
         if lib.reg_id_is_named(dest_reg) {
             // ownership of reprs transferred

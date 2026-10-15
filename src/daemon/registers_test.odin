@@ -905,3 +905,84 @@ test_multi_repr_survives_state_round_trip :: proc(t: ^testing.T) {
     testing.expect_value(t, len(restored.reprs[2].mimes), 2)
     testing.expect_value(t, restored.reprs[2].mimes[1], "text/plain")
 }
+
+// Capture-time dedup scans every blob the store holds, which it gets from `get_registers(CMD_GET_FILTER_ALL)` fed into
+// `build_blob_table`. If any register category were missing from that filter, duplicates in it would silently never be
+// deduped -- no test would fail, the daemon would just keep allocating second copies. So pin the premise.
+@(test)
+test_blob_table_over_all_filter_covers_every_register_category :: proc(t: ^testing.T) {
+    store: Register_Store
+    defer cleanup_registers(&store)
+
+    // One distinct payload per category the store can hold.
+    push_recency_reg_clone(&store, .CLIPBOARD, transmute([]byte)string("clip-ring"), "text/plain")
+    push_recency_reg_clone(&store, .PRIMARY, transmute([]byte)string("pri-ring"), "text/plain")
+    set_named_reg_clone(
+        &store,
+        lib.reg_id_from_named_index(0),
+        transmute([]byte)string("named"),
+        "text/plain",
+        .OVERWRITE,
+    )
+    set_live_selection_clone(&store, .CLIPBOARD, transmute([]byte)string("clip-live"), "text/plain")
+    set_live_selection_clone(&store, .PRIMARY, transmute([]byte)string("pri-live"), "text/plain")
+
+    table := lib.build_blob_table(get_registers(&store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
+    testing.expect_value(t, len(table), 5)
+
+    // Every payload must be findable by content, which is exactly the lookup capture-time dedup performs.
+    for want in ([]string{"clip-ring", "pri-ring", "named", "clip-live", "pri-live"}) {
+        found := false
+        for blob in table {
+            if slice.equal(blob.data, transmute([]byte)want) {
+                found = true
+                break
+            }
+        }
+        testing.expect(t, found, fmt.tprintf("%q should be visible to the dedup scan", want))
+    }
+}
+
+// The table dedups by pointer, so a blob shared across categories is one entry -- which is what makes a capture-time
+// hit cost nothing on the wire or on disk.
+@(test)
+test_blob_table_shares_one_blob_across_categories :: proc(t: ^testing.T) {
+    store: Register_Store
+    defer cleanup_registers(&store)
+
+    // One blob, named by a ring entry, a named register and the live selection.
+    shared := lib.new_rc_blob(slice.clone(transmute([]byte)string("shared")))
+    for _ in 0 ..< 2 {lib.copy_rc_blob(shared)}     // the two extra owners below
+
+    ring_reprs := make([]lib.Data_Repr, 1)
+    ring_reprs[0] = lib.Data_Repr {
+        blob  = shared,
+        mimes = one_mime("text/plain"),
+    }
+    push_recency_reg(&store, .CLIPBOARD, ring_reprs)
+
+    named_reprs := make([]lib.Data_Repr, 1)
+    named_reprs[0] = lib.Data_Repr {
+        blob  = shared,
+        mimes = one_mime("text/plain"),
+    }
+    overwrite_named_reg(&store, 0, named_reprs)
+
+    live_reprs := make([]lib.Data_Repr, 1)
+    live_reprs[0] = lib.Data_Repr {
+        blob  = shared,
+        mimes = one_mime("text/plain"),
+    }
+    set_live_selection(&store, .CLIPBOARD, live_reprs)
+
+    table := lib.build_blob_table(get_registers(&store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
+    testing.expect_value(t, len(table), 1)
+    testing.expect_value(t, shared.refcount, 3)
+}
+
+// Single-mime repr list, cloned so the store can free it.
+one_mime :: proc(mime: string) -> []string {
+    names := make([]string, 1)
+    names[0] = strings.clone(mime)
+    return names
+}

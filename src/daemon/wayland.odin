@@ -503,17 +503,19 @@ wayland_stage_selection :: proc(wl_state: ^Wayland_State, selection: ^Selection_
 // For deduplication, check if two `Data_Repr`s are equivalent (mimes are order-independent). We use a basic nested
 // iteration instead of building a set because for the small numbers of mimes we will see, the allocation + hashing
 // overhead of the set performs worse than the basic loops.
+// Note: only catches equality if `a` and `b` have the same order of reprs
 reprs_are_equal :: proc(a: []lib.Data_Repr, b: []lib.Data_Repr) -> bool {
     if len(a) != len(b) {return false}
-    for repr, i in a {
-        if len(repr.mimes) != len(b[i].mimes) {return false}
-        outer: for mime in repr.mimes {
-            for other in b[i].mimes {
+    for repr_a, i in a {
+        repr_b := b[i]
+        if len(repr_a.mimes) != len(repr_b.mimes) {return false}
+        outer: for mime in repr_a.mimes {
+            for other in repr_b.mimes {
                 if mime == other {continue outer}
             }
             return false
         }
-        if !slice.equal(repr.blob.data, b[i].blob.data) {return false}
+        if repr_a.blob != repr_b.blob && !slice.equal(repr_a.blob.data, repr_b.blob.data) {return false}
     }
     return true
 }
@@ -554,7 +556,7 @@ wayland_commit_selection :: proc(
         reprs = selection.source.reprs
         self_source = true
     } else {
-        reprs = wayland_read_offer_reprs(wl_state, offer, selection.offer.mimes)
+        reprs = wayland_read_offer_reprs(wl_state, store, offer, selection.offer.mimes)
         if len(reprs) == 0 {
             log.errorf("No usable representations from debounced %v offer", type)
             lib.free_data_reprs(reprs)
@@ -579,13 +581,16 @@ wayland_commit_selection :: proc(
             reg_id: lib.Reg_Id
             switch type {
             case .CLIPBOARD:
-                reg_id := lib.reg_id_from_clipboard_index(u8(i))
+                reg_id = lib.reg_id_from_clipboard_index(u8(i))
             case .PRIMARY:
-                reg_id := lib.reg_id_from_primary_index(u8(i))
+                reg_id = lib.reg_id_from_primary_index(u8(i))
             }
-            reg_str := lib.reg_id_to_string(reg_id)
 
-            log.debugf("%v offer matches register %s, moving that register to the front", type, reg_str)
+            log.debugf(
+                "%v offer matches register %s, moving that register to the front",
+                type,
+                lib.reg_id_to_string(reg_id),
+            )
             move_recency_reg_to_front(store, type, u8(i)) // only updates timestamp if index == 0
             if !self_source {
                 lib.free_data_reprs(reprs)
@@ -611,11 +616,16 @@ wayland_commit_selection :: proc(
 // (its own preference signal).
 wayland_read_offer_reprs :: proc(
     wl_state: ^Wayland_State,
+    reg_store: ^Register_Store,
     offer: Data_Control_Offer,
     mimes: []string,
 ) -> []lib.Data_Repr {
     // Preallocate enough space for every mime we were handed, upper bound is every mime has a unique repr.
     reprs := make([dynamic]lib.Data_Repr, 0, len(mimes))
+
+    // Retrieve all the unique blobs that the register store currently holds so we can point duplicates at their proper
+    // shared `Rc_Blob`.
+    existing_blobs := lib.build_blob_table(get_registers(reg_store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
 
     // Use a scratch buffer for pipe reads so we only have to allocate once (excluding any needed resizes). This helps
     // with reducing allocations during deduplications, where we'd allocate memory for the data just to memcmp and
@@ -655,11 +665,25 @@ wayland_read_offer_reprs :: proc(
         }
         if coalesced {continue}     // folded into an existing repr, so do not add a second one
 
+        // Now we know this is a new repr, so check whether this data blob exists in our table already.
+        // PERF: this is what facilitates our `Rc_Blob` deduplicated shared data blobs
+        rc_blob: ^lib.Rc_Blob
+        for blob in existing_blobs {
+            if slice.equal(blob.data, scratch[:]) {
+                rc_blob = lib.copy_rc_blob(blob) // copy the shared blob
+                break
+            }
+        }
+
         // This is a new repr, so it'll start with a new mime list of length 1 which includes the new unique mime.
         new_mime_slice := make([]string, 1)
         new_mime_slice[0] = strings.clone(mime)
-        // Clone the unique data out of scratch buffer into the reprs list.
-        append(&reprs, lib.Data_Repr{blob = lib.new_rc_blob(slice.clone(scratch[:])), mimes = new_mime_slice})
+
+        // If we didn't find the blob already, we must clone the unique data out of scratch buffer into the reprs list.
+        if rc_blob == nil {rc_blob = lib.new_rc_blob(slice.clone(scratch[:]))}
+
+        // Add it to the reprs list
+        append(&reprs, lib.Data_Repr{blob = rc_blob, mimes = new_mime_slice})
     }
 
     return reprs[:]
