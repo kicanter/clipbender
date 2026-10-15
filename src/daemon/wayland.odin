@@ -525,7 +525,7 @@ wayland_commit_selection :: proc(
     store: ^Register_Store,
     type: lib.Selection_Type,
 ) -> (
-    pushed: bool,
+    state_changed: bool,
 ) {
     selection: ^Selection_State
     switch type {
@@ -573,13 +573,25 @@ wayland_commit_selection :: proc(
     }
 
     // Offer-level deduplication, distinct from the per-mime coalescing in `wayland_read_offer_reprs`.
-    head_reg := get_recency_reg(store, type, 0)
-    if head_reg != nil && reprs_are_equal(head_reg.reprs, reprs) {
-        log.debugf("%v offer matches the recency head, suppressing register push", type)
-        if !self_source {
-            lib.free_data_reprs(reprs)
+    for i in 0 ..< lib.RECENCY_SIZE {
+        reg := get_recency_reg(store, type, u8(i))
+        if reg != nil && reprs_are_equal(reg.reprs, reprs) {
+            reg_id: lib.Reg_Id
+            switch type {
+            case .CLIPBOARD:
+                reg_id := lib.reg_id_from_clipboard_index(u8(i))
+            case .PRIMARY:
+                reg_id := lib.reg_id_from_primary_index(u8(i))
+            }
+            reg_str := lib.reg_id_to_string(reg_id)
+
+            log.debugf("%v offer matches register %s, moving that register to the front", type, reg_str)
+            move_recency_reg_to_front(store, type, u8(i)) // only updates timestamp if index == 0
+            if !self_source {
+                lib.free_data_reprs(reprs)
+            }
+            return true
         }
-        return false
     }
 
     // Clone if the reprs belong to our own cached source, which keeps ownership of them.
