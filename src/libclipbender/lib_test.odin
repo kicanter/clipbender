@@ -1,7 +1,6 @@
 package libclipbender
 
 import "core:fmt"
-import "core:hash/xxhash"
 import "core:slice"
 import "core:strings"
 import "core:testing"
@@ -606,7 +605,7 @@ data_repr_of :: proc(data: string, mimes: []string) -> Data_Repr {
 // Wraps borrowed bytes in a blob header. The bytes are static or stack-owned, so a repr built this way must never reach
 // `free_data_repr` -- the header is temp-allocated because nothing releases it.
 borrowed_blob :: proc(data: []byte) -> ^Rc_Blob {
-    return new_clone(Rc_Blob{data = data, refcount = 1, hash = xxhash.XXH3_128_default(data)}, context.temp_allocator)
+    return new_clone(Rc_Blob{data = data, refcount = 1}, context.temp_allocator)
 }
 
 // resolve_repr returns (index, ok). These wrap the pair so each case reads as one assertion and a miss is checked as a
@@ -1309,18 +1308,22 @@ test_state_inline_threshold_is_inclusive :: proc(t: ^testing.T) {
     file_regs[reg_id_from_named_index(0)] = &file_entry
 
     inline_blob := size_of(Blob_Tag) + size_of(u64) + BLOB_INLINE_MAX
-    file_blob := size_of(Blob_Tag) + size_of(Blob_Hash)
+    file_blob := size_of(Blob_Tag) + size_of(Bid) + size_of(u64)
     testing.expect_value(t, state_size(inline_regs) - state_size(file_regs), inline_blob - file_blob)
 }
 
 @(test)
 test_unmarshal_state_rejects_file_blob_without_dir :: proc(t: ^testing.T) {
-    // A HASH entry names a file, so with nowhere to read it from the blob would otherwise load empty and silently lose
-    // the register's content.
+    // A FILE entry names a file, so with nowhere to read it from the blob would otherwise load empty and silently
+    // lose the register's content.
     big := make([]byte, BLOB_INLINE_MAX + 1)
     defer delete(big)
     m := []string{"image/png"}
-    reprs := []Data_Repr{{blob = borrowed_blob(big), mimes = m}}
+    // IDs are assigned by `write_state_blobs`, which this test bypasses, so stand one in -- `marshal_state` asserts
+    // that a file-backed blob has one.
+    blob := borrowed_blob(big)
+    blob.id = Bid(0)
+    reprs := []Data_Repr{{blob = blob, mimes = m}}
     entry := Reg_Entry {
         reprs     = reprs,
         timestamp = 7,
@@ -2251,4 +2254,104 @@ test_unmarshal_state_rejects_oversized_blob_count :: proc(t: ^testing.T) {
         strings.contains(err.?, "blob count"),
         "the count should be rejected before it drives the allocation",
     )
+}
+
+// Blob ID allocation. IDs name `blobs/<id>` files and are reusable once no committed index references them, so the
+// store has to hand out the lowest free one and grow only when a chunk fills.
+@(test)
+test_new_blob_id_is_lowest_free :: proc(t: ^testing.T) {
+    store: Bid_Store
+    defer delete(store)
+
+    for want in Bid(0) ..= Bid(4) {
+        got, ok := new_bid(&store)
+        testing.expect(t, ok)
+        testing.expect_value(t, got, want)
+    }
+    testing.expect_value(t, len(store), 1) // all five fit one chunk
+
+    // Release the middle one as a rebuild would, and it is the next handed out -- lowest-free, not next-after-last.
+    store[0] -= {2}
+    reused, ok := new_bid(&store)
+    testing.expect(t, ok)
+    testing.expect_value(t, reused, Bid(2))
+}
+
+@(test)
+test_new_blob_id_grows_past_a_full_chunk :: proc(t: ^testing.T) {
+    store: Bid_Store
+    defer delete(store)
+
+    // Fill chunk 0 exactly, so the next ID has to start chunk 1.
+    for _ in 0 ..< BIDS_PER_CHUNK {
+        _, ok := new_bid(&store)
+        testing.expect(t, ok)
+    }
+    testing.expect_value(t, len(store), 1)
+
+    next, ok := new_bid(&store)
+    testing.expect(t, ok)
+    testing.expect_value(t, next, Bid(BIDS_PER_CHUNK))
+    testing.expect_value(t, len(store), 2)
+}
+
+@(test)
+test_claim_bid_grows_to_reach_the_id :: proc(t: ^testing.T) {
+    store: Bid_Store
+    defer delete(store)
+
+    // A rebuild claims IDs in whatever order the blob table holds them, so a high one must grow the store in one step
+    // and leave the chunks it skipped empty rather than garbage.
+    claim_bid(&store, Bid(130))
+    testing.expect_value(t, len(store), 3)
+    testing.expect_value(t, card(store[0]), 0)
+    testing.expect_value(t, card(store[1]), 0)
+    testing.expect_value(t, card(store[2]), 1)
+
+    // The skipped chunks are genuinely free, so allocation returns 0 rather than anything near 130.
+    first, ok := new_bid(&store)
+    testing.expect(t, ok)
+    testing.expect_value(t, first, Bid(0))
+}
+
+@(test)
+test_rebuild_bids_releases_dead_blobs_ids :: proc(t: ^testing.T) {
+    // The only path that frees an ID. A blob still in the table keeps its claim; one that is gone loses it.
+    store: Bid_Store
+    defer delete(store)
+
+    big := make([]byte, BLOB_INLINE_MAX + 1)
+    defer delete(big)
+    kept := borrowed_blob(big)
+    kept.id = Bid(0)
+    dropped := borrowed_blob(big)
+    dropped.id = Bid(1)
+
+    claim_bid(&store, Bid(0))
+    claim_bid(&store, Bid(1))
+
+    // Rebuild from a table that no longer holds `dropped`.
+    rebuild_bids(&store, []^Rc_Blob{kept})
+    testing.expect(t, 0 in store[0], "a blob still in the table keeps its ID")
+    testing.expect(t, !(1 in store[0]), "a blob gone from the table releases its ID")
+
+    // And that released ID is the next one handed out.
+    next, ok := new_bid(&store)
+    testing.expect(t, ok)
+    testing.expect_value(t, next, Bid(1))
+}
+
+@(test)
+test_rebuild_bids_ignores_inline_blobs :: proc(t: ^testing.T) {
+    // Inline blobs never get an ID, so one carrying a stale ID -- only possible if `BLOB_INLINE_MAX` was retuned
+    // between runs -- must release it rather than hold it forever.
+    store: Bid_Store
+    defer delete(store)
+
+    small := borrowed_blob(transmute([]byte)string("tiny"))
+    small.id = Bid(3)
+    claim_bid(&store, Bid(3))
+
+    rebuild_bids(&store, []^Rc_Blob{small})
+    testing.expect(t, len(store) == 0 || !(3 in store[0]), "an inline blob should not hold an ID claim")
 }

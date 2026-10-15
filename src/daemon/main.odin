@@ -82,6 +82,7 @@ main :: proc() {
     }
 
     defer if server.state_dir != nil {delete(server.state_dir.?)}
+    defer delete(server.bid_store)
     if dir, ok := server.state_dir.?; ok {
         path := state_file_path(dir)
         defer delete(path)
@@ -96,7 +97,13 @@ main :: proc() {
             // here and nothing partially restored. Starting empty is the correct degradation for an unusable file.
             log.errorf("Ignoring unusable state file %s: %s", path, parse_err.?)
         case:
-            load_registers(&server.registers, &regs)
+            load_registers(&server.registers, &regs) // load the registers into server register store
+            // build blob table from loaded registers
+            table := lib.build_blob_table(
+                get_registers(&server.registers, lib.CMD_GET_FILTER_ALL),
+                context.temp_allocator,
+            )
+            lib.rebuild_bids(&server.bid_store, table[:]) // build the Blob ID store from blob table
         }
     }
 

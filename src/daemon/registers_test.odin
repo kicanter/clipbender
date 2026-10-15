@@ -499,7 +499,7 @@ test_state_roundtrip_multi_repr :: proc(t: ^testing.T) {
     testing.expect_value(t, string(got.reprs[1].blob.data), "<p>hello</p>")
 }
 
-// A blob over the inline cap is written to `blobs/<hash>` and read back from it, which the lib-level tests cannot cover
+// A blob over the inline cap is written to `blobs/<id>` and read back from it, which the lib-level tests cannot cover
 // because they never touch the filesystem. Also pins the split: the index holds the digest, the file holds the bytes.
 @(test)
 test_save_load_round_trips_file_backed_blob :: proc(t: ^testing.T) {
@@ -525,23 +525,23 @@ test_save_load_round_trips_file_backed_blob :: proc(t: ^testing.T) {
         .OVERWRITE,
     )
 
+    bid_store: lib.Bid_Store
+    defer delete(bid_store)
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
-    written, save_err := save_registers_state(dir, get_registers(&src, filter))
+    written, save_err := save_registers_state(dir, get_registers(&src, filter), &bid_store)
     testing.expect_value(t, save_err, nil)
 
-    // The index carries the digest, not the payload, so it stays small no matter how large the blob is.
+    // The index carries the ID and size, not the payload, so it stays small no matter how large the blob is.
     testing.expect(t, written < lib.BLOB_INLINE_MAX, "the index should not contain the file-backed blob's bytes")
 
     // The blob landed under its hash, with no temp file left behind.
     blobs_dir := blobs_dir_path(dir)
     defer delete(blobs_dir)
     name_buf: lib.Blob_Name
-    expected := fmt.tprintf(
-        "%s/%s",
-        blobs_dir,
-        lib.blob_filename(name_buf[:], src.named_registers[0].reprs[0].blob.hash),
-    )
-    testing.expect(t, os.exists(expected), "the blob should be written under its hash")
+    blob_id, assigned := src.named_registers[0].reprs[0].blob.id.?
+    testing.expect(t, assigned, "a file-backed blob should have been given an ID by the save")
+    expected := fmt.tprintf("%s/%s", blobs_dir, lib.blob_filename(name_buf[:], blob_id))
+    testing.expect(t, os.exists(expected), "the blob should be written under its ID")
     tmp_leftover := fmt.tprintf("%s.tmp", expected)
     testing.expect(t, !os.exists(tmp_leftover), "no temp file should survive the rename")
 
@@ -557,7 +557,7 @@ test_save_load_round_trips_file_backed_blob :: proc(t: ^testing.T) {
     restored := get_reg(&dst, lib.reg_id_from_named_index(0))
     testing.expect(t, restored != nil, "the file-backed register should be restored")
     testing.expect(t, slice.equal(entry_data(restored), big), "the payload should survive the file round trip")
-    testing.expect_value(t, restored.reprs[0].blob.hash, src.named_registers[0].reprs[0].blob.hash)
+    testing.expect_value(t, restored.reprs[0].blob.id, src.named_registers[0].reprs[0].blob.id)
 
     small := get_reg(&dst, lib.reg_id_from_named_index(1))
     testing.expect(t, small != nil, "the inline register should be restored")
@@ -585,9 +585,11 @@ test_save_is_idempotent_over_existing_blobs_dir :: proc(t: ^testing.T) {
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
     regs := get_registers(&src, filter)
 
-    _, first := save_registers_state(dir, regs)
+    bid_store: lib.Bid_Store
+    defer delete(bid_store)
+    _, first := save_registers_state(dir, regs, &bid_store)
     testing.expect_value(t, first, nil)
-    _, second := save_registers_state(dir, regs)
+    _, second := save_registers_state(dir, regs, &bid_store)
     testing.expect_value(t, second, nil)
 
     // The index must still be loadable after the re-save, not just the error free.
@@ -623,8 +625,10 @@ test_save_reports_failure_when_blobs_dir_is_unusable :: proc(t: ^testing.T) {
     defer cleanup_registers(&src)
     set_named_reg_clone(&src, lib.reg_id_from_named_index(0), big, "image/png", .OVERWRITE)
 
+    bid_store: lib.Bid_Store
+    defer delete(bid_store)
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
-    _, err := save_registers_state(dir, get_registers(&src, filter))
+    _, err := save_registers_state(dir, get_registers(&src, filter), &bid_store)
     testing.expect(t, err != nil, "an unusable blobs dir should fail the save")
 
     // Blobs are written first, so the index must not exist: it would name a file that was never written.

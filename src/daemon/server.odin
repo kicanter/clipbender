@@ -127,10 +127,10 @@ Server_State :: struct {
     backend:   Backend_State,
     registers: Register_Store,
     debounces: [Debounce_Event]Debounce,
-    // `nil` when no usable state directory exists, in which case registers live in memory only and are lost on daemon
-    // restart. The state file and the blob directory are both built from `state_dir`. Owned by `main`, which frees it
-    // when set.
+    // `nil` when no usable state directory exists (registers are in-memory only and lost on restart). The state file
+    // and the blob directory are both built from `state_dir`. Owned by `main`, which frees it when set.
     state_dir: Maybe(string),
+    bid_store: lib.Bid_Store, // blob ID store
 }
 
 // Initialize the debounce timers with their configured durations.
@@ -461,7 +461,7 @@ save_state :: proc(server: ^Server_State) {
     filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
     regs := get_registers(&server.registers, filter)
 
-    written, err := save_registers_state(dir, regs)
+    written, err := save_registers_state(dir, regs, &server.bid_store)
     if err != os.General_Error.None {
         log.errorf("Failed to save register state to %s: errno %v", dir, err)
     } else {

@@ -4,7 +4,6 @@ import "base:intrinsics"
 import "core:encoding/endian"
 import "core:encoding/json"
 import "core:fmt"
-import "core:hash/xxhash"
 import "core:log"
 import "core:mem"
 import "core:os"
@@ -62,48 +61,112 @@ MAX_MSG_SIZE :: 128 * 1024 // 128 KiB
 // Data blob stuff
 // *******************
 
-Blob_Hash :: xxhash.XXH3_128_hash
-BLOB_FILENAME_LEN :: size_of(Blob_Hash) * 2 // we need two hex characters (two bytes) per byte of the hash
+Bid :: distinct u16 // used to identify file-backed large blobs
+BIDS_PER_CHUNK :: 64
+Bid_Chunk :: distinct bit_set[0 ..< BIDS_PER_CHUNK;u64]
+Bid_Store :: [dynamic]Bid_Chunk
 Blob_Name :: [BLOB_FILENAME_LEN]byte
 BLOB_INLINE_MAX :: 1023 // max size of a blob allowed to be inline in blob table, anything greater goes to `blobs/` dir
 BLOB_NONE :: u16(0xFFFF) // only used for responses, indicates no blob bytes were sent, only description of repr
 Blob_Tag :: enum u8 {
-    // is blob data inline or point at a `blobs/<hash>` file?
+    // is blob data inline or point at a `blobs/<id>` file?
     INLINE, // blob data is <= `BLOB_INLINE_MAX`
-    HASH, // blob data is > `BLOB_INLINE_MAX`
+    FILE, // blob data is > `BLOB_INLINE_MAX`
 }
-blob_filename :: proc(buf: []byte, hash: Blob_Hash) -> string {
-    return fmt.bprintf(buf, "%0*x", BLOB_FILENAME_LEN, hash)
+// comptime check that `Bid` hasn't deviated
+when size_of(Bid) == 2 {     // u16 -> max 65535 (when are we going to have that many blobs?!)
+    BLOB_FILENAME_LEN :: 5
+} else {
+    #panic("`Bid` is no longer u16; BLOB_FILENAME_LEN needs a new decimal digit count")
+}
+blob_filename :: proc(buf: []byte, id: Bid) -> string {
+    return fmt.bprintf(buf, "%0*d", BLOB_FILENAME_LEN, id)
 }
 
-// Refcounted data blob. Data is hashed for state-writing purposes (large blobs are written to disk at
-// <state-dir>/blobs/<hash>). So multiple `Data_Repr`s may point to the same data blob, and the data is only released
-// when refcount hits 0.
+// Refcounted data blob. Large blobs are written to disk at <state-dir>/blobs/<id>, which is what `id` names; a blob
+// small enough to sit inline in the index never gets one. Multiple `Data_Repr`s may point to the same data blob, and
+// the data is only released when refcount hits 0.
 Rc_Blob :: struct {
     data:     []byte,
     refcount: uint,
-    hash:     xxhash.XXH3_128_hash,
+    id:       Maybe(Bid),
 }
 
-// Allocates a new Rc_Blob and returns the pointer to it.
-// Caller is responsible for freeing.
-new_rc_blob :: proc(data: []byte) -> ^Rc_Blob {
-    return new_rc_blob_hashed(data, xxhash.XXH3_128_default(data))
+// Claim the lowest free `Bid`, growing the ID store when every existing chunk is full. Lowest-free rather than
+// next-after-last so IDs stay packed at the bottom and the store stays one chunk for any realistic load.
+new_bid :: proc(bid_store: ^Bid_Store) -> (Bid, bool) {
+    for &chunk, i in bid_store {
+        for bit in 0 ..< BIDS_PER_CHUNK {
+            if bit in chunk {continue}
+            next := i * BIDS_PER_CHUNK + bit
+            if next > int(max(Bid)) {return 0, false}
+            chunk += {bit} // set the bit in the chunk to indicate claimed
+            return Bid(next), true
+        }
+    }
+
+    // Still didn't find a free ID, need a new chunk
+    next := len(bid_store) * BIDS_PER_CHUNK
+    if next > int(max(Bid)) {return 0, false}
+    append(bid_store, Bid_Chunk{0}) // immediately set the 0 bit in the new chunk
+    return Bid(next), true
 }
 
-// For a blob read back from `blobs/<hash>`, where the digest is the filename we just opened. Re-hashing would walk the
-// whole payload to recompute a value we already have.
-new_rc_blob_hashed :: proc(data: []byte, hash: Blob_Hash) -> ^Rc_Blob {
+// For a small blob that doesn't need an ID.
+new_rc_blob_without_id :: proc(data: []byte) -> (blob: ^Rc_Blob) {
     rc_blob := new(Rc_Blob)
     rc_blob^ = Rc_Blob {
         data     = data,
         refcount = 1,
-        hash     = hash,
+        id       = nil,
     }
     return rc_blob
 }
 
-// True when this blob's bytes live in `blobs/<hash>` rather than inline in the blob table.
+// For a blob read back from `blobs/<id>`, where the ID came from the index we just parsed. Blobs are only given an ID
+// at save time, by `write_state_blobs`, so this is the only constructor that takes one.
+new_rc_blob_with_id :: proc(data: []byte, id: Bid) -> (blob: ^Rc_Blob) {
+    rc_blob := new(Rc_Blob)
+    rc_blob^ = Rc_Blob {
+        data     = data,
+        refcount = 1,
+        id       = id,
+    }
+    return rc_blob
+}
+
+// Allocates a new Rc_Blob and returns the pointer to it.
+// Caller is responsible for freeing.
+new_rc_blob :: proc {
+    new_rc_blob_without_id,
+    new_rc_blob_with_id,
+}
+
+// Mark `id` claimed, growing the store to reach it.
+claim_bid :: proc(bid_store: ^Bid_Store, id: Bid) {
+    chunk := int(id) / BIDS_PER_CHUNK
+    if len(bid_store) <= chunk {resize(bid_store, chunk + 1)}     // single resize up to number of chunks we need
+    bid_store[chunk] += {int(id) % BIDS_PER_CHUNK}
+}
+
+// Re-derive the store from the blobs the committed index references. The only path that frees an ID.
+//
+// An ID outlives its blob so it stays claimed until a new index stops naming its file. Freeing it any earlier lets the
+// next save hand it out and overwrite bytes the committed index still points at.
+//
+// `clear` keeps the capacity, so a steady-state save does not reallocate.
+rebuild_bids :: proc(bid_store: ^Bid_Store, table: []^Rc_Blob) {
+    clear(bid_store)
+    for blob in table {
+        // Both conditions: an ID is only ever handed to a file-backed blob, but a blob that *was* file-backed and is
+        // now under `BLOB_INLINE_MAX` (only possible if the threshold was retuned between runs) keeps its old ID while
+        // being written inline, and that ID should be released rather than held forever.
+        if !blob_is_file_backed(blob) {continue}
+        if id, assigned := blob.id.?; assigned {claim_bid(bid_store, id)}
+    }
+}
+
+// True when this blob's bytes live in `blobs/<id>` rather than inline in the blob table.
 blob_is_file_backed :: proc(rc_blob: ^Rc_Blob) -> bool {
     return len(rc_blob.data) > BLOB_INLINE_MAX
 }
@@ -409,7 +472,7 @@ Source_Kind :: enum u8 {
 }
 
 // Bitmask filter assembled from GET args.
-Cmd_Get_Filter :: bit_set[0 ..= 63;u64]
+Cmd_Get_Filter :: distinct bit_set[0 ..< MAX_REGS;u64]
 // Keywords for GET CLI
 CMD_GET_FILTER_NUMBERED :: transmute(Cmd_Get_Filter)u64(0x3FF) // clipboard recency, bits 0-9
 CMD_GET_FILTER_NAMED :: transmute(Cmd_Get_Filter)(u64(0x3FFFFFF) << 10) // named a-z, bits 10-35
@@ -1863,7 +1926,7 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 // Wire format:
 //   ["IROH" magic][1b STATE_VERSION]
 //   `blob table` [2b count], per blob:
-//      [1b tag] INLINE: [8b u64 size][size bytes] | HASH: [16b Blob_Hash]
+//      [1b tag] INLINE: [8b u64 size][size bytes] | FILE: [2b Bid][8b u64 size]
 //   `register table` [1b count], per register:
 //      [1b Reg_Id][8b i64 timestamp][1b repr count], per repr:
 //          [1b mime count][[1b len][len mime]...][2b blob index]
@@ -1909,11 +1972,11 @@ state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
 state_size_with_blob_table :: proc(regs: [MAX_REGS]^Reg_Entry, blob_table: []^Rc_Blob) -> int {
     size := STATE_HEADER_SIZE + size_of(u16) + size_of(u8) // magic + version + blob count + register count
 
-    // Blob table: a file-backed blob costs only its digest, an inline one carries its bytes
+    // Blob table: a file-backed blob costs only its ID and size, an inline one carries its bytes
     for blob in blob_table {
         size += size_of(Blob_Tag)
         if blob_is_file_backed(blob) {
-            size += size_of(Blob_Hash)
+            size += size_of(Bid) + size_of(u64)
         } else {
             size += size_of(u64) + len(blob.data)
         }
@@ -1957,12 +2020,20 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
     for blob in blob_table {
         // A file-backed blob just includes its hash, an inline one carries the bytes directly
         if blob_is_file_backed(blob) {
-            body[written] = byte(Blob_Tag.HASH)
+            body[written] = byte(Blob_Tag.FILE)
             written += size_of(Blob_Tag)
 
-            hash_bytes := transmute([size_of(Blob_Hash)]byte)blob.hash
-            copy(body[written:][:size_of(Blob_Hash)], hash_bytes[:])
-            written += size_of(Blob_Hash)
+            // The ID is assigned by `write_state_blobs` before the index is written, so it is always set here.
+            id, assigned := blob.id.?
+            assert(assigned, "file-backed blob reached marshal_state without an ID")
+            id_bytes := transmute([size_of(Bid)]byte)id
+            copy(body[written:][:size_of(Bid)], id_bytes[:])
+            written += size_of(Bid)
+
+            // Size, so a truncated blob file is caught on load rather than loading as valid short data.
+            file_size_bytes := transmute([size_of(u64)]byte)u64(len(blob.data))
+            copy(body[written:][:size_of(u64)], file_size_bytes[:])
+            written += size_of(u64)
         } else {
             body[written] = byte(Blob_Tag.INLINE)
             written += size_of(Blob_Tag)
@@ -2046,7 +2117,7 @@ read_blob_table :: proc(
 
     // Bound the count by the bytes left before allocating for it. Every entry costs at least a tag plus the smaller
     // of its two bodies.
-    min_entry := size_of(Blob_Tag) + min(size_of(u64), size_of(Blob_Hash))
+    min_entry := size_of(Blob_Tag) + min(size_of(u64), size_of(Bid) + size_of(u64))
     if count * min_entry > len(body) - offset^ {
         return nil, fmt.tprintf(
             "blob count %d needs at least %d bytes, %d remain",
@@ -2096,14 +2167,19 @@ read_blob_table :: proc(
             blobs[b] = new_rc_blob(slice.clone(body[offset^:][:data_len]))
             offset^ += data_len
 
-        case .HASH:
-            if offset^ + size_of(Blob_Hash) > len(body) {
-                return nil, fmt.tprintf("blob %d: missing hash", b)
+        case .FILE:
+            if offset^ + size_of(Bid) + size_of(u64) > len(body) {
+                return nil, fmt.tprintf("blob %d: missing ID and size", b)
             }
-            hash_bytes: [size_of(Blob_Hash)]byte
-            copy(hash_bytes[:], body[offset^:][:size_of(Blob_Hash)])
-            hash := transmute(Blob_Hash)hash_bytes
-            offset^ += size_of(Blob_Hash)
+            id_bytes: [size_of(Bid)]byte
+            copy(id_bytes[:], body[offset^:][:size_of(Bid)])
+            id := transmute(Bid)id_bytes
+            offset^ += size_of(Bid)
+
+            size_bytes: [size_of(u64)]byte
+            copy(size_bytes[:], body[offset^:][:size_of(u64)])
+            file_size := transmute(u64)size_bytes
+            offset^ += size_of(u64)
 
             dir, has_dir := blobs_dir.?
             if !has_dir {
@@ -2111,14 +2187,21 @@ read_blob_table :: proc(
             }
 
             name_buf: Blob_Name
-            name := blob_filename(name_buf[:], hash)
+            name := blob_filename(name_buf[:], id)
             path := fmt.tprintf("%s/%s", dir, name)
             data, read_err := os.read_entire_file(path, context.allocator)
             if read_err != nil {
                 return nil, fmt.tprintf("blob %d: cannot read %s: %v", b, path, read_err)
             }
 
-            blobs[b] = new_rc_blob_hashed(data, hash)
+            // A length that disagrees with the index means the file was truncated, most likely by a save that died
+            // mid-write. Without this it would load as valid short data.
+            if u64(len(data)) != file_size {
+                delete(data)
+                return nil, fmt.tprintf("blob %d: %s holds %d bytes, the index says %d", b, path, len(data), file_size)
+            }
+
+            blobs[b] = new_rc_blob_with_id(data, id)
 
         case:
             return nil, fmt.tprintf("blob %d: unknown tag %d", b, u8(tag))

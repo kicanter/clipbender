@@ -12,7 +12,7 @@ HOME_ENV_VAR :: "HOME"
 // this as its default.
 XDG_STATE_SUBDIR :: ".local/state"
 STATE_FILENAME :: "registers.iroh"
-// Name of directory that holds the `<hash>` files for large blobs.
+// Name of directory that holds the `<id>` files for large blobs.
 BLOBS_SUBDIR :: "blobs"
 // Caller is responsible for freeing the returned string.
 state_file_path :: proc(dir: string) -> string {
@@ -75,11 +75,18 @@ persistent_state_dir :: proc() -> (path: string, err: Maybe(string)) {
 //
 // `dir` holds the index at `registers.iroh` and a file for each large blob under `blobs/`. Blob files must be written
 // first so a crash may leave orphan files which can be reconciled during a save/load at a future point instead of a
-// `registers.iroh` that cites <hash> files that were never written.
-save_registers_state :: proc(dir: string, regs: [lib.MAX_REGS]^lib.Reg_Entry) -> (written: int, err: os.Error) {
+// `registers.iroh` that cites <id> files that were never written.
+save_registers_state :: proc(
+    dir: string,
+    regs: [lib.MAX_REGS]^lib.Reg_Entry,
+    bid_store: ^lib.Bid_Store,
+) -> (
+    written: int,
+    err: os.Error,
+) {
     table := lib.build_blob_table(regs, context.temp_allocator)
 
-    if err = write_state_blobs(dir, table[:]); err != os.General_Error.None {
+    if err = write_state_blobs(dir, table[:], bid_store); err != os.General_Error.None {
         return 0, err
     }
 
@@ -101,13 +108,19 @@ save_registers_state :: proc(dir: string, regs: [lib.MAX_REGS]^lib.Reg_Entry) ->
     }
 
     err = os.rename(tmp_path, filename)
-    if err != os.General_Error.None {os.remove(tmp_path)}
+    if err != os.General_Error.None {
+        os.remove(tmp_path)
+        return written, err
+    }
+
+    // Rebuild the bid store to free the IDs of blobs that died since the last save.
+    lib.rebuild_bids(bid_store, table[:])
 
     return written, err
 }
 
-// Write every file-backed blob in `table` to `<dir>/blobs/<hash>`.
-write_state_blobs :: proc(dir: string, table: []^lib.Rc_Blob) -> os.Error {
+// Write every file-backed blob in `table` to `<dir>/blobs/<id>`, assigning an ID to any that lacks one.
+write_state_blobs :: proc(dir: string, table: []^lib.Rc_Blob, bid_store: ^lib.Bid_Store) -> os.Error {
     needs_dir := false
     for blob in table {
         if lib.blob_is_file_backed(blob) {
@@ -125,10 +138,20 @@ write_state_blobs :: proc(dir: string, table: []^lib.Rc_Blob) -> os.Error {
     for blob in table {
         if !lib.blob_is_file_backed(blob) {continue}
 
+        // A blob that already has an ID is already on disk under that name, so there is nothing to write. This is the
+        // skip that makes a save incremental.
+        id, assigned := blob.id.?
+        if assigned {continue}
+
+        // We should not error when claiming a new bid (MAX_REGS * 255-repr cap < max(u16))
+        new_id, ok := lib.new_bid(bid_store)
+        assert(ok, "blob ID space exhausted")
+        blob.id = new_id
+        id = new_id
+
         name_buf: lib.Blob_Name
-        name := lib.blob_filename(name_buf[:], blob.hash)
+        name := lib.blob_filename(name_buf[:], id)
         path := fmt.tprintf("%s/%s", blobs_dir, name)
-        if os.exists(path) {continue}
 
         // Same temp + rename as the index, so a reader never sees a partially written blob under its final name.
         tmp_path := fmt.tprintf("%s.tmp", path)
