@@ -10,7 +10,8 @@ import lib "src:libclipbender"
 _logger: log.Logger
 
 main :: proc() {
-    _logger = log.create_console_logger()
+    lowest := lib.clipbender_log_level()
+    _logger = log.create_console_logger(lowest)
     context.logger = _logger
     defer log.destroy_console_logger(_logger)
 

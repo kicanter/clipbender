@@ -54,6 +54,24 @@ print_version :: proc() {
     fmt.printfln("clipbender %s", version_string())
 }
 
+clipbender_log_level :: proc() -> log.Level {
+    lowest := log.Level.Debug if ODIN_DEBUG else log.Level.Info
+    buf: [16]u8
+    env_level, err := os.lookup_env_buf(buf[:], "CLIPBENDER_LOG")
+    if err != nil {return lowest}
+    switch {
+    case strings.equal_fold(env_level, "debug"):
+        lowest = .Debug
+    case strings.equal_fold(env_level, "info"):
+        lowest = .Info
+    case strings.equal_fold(env_level, "warn"):
+        lowest = .Warning
+    case strings.equal_fold(env_level, "error"):
+        lowest = .Error
+    }
+    return lowest
+}
+
 // Max data allowed to pass over IPC in one message (TODO: until we implement passing memfd via `SCM_RIGHTS` instead of
 // copying bytes).
 MAX_MSG_SIZE :: 128 * 1024 // 128 KiB
