@@ -3,6 +3,8 @@ package main
 import "core:fmt"
 import "core:log"
 import "core:os"
+import "core:strconv"
+import "core:strings"
 
 import lib "src:libclipbender"
 
@@ -70,6 +72,41 @@ persistent_state_dir :: proc() -> (path: string, err: Maybe(string)) {
     return "", "neither $XDG_STATE_HOME nor $HOME resolves to a directory"
 }
 
+sweep_orphaned_blobs :: proc(dir: string, bid_store: ^lib.Bid_Store) {
+    blobs_dir := blobs_dir_path(dir)
+    defer delete(blobs_dir)
+
+    blobs_fd, open_err := os.open(blobs_dir)
+    if open_err != nil {
+        return
+    }
+    defer os.close(blobs_fd)
+
+    infos, read_err := os.read_dir(blobs_fd, -1, context.temp_allocator)
+    if read_err != nil {
+        log.errorf("Failed to read blobs directory %s: err %v", blobs_dir, read_err)
+        return
+    }
+
+    for info in infos {
+        // If there was a .tmp file leftover
+        if strings.has_suffix(info.name, ".tmp") {
+            os.remove(info.fullpath)
+            continue
+        }
+
+        // If the file name is not a bid within the valid range, we must've not wrote it.
+        bid_val := strconv.parse_uint(info.name, 10) or_continue
+        if bid_val > uint(max(lib.Bid)) {continue}
+
+        // If the bid is being used.
+        if lib.bid_is_used(bid_store, lib.Bid(bid_val)) {continue}
+
+        // Otherwise, we need to clean up the orphaned file.
+        os.remove(info.fullpath)
+    }
+}
+
 // Registers are persisted using the dedicated state format (all reprs and mimes per entry). See
 // `libclipbender.marshal_state()` / `libclipbender.unmarshal_state()`.
 //
@@ -115,6 +152,8 @@ save_registers_state :: proc(
 
     // Rebuild the bid store to free the IDs of blobs that died since the last save.
     lib.rebuild_bids(bid_store, table[:])
+
+    sweep_orphaned_blobs(dir, bid_store)
 
     return written, err
 }

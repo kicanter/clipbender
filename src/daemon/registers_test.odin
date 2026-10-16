@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import "core:testing"
 
@@ -985,4 +986,98 @@ one_mime :: proc(mime: string) -> []string {
     names := make([]string, 1)
     names[0] = strings.clone(mime)
     return names
+}
+
+// The orphan sweep: a blob file the just-committed index no longer names must be unlinked, or every distinct large
+// payload ever saved would keep its file forever. Runs after `rebuild_bids`, since the IDs it checks are only freed by
+// that -- sweeping first would find everything still claimed and remove nothing.
+//
+// Also pins what it must *not* touch: a name that is not one of ours. An earlier version passed `info.name` rather than
+// `info.fullpath` to `os.remove`, which resolved against the process's working directory -- so it swept nothing, and
+// would have deleted an unrelated file of the same name had one been there.
+@(test)
+test_save_sweeps_orphaned_blob_files :: proc(t: ^testing.T) {
+    dir := fmt.tprintf("/tmp/clipbender-sweep-%d", os.get_pid())
+    if err := os.make_directory_all(dir, lib.CLIPBENDER_DIR_PERMS); err != nil {
+        testing.fail_now(t, "could not create the temp state dir")
+    }
+    defer os.remove_all(dir)
+
+    bid_store: lib.Bid_Store
+    defer delete(bid_store)
+    filter := lib.CMD_GET_FILTER_NUMBERED + lib.CMD_GET_FILTER_NAMED + lib.CMD_GET_FILTER_PRIMARY_NUMBERED
+
+    big_a := make([]byte, lib.BLOB_INLINE_MAX + 1)
+    defer delete(big_a)
+    big_b := make([]byte, lib.BLOB_INLINE_MAX * 2)
+    defer delete(big_b)
+    for &b, i in big_b {b = byte(i % 251)}
+
+    store: Register_Store
+    defer cleanup_registers(&store)
+    reg := lib.reg_id_from_named_index(0)
+
+    // First save puts one file-backed blob on disk.
+    set_named_reg_clone(&store, reg, big_a, "image/png", .OVERWRITE)
+    _, err := save_registers_state(dir, get_registers(&store, filter), &bid_store)
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, count_blob_files(dir), 1)
+
+    // Overwriting the register strands the first blob's file. The next save must collect it.
+    set_named_reg_clone(&store, reg, big_b, "image/png", .OVERWRITE)
+    _, err = save_registers_state(dir, get_registers(&store, filter), &bid_store)
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, count_blob_files(dir), 1)
+
+    // Plant debris a crashed save could leave, plus a name we never write.
+    blobs := blobs_dir_path(dir)
+    defer delete(blobs)
+    orphan := fmt.tprintf("%s/00007", blobs)
+    stale_tmp := fmt.tprintf("%s/00042.tmp", blobs)
+    not_ours := fmt.tprintf("%s/notours", blobs)
+    for path in ([]string{orphan, stale_tmp, not_ours}) {
+        testing.expect_value(t, os.write_entire_file(path, []byte{0}, lib.CLIPBENDER_FILE_PERMS), nil)
+    }
+
+    set_named_reg_clone(
+        &store,
+        lib.reg_id_from_named_index(1),
+        transmute([]byte)string("tiny"),
+        "text/plain",
+        .OVERWRITE,
+    )
+    _, err = save_registers_state(dir, get_registers(&store, filter), &bid_store)
+    testing.expect_value(t, err, nil)
+
+    testing.expect(t, !os.exists(orphan), "an unreferenced blob ID should be swept")
+    testing.expect(t, !os.exists(stale_tmp), "a stale temp file from a crashed save should be swept")
+    testing.expect(t, os.exists(not_ours), "a name we did not write is not ours to delete")
+
+    // The live payload must survive all of that, read back from its file.
+    dec: [lib.MAX_REGS]lib.Reg_Entry
+    defer for &entry in dec {lib.free_reg_entry(&entry)}
+    read_err, parse_err := load_registers_state(dir, &dec)
+    testing.expect_value(t, read_err, nil)
+    testing.expect_value(t, parse_err, nil)
+    testing.expect(t, slice.equal(dec[reg].reprs[0].blob.data, big_b), "the live blob survives the sweep")
+}
+
+// Blob files in `<dir>/blobs`, excluding anything we would not have written.
+count_blob_files :: proc(dir: string) -> int {
+    blobs := blobs_dir_path(dir)
+    defer delete(blobs)
+
+    fd, open_err := os.open(blobs)
+    if open_err != nil {return 0}
+    defer os.close(fd)
+
+    infos, read_err := os.read_dir(fd, -1, context.temp_allocator)
+    if read_err != nil {return 0}
+
+    count := 0
+    for info in infos {
+        if strings.has_suffix(info.name, ".tmp") {continue}
+        if _, ok := strconv.parse_uint(info.name, 10); ok {count += 1}
+    }
+    return count
 }

@@ -114,21 +114,27 @@ new_bid :: proc(bid_store: ^Bid_Store) -> (Bid, bool) {
 
 // Allocates a new Rc_Blob and returns the pointer to it.
 // Caller is responsible for freeing.
-new_rc_blob :: proc(data: []byte, id: Maybe(Bid) = nil) -> (blob: ^Rc_Blob) {
+new_rc_blob :: proc(data: []byte, bid: Maybe(Bid) = nil) -> (blob: ^Rc_Blob) {
     rc_blob := new(Rc_Blob)
     rc_blob^ = Rc_Blob {
         data     = data,
         refcount = 1,
-        id       = id,
+        id       = bid,
     }
     return rc_blob
 }
 
-// Mark `id` claimed, growing the store to reach it.
-claim_bid :: proc(bid_store: ^Bid_Store, id: Bid) {
-    chunk := int(id) / BIDS_PER_CHUNK
+// Mark `bid` claimed, growing the store to reach it.
+claim_bid :: proc(bid_store: ^Bid_Store, bid: Bid) {
+    chunk := int(bid) / BIDS_PER_CHUNK
     if len(bid_store) <= chunk {resize(bid_store, chunk + 1)}     // single resize up to number of chunks we need
-    bid_store[chunk] += {int(id) % BIDS_PER_CHUNK}
+    bid_store[chunk] += {int(bid) % BIDS_PER_CHUNK}
+}
+
+// Return true if `bid` is found in `bid_store`, false otherwise.
+bid_is_used :: proc(bid_store: ^Bid_Store, bid: Bid) -> bool {
+    chunk := int(bid) / BIDS_PER_CHUNK
+    return chunk < len(bid_store) && int(bid) % BIDS_PER_CHUNK in bid_store[chunk]
 }
 
 // Re-derive the store from the blobs the committed index references. The only path that frees an ID.
