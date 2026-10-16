@@ -201,7 +201,7 @@ test_display_content_describes_unsent_repr :: proc(t: ^testing.T) {
         selected = lib.RESP_SELECTED_NONE,
     }
     result := display_content(entry, CONTENT_COL_WIDTH)
-    testing.expect_value(t, strings.trim_space(result), "[image/png 600x300 65.8 kiB]")
+    testing.expect_value(t, strings.trim_space(result), "[image/png 600x300 65.8 KiB]")
 }
 
 @(test)
@@ -213,44 +213,44 @@ test_display_content_unsent_repr_without_dims :: proc(t: ^testing.T) {
         selected = lib.RESP_SELECTED_NONE,
     }
     result := display_content(entry, CONTENT_COL_WIDTH)
-    testing.expect_value(t, strings.trim_space(result), "[application/pdf 2.0 kiB]")
+    testing.expect_value(t, strings.trim_space(result), "[application/pdf 2.0 KiB]")
 }
 
 // json_escape_string tests
 
 @(test)
 test_json_escape_string_plain :: proc(t: ^testing.T) {
-    result := json_escape_string("hello world")
+    result := lib.json_escape_string("hello world")
     testing.expect_value(t, result, "hello world")
 }
 
 @(test)
 test_json_escape_string_quotes :: proc(t: ^testing.T) {
-    result := json_escape_string(`he said "hi"`)
+    result := lib.json_escape_string(`he said "hi"`)
     testing.expect_value(t, result, `he said \"hi\"`)
 }
 
 @(test)
 test_json_escape_string_backslash :: proc(t: ^testing.T) {
-    result := json_escape_string(`path\to\file`)
+    result := lib.json_escape_string(`path\to\file`)
     testing.expect_value(t, result, `path\\to\\file`)
 }
 
 @(test)
 test_json_escape_string_newline :: proc(t: ^testing.T) {
-    result := json_escape_string("line1\nline2")
+    result := lib.json_escape_string("line1\nline2")
     testing.expect_value(t, result, `line1\nline2`)
 }
 
 @(test)
 test_json_escape_string_tab :: proc(t: ^testing.T) {
-    result := json_escape_string("col1\tcol2")
+    result := lib.json_escape_string("col1\tcol2")
     testing.expect_value(t, result, `col1\tcol2`)
 }
 
 @(test)
 test_json_escape_string_mixed :: proc(t: ^testing.T) {
-    result := json_escape_string("\"hello\"\n\t\\end")
+    result := lib.json_escape_string("\"hello\"\n\t\\end")
     testing.expect_value(t, result, `\"hello\"\n\t\\end`)
 }
 

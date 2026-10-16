@@ -5,7 +5,6 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/linux"
-import "core:time"
 import "core:unicode/utf8"
 
 import lib "src:libclipbender"
@@ -845,14 +844,6 @@ has_flag :: proc(args: []string, key: string) -> bool {
     return false
 }
 
-// Format unix epoch timestamp as date time
-format_unix_timestamp :: proc(timestamp: i64, buf: ^[19]u8) -> string {
-    t := time.unix(timestamp, 0)
-    y, m, d := time.date(t)
-    h, min, s := time.clock(t)
-    return fmt.bprintf(buf[:], "%04d-%02d-%02d %02d:%02d:%02d", y, int(m), d, h, min, s)
-}
-
 // Sanitize control characters and truncate string to fit column width, appending "..." if truncated.
 // Prepare a string for a fixed-width table cell: escape anything that would move the terminal cursor, truncate to
 // `width`, then pad to exactly `width`.
@@ -920,30 +911,15 @@ display_content :: proc(entry: lib.Resp_Reg, width: int) -> string {
     return table_cell(string(entry.data), width)
 }
 
-// Get a description string of a repr whose data blob is not available/printable e.g. `image/png 600x300 67.4 kiB`.
+// Get a description string of a repr whose data blob is not available/printable e.g. `image/png 600x300 67.4 KiB`.
 describe_repr :: proc(repr: lib.Resp_Repr) -> string {
     switch meta in repr.meta {
     case lib.Image_Dims:
-        return fmt.tprintf("[%s %dx%d %s]", repr.mimes[0], meta.width, meta.height, human_size(repr.size))
+        return fmt.tprintf("[%s %dx%d %s]", repr.mimes[0], meta.width, meta.height, lib.human_readable_size(repr.size))
     }
-    return fmt.tprintf("[%s %s]", repr.mimes[0], human_size(repr.size))
+    return fmt.tprintf("[%s %s]", repr.mimes[0], lib.human_readable_size(repr.size))
 }
 
-// Byte count for display. Binary units because that is what the size caps are expressed in.
-human_size :: proc(size: u64) -> string {
-    kib_size :: 1024
-    mib_size :: kib_size * 1024
-    gib_size :: mib_size * 1024
-    switch {
-    case size < kib_size:
-        return fmt.tprintf("%d B", size)
-    case size < mib_size:
-        return fmt.tprintf("%.1f kiB", f64(size) / kib_size)
-    case size < gib_size:
-        return fmt.tprintf("%.1f MiB", f64(size) / mib_size)
-    }
-    return fmt.tprintf("%.1f GiB", f64(size) / gib_size)
-}
 
 // Ordered groups of register IDs for display: clipboard recency, named, primary recency, then live selections.
 // Each group is an inclusive [start, end] range so consumers can iterate directly by Reg_Id.
@@ -990,7 +966,7 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
             fmt.printfln(
                 CONTENT_FMT,
                 lib.reg_id_to_string(id),
-                format_unix_timestamp(entry.timestamp, &ts_buf),
+                lib.format_unix_timestamp(entry.timestamp, &ts_buf),
                 table_cell(fmt.tprintf("%c %s", REPR_MARK, entry.reprs[head].mimes[0]), MIME_COL_WIDTH),
                 display_content(entry, CONTENT_COL_WIDTH),
             )
@@ -1033,38 +1009,11 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     fmt.println(table_bot)
 }
 
-// Escape a string for a JSON string literal. Caller must have established the input is valid UTF-8 -- this iterates
-// runes, so invalid bytes would silently become U+FFFD. See `json_content` for that check.
-json_escape_string :: proc(str: string) -> string {
-    escaped := strings.builder_make(context.temp_allocator)
-    for ch in str {
-        switch ch {
-        case '"':
-            strings.write_string(&escaped, `\"`)
-        case '\\':
-            strings.write_string(&escaped, `\\`)
-        case '\n':
-            strings.write_string(&escaped, `\n`)
-        case '\t':
-            strings.write_string(&escaped, `\t`)
-        case '\r':
-            strings.write_string(&escaped, `\r`)
-        case 0 ..< 0x20:
-            // Valid UTF-8 but illegal unescaped in JSON, and clipboard text really does carry these (form feed, vertical
-            // tab, NUL from a botched copy). Without this a single stray byte makes the whole document unparseable.
-            fmt.sbprintf(&escaped, "\\u%04x", int(ch))
-        case:
-            strings.write_rune(&escaped, ch)
-        }
-    }
-    return strings.to_string(escaped)
-}
-
 // Render `data` as a JSON value i.e a string when it is valid UTF-8, else base64 with a sibling `content_encoding` field.
 json_content :: proc(data: []byte) -> (value: string, is_base64: bool) {
     str := string(data)
     if utf8.valid_string(str) {
-        return fmt.tprintf(`"%s"`, json_escape_string(str)), false
+        return fmt.tprintf(`"%s"`, lib.json_escape_string(str)), false
     }
     return fmt.tprintf(`"%s"`, base64.encode(data, allocator = context.temp_allocator)), true
 }
@@ -1101,7 +1050,7 @@ print_json_entry :: proc(entry: lib.Resp_Reg, id_str: string, printed: ^bool) {
         fmt.print(`{"mimes": [`)
         for mime, m in repr.mimes {
             if m > 0 {fmt.print(", ")}
-            fmt.printf(`"%s"`, json_escape_string(mime))
+            fmt.printf(`"%s"`, lib.json_escape_string(mime))
         }
         fmt.printf(`], "size": %d, "selected": %v`, repr.size, u8(r) == entry.selected)
         switch meta in repr.meta {

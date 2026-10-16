@@ -309,10 +309,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
             // Shared blob dedup similar to that of `wayland_read_offer_reprs()`.
             // Retrieve all the unique blobs that the register store currently holds so we can point duplicates at their
             // proper shared `Rc_Blob`.
-            existing_blobs := lib.build_blob_table(
-                get_registers(store, lib.CMD_GET_FILTER_ALL),
-                context.temp_allocator,
-            )
+            existing_blobs := lib.unique_blobs(get_registers(store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
 
             // Check whether the data blob exists in our table already.
             rc_blob: ^lib.Rc_Blob
@@ -491,7 +488,7 @@ save_state :: proc(server: ^Server_State) {
     if err != os.General_Error.None {
         log.errorf("Failed to save register state to %s: errno %v", dir, err)
     } else {
-        log.debugf("Saved state, wrote %d index bytes to %s", written, dir)
+        log.debugf("Saved state, wrote %d state file bytes to %s", written, dir)
     }
 }
 

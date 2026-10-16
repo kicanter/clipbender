@@ -501,7 +501,7 @@ test_state_roundtrip_multi_repr :: proc(t: ^testing.T) {
 }
 
 // A blob over the inline cap is written to `blobs/<id>` and read back from it, which the lib-level tests cannot cover
-// because they never touch the filesystem. Also pins the split: the index holds the digest, the file holds the bytes.
+// because they never touch the filesystem. Also pins the split: the state file holds the ID, the blob file holds the bytes.
 @(test)
 test_save_load_round_trips_file_backed_blob :: proc(t: ^testing.T) {
     dir := fmt.tprintf("/tmp/clipbender-blobtest-%d", os.get_pid())
@@ -532,10 +532,10 @@ test_save_load_round_trips_file_backed_blob :: proc(t: ^testing.T) {
     written, save_err := save_registers_state(dir, get_registers(&src, filter), &bid_store)
     testing.expect_value(t, save_err, nil)
 
-    // The index carries the ID and size, not the payload, so it stays small no matter how large the blob is.
-    testing.expect(t, written < lib.BLOB_INLINE_MAX, "the index should not contain the file-backed blob's bytes")
+    // The state file carries the ID and size, not the payload, so it stays small no matter how large the blob is.
+    testing.expect(t, written < lib.BLOB_INLINE_MAX, "the state file should not contain the file-backed blob's bytes")
 
-    // The blob landed under its hash, with no temp file left behind.
+    // The blob landed under its ID, with no temp file left behind.
     blobs_dir := blobs_dir_path(dir)
     defer delete(blobs_dir)
     name_buf: lib.Blob_Name
@@ -593,7 +593,7 @@ test_save_is_idempotent_over_existing_blobs_dir :: proc(t: ^testing.T) {
     _, second := save_registers_state(dir, regs, &bid_store)
     testing.expect_value(t, second, nil)
 
-    // The index must still be loadable after the re-save, not just the error free.
+    // The state file must still be loadable after the re-save, not just the error free.
     dec: [lib.MAX_REGS]lib.Reg_Entry
     defer for &entry in dec {lib.free_reg_entry(&entry)}
     read_err, parse_err := load_registers_state(dir, &dec)
@@ -603,7 +603,7 @@ test_save_is_idempotent_over_existing_blobs_dir :: proc(t: ^testing.T) {
 }
 
 // `make_private_directory` only warns, so the hard failure has to surface from the write that needed the directory --
-// otherwise a save would report success having written neither the blobs nor an index naming them.
+// otherwise a save would report success having written neither the blobs nor a state file naming them.
 @(test)
 test_save_reports_failure_when_blobs_dir_is_unusable :: proc(t: ^testing.T) {
     dir := fmt.tprintf("/tmp/clipbender-badblobs-%d", os.get_pid())
@@ -632,10 +632,10 @@ test_save_reports_failure_when_blobs_dir_is_unusable :: proc(t: ^testing.T) {
     _, err := save_registers_state(dir, get_registers(&src, filter), &bid_store)
     testing.expect(t, err != nil, "an unusable blobs dir should fail the save")
 
-    // Blobs are written first, so the index must not exist: it would name a file that was never written.
-    index := state_file_path(dir)
-    defer delete(index)
-    testing.expect(t, !os.exists(index), "no index should be written when its blobs could not be")
+    // Blobs are written first, so the state file must not exist: it would name a file that was never written.
+    state_path := state_file_path(dir)
+    defer delete(state_path)
+    testing.expect(t, !os.exists(state_path), "no state file should be written when its blobs could not be")
 }
 
 @(test)
@@ -908,7 +908,7 @@ test_multi_repr_survives_state_round_trip :: proc(t: ^testing.T) {
 }
 
 // Capture-time dedup scans every blob the store holds, which it gets from `get_registers(CMD_GET_FILTER_ALL)` fed into
-// `build_blob_table`. If any register category were missing from that filter, duplicates in it would silently never be
+// `unique_blobs`. If any register category were missing from that filter, duplicates in it would silently never be
 // deduped -- no test would fail, the daemon would just keep allocating second copies. So pin the premise.
 @(test)
 test_blob_table_over_all_filter_covers_every_register_category :: proc(t: ^testing.T) {
@@ -928,7 +928,7 @@ test_blob_table_over_all_filter_covers_every_register_category :: proc(t: ^testi
     set_live_selection_clone(&store, .CLIPBOARD, transmute([]byte)string("clip-live"), "text/plain")
     set_live_selection_clone(&store, .PRIMARY, transmute([]byte)string("pri-live"), "text/plain")
 
-    table := lib.build_blob_table(get_registers(&store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
+    table := lib.unique_blobs(get_registers(&store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
     testing.expect_value(t, len(table), 5)
 
     // Every payload must be findable by content, which is exactly the lookup capture-time dedup performs.
@@ -976,7 +976,7 @@ test_blob_table_shares_one_blob_across_categories :: proc(t: ^testing.T) {
     }
     set_live_selection(&store, .CLIPBOARD, live_reprs)
 
-    table := lib.build_blob_table(get_registers(&store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
+    table := lib.unique_blobs(get_registers(&store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
     testing.expect_value(t, len(table), 1)
     testing.expect_value(t, shared.refcount, 3)
 }
@@ -988,7 +988,7 @@ one_mime :: proc(mime: string) -> []string {
     return names
 }
 
-// The orphan sweep: a blob file the just-committed index no longer names must be unlinked, or every distinct large
+// The orphan sweep: a blob file the just-committed state file no longer names must be unlinked, or every distinct large
 // payload ever saved would keep its file forever. Runs after `rebuild_bids`, since the IDs it checks are only freed by
 // that -- sweeping first would find everything still claimed and remove nothing.
 //

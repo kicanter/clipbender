@@ -66,6 +66,6 @@ test_set_inline_dedups_by_content :: proc(t: ^testing.T) {
     testing.expect(t, c.reprs[0].blob != a.reprs[0].blob, "different content should not share a blob")
 
     // Two unique blobs across three registers.
-    table := lib.build_blob_table(get_registers(&server.registers, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
+    table := lib.unique_blobs(get_registers(&server.registers, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
     testing.expect_value(t, len(table), 2)
 }

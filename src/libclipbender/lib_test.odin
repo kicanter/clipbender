@@ -1231,7 +1231,7 @@ test_state_round_trip_preserves_sharing :: proc(t: ^testing.T) {
     regs[id_b] = &entry_b
 
     // One table entry despite three reprs
-    table := build_blob_table(regs, context.temp_allocator)
+    table := unique_blobs(regs, context.temp_allocator)
     testing.expect_value(t, len(table), 1)
 
     buf := make([]byte, state_size(regs))
@@ -1281,7 +1281,7 @@ test_unmarshal_state_rejects_unknown_blob_tag :: proc(t: ^testing.T) {
 @(test)
 test_state_inline_threshold_is_inclusive :: proc(t: ^testing.T) {
     // `BLOB_INLINE_MAX` is the largest size still written inline, so the boundary is `>` not `>=`. Getting this
-    // backwards sends 1023-byte blobs to `blobs/` and silently changes what the index contains.
+    // backwards sends 1023-byte blobs to `blobs/` and silently changes what the state file contains.
     at_max := make([]byte, BLOB_INLINE_MAX)
     defer delete(at_max)
     over_max := make([]byte, BLOB_INLINE_MAX + 1)
@@ -2146,7 +2146,7 @@ test_unmarshal_resp_registers_rejects_oversized_blob_count :: proc(t: ^testing.T
 // so a register holding one resolved to nothing under *every* policy.
 //
 // Archives and documents stay unrankable on purpose: there is no sensible display for a zip, and an unselected repr now
-// renders as its descriptor (`[application/pdf 812 kiB]`) rather than as a blank row.
+// renders as its descriptor (`[application/pdf 812 KiB]`) rather than as a blank row.
 @(test)
 test_every_detectable_image_and_media_mime_is_rankable :: proc(t: ^testing.T) {
     // Asks `resolve_repr` rather than re-listing the group tables: a second list would drift from the policies, and
@@ -2256,7 +2256,7 @@ test_unmarshal_state_rejects_oversized_blob_count :: proc(t: ^testing.T) {
     )
 }
 
-// Blob ID allocation. IDs name `blobs/<id>` files and are reusable once no committed index references them, so the
+// Blob ID allocation. IDs name `blobs/<id>` files and are reusable once no committed state file references them, so the
 // store has to hand out the lowest free one and grow only when a chunk fills.
 @(test)
 test_new_blob_id_is_lowest_free :: proc(t: ^testing.T) {

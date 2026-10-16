@@ -629,7 +629,7 @@ wayland_read_offer_reprs :: proc(
 
     // Retrieve all the unique blobs that the register store currently holds so we can point duplicates at their proper
     // shared `Rc_Blob`.
-    existing_blobs := lib.build_blob_table(get_registers(reg_store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
+    existing_blobs := lib.unique_blobs(get_registers(reg_store, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
 
     // Use a scratch buffer for pipe reads so we only have to allocate once (excluding any needed resizes). This helps
     // with reducing allocations during deduplications, where we'd allocate memory for the data just to memcmp and

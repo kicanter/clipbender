@@ -72,6 +72,27 @@ persistent_state_dir :: proc() -> (path: string, err: Maybe(string)) {
     return "", "neither $XDG_STATE_HOME nor $HOME resolves to a directory"
 }
 
+// HACK: make a config option or maybe a flag or something?
+PERSIST_STATE :: false
+
+// Resolves the state directory that we write the state file + large blob files to.
+//
+// When persistence is explicitly requested, we fail on an unresolvable location to ensure the user doesn't continue
+// using the program with the assumption that state is being saved. Otherwise, ephemeral state is expendable so if it
+// fails we can continue running.
+resolve_state_dir :: proc() -> Maybe(string) {
+    when !PERSIST_STATE {
+        return ephemeral_state_dir()
+    } else {
+        dir, err := persistent_state_dir()
+        if err != nil {
+            fmt.eprintfln("Error: persistence is enabled but %s", err.?)
+            os.exit(1)
+        }
+        return dir
+    }
+}
+
 sweep_orphaned_blobs :: proc(dir: string, bid_store: ^lib.Bid_Store) {
     blobs_dir := blobs_dir_path(dir)
     defer delete(blobs_dir)
@@ -110,7 +131,7 @@ sweep_orphaned_blobs :: proc(dir: string, bid_store: ^lib.Bid_Store) {
 // Registers are persisted using the dedicated state format (all reprs and mimes per entry). See
 // `libclipbender.marshal_state()` / `libclipbender.unmarshal_state()`.
 //
-// `dir` holds the index at `registers.iroh` and a file for each large blob under `blobs/`. Blob files must be written
+// `dir` holds `registers.iroh` and a file for each large blob under `blobs/`. Blob files must be written
 // first so a crash may leave orphan files which can be reconciled during a save/load at a future point instead of a
 // `registers.iroh` that cites <id> files that were never written.
 save_registers_state :: proc(
@@ -121,7 +142,7 @@ save_registers_state :: proc(
     written: int,
     err: os.Error,
 ) {
-    table := lib.build_blob_table(regs, context.temp_allocator)
+    table := lib.unique_blobs(regs, context.temp_allocator)
 
     if err = write_state_blobs(dir, table[:], bid_store); err != os.General_Error.None {
         return 0, err
@@ -192,7 +213,7 @@ write_state_blobs :: proc(dir: string, table: []^lib.Rc_Blob, bid_store: ^lib.Bi
         name := lib.blob_filename(name_buf[:], id)
         path := fmt.tprintf("%s/%s", blobs_dir, name)
 
-        // Same temp + rename as the index, so a reader never sees a partially written blob under its final name.
+        // Same temp + rename as the state file, so a reader never sees a partially written blob under its final name.
         tmp_path := fmt.tprintf("%s.tmp", path)
         if err := os.write_entire_file(tmp_path, blob.data, lib.CLIPBENDER_FILE_PERMS); err != nil {
             os.remove(tmp_path)
@@ -226,7 +247,7 @@ load_registers_state :: proc(
     data, read_err := os.read_entire_file(filename, context.temp_allocator)
     if read_err != os.General_Error.None {return read_err, nil}
 
-    // File-backed blobs are read from here as the index names them.
+    // File-backed blobs are read from here as the state file names them.
     blobs_dir := blobs_dir_path(dir)
     defer delete(blobs_dir)
 

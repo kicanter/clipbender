@@ -9,6 +9,7 @@ import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strings"
+import "core:time"
 import "core:unicode/utf8"
 
 Semantic_Version :: struct {
@@ -71,7 +72,7 @@ BLOB_NONE :: u16(0xFFFF) // only used for responses, indicates no blob bytes wer
 Blob_Tag :: enum u8 {
     // is blob data inline or point at a `blobs/<id>` file?
     INLINE, // blob data is <= `BLOB_INLINE_MAX`
-    FILE, // blob data is > `BLOB_INLINE_MAX`
+    REF, // blob data is > `BLOB_INLINE_MAX`
 }
 // comptime check that `Bid` hasn't deviated
 when size_of(Bid) == 2 {     // u16 -> max 65535 (when are we going to have that many blobs?!)
@@ -84,7 +85,7 @@ blob_filename :: proc(buf: []byte, id: Bid) -> string {
 }
 
 // Refcounted data blob. Large blobs are written to disk at <state-dir>/blobs/<id>, which is what `id` names; a blob
-// small enough to sit inline in the index never gets one. Multiple `Data_Repr`s may point to the same data blob, and
+// small enough to sit inline in the state file never gets one. Multiple `Data_Repr`s may point to the same data blob, and
 // the data is only released when refcount hits 0.
 Rc_Blob :: struct {
     data:     []byte,
@@ -137,10 +138,10 @@ bid_is_used :: proc(bid_store: ^Bid_Store, bid: Bid) -> bool {
     return chunk < len(bid_store) && int(bid) % BIDS_PER_CHUNK in bid_store[chunk]
 }
 
-// Re-derive the store from the blobs the committed index references. The only path that frees an ID.
+// Re-derive the store from the blobs the committed state file references. The only path that frees an ID.
 //
-// An ID outlives its blob so it stays claimed until a new index stops naming its file. Freeing it any earlier lets the
-// next save hand it out and overwrite bytes the committed index still points at.
+// An ID outlives its blob so it stays claimed until a new state file stops naming it. Freeing it any earlier lets the
+// next save hand it out and overwrite bytes the committed state file still points at.
 //
 // `clear` keeps the capacity, so a steady-state save does not reallocate.
 rebuild_bids :: proc(bid_store: ^Bid_Store, table: []^Rc_Blob) {
@@ -1638,7 +1639,7 @@ marshal_resp_registers :: proc(
         blob := regs[reg.id].reprs[reg.selected].blob
 
         // Already in the table, so this register just references it
-        if index, found := blob_table_index(table[:], blob); found {
+        if index, found := blob_index(table[:], blob); found {
             reg.blob = index
             continue
         }
@@ -1909,7 +1910,7 @@ unmarshal_cmd_clear :: proc(buf: []byte) -> Reg_Id {
 //
 // The wire format consists of the state header (magic + version), followed by a blob table and register table. The blob
 // table effectively replicates our sharing of blob data within clipbender such that we don't have to duplicate inline
-// data or hashes for reprs that contain the same data.
+// data or IDs for reprs that contain the same data.
 //
 // Wire format:
 //   ["IROH" magic][1b STATE_VERSION]
@@ -1926,7 +1927,7 @@ STATE_MAGIC :: "IROH"
 STATE_HEADER_SIZE :: len(STATE_MAGIC) + size_of(Monotonic_Version)
 
 // Unique blobs in the order they are first named. A blob's position here is its wire index.
-build_blob_table :: proc(regs: [MAX_REGS]^Reg_Entry, allocator := context.allocator) -> [dynamic]^Rc_Blob {
+unique_blobs :: proc(regs: [MAX_REGS]^Reg_Entry, allocator := context.allocator) -> [dynamic]^Rc_Blob {
     // We could count the number of reprs we have and pre-allocate the dynamic array capacity to save on allocations,
     // but the difference is negligible (pre-allocating only wins with a smaller number of unique blobs). We may also be
     // passed an arena allocator which would greatly improve the speed anyhow.
@@ -1935,7 +1936,7 @@ build_blob_table :: proc(regs: [MAX_REGS]^Reg_Entry, allocator := context.alloca
         if entry == nil {continue}
         for repr in entry.reprs {
             // Shared blobs earn one entry, named by every repr that points at them
-            if _, seen_before := blob_table_index(table[:], repr.blob); !seen_before {
+            if _, seen_before := blob_index(table[:], repr.blob); !seen_before {
                 append(&table, repr.blob)
             }
         }
@@ -1943,9 +1944,10 @@ build_blob_table :: proc(regs: [MAX_REGS]^Reg_Entry, allocator := context.alloca
     return table
 }
 
-// Position of `blob` in the table. Pointer equality, so sharing is found without hashing or comparing bytes.
-blob_table_index :: proc(table: []^Rc_Blob, blob: ^Rc_Blob) -> (index: u16, found: bool) {
-    for entry, i in table {
+// Position of `blob` in a unique_blobs list. Pointer equality, so sharing is found without hashing or comparing
+// bytes.
+blob_index :: proc(blobs: []^Rc_Blob, blob: ^Rc_Blob) -> (index: u16, found: bool) {
+    for entry, i in blobs {
         if entry == blob {return u16(i), true}
     }
     return 0, false
@@ -1953,7 +1955,7 @@ blob_table_index :: proc(table: []^Rc_Blob, blob: ^Rc_Blob) -> (index: u16, foun
 
 // Exact serialized size of `regs` in the state format, so a caller can allocate a buffer that fits instead of guessing.
 state_size :: proc(regs: [MAX_REGS]^Reg_Entry) -> int {
-    table := build_blob_table(regs, context.temp_allocator)
+    table := unique_blobs(regs, context.temp_allocator)
     return state_size_with_blob_table(regs, table[:])
 }
 
@@ -1986,7 +1988,7 @@ state_size_with_blob_table :: proc(regs: [MAX_REGS]^Reg_Entry, blob_table: []^Rc
 }
 
 marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
-    blob_table := build_blob_table(regs, context.temp_allocator)
+    blob_table := unique_blobs(regs, context.temp_allocator)
 
     // Every write below is unchecked, so a short buffer would run off the end. Size it with `state_size`.
     assert(
@@ -2006,12 +2008,12 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
 
     // One blob per iteration, in table order so the index a repr writes below is the position read back
     for blob in blob_table {
-        // A file-backed blob just includes its hash, an inline one carries the bytes directly
+        // A file-backed blob just includes its ID, an inline one carries the bytes directly
         if blob_is_file_backed(blob) {
-            body[written] = byte(Blob_Tag.FILE)
+            body[written] = byte(Blob_Tag.REF)
             written += size_of(Blob_Tag)
 
-            // The ID is assigned by `write_state_blobs` before the index is written, so it is always set here.
+            // The ID is assigned by `write_state_blobs` before the state file is written, so it is always set here.
             id, assigned := blob.id.?
             assert(assigned, "file-backed blob reached marshal_state without an ID")
             id_bytes := transmute([size_of(Bid)]byte)id
@@ -2067,8 +2069,8 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
                 written += write_resp_mime(body[written:], mime)
             }
 
-            // Blob index u16. Every repr's blob was collected by `build_blob_table`, so the lookup cannot miss.
-            index, found := blob_table_index(blob_table[:], repr.blob)
+            // Blob index u16. Every repr's blob was collected by `unique_blobs`, so the lookup cannot miss.
+            index, found := blob_index(blob_table[:], repr.blob)
             assert(found, "repr's blob is missing from the blob table")
             index_bytes := transmute([size_of(u16)]byte)index
             copy(body[written:][:size_of(u16)], index_bytes[:])
@@ -2085,8 +2087,8 @@ marshal_state :: proc(regs: [MAX_REGS]^Reg_Entry, buf: []byte) -> int {
 
 // Read the blob table into blobs the caller owns one reference to each of. `offset` is advanced past the table.
 //
-// INLINE entries carry their bytes; HASH entries name a file under `blobs_dir`, whose digest is the filename, so the
-// hash is assigned rather than recomputed over the payload.
+// INLINE entries carry their bytes.
+// REF entries name a file under `blobs_dir`, whose blob ID is the filename.
 read_blob_table :: proc(
     body: []byte,
     offset: ^int,
@@ -2155,7 +2157,7 @@ read_blob_table :: proc(
             blobs[b] = new_rc_blob(slice.clone(body[offset^:][:data_len]))
             offset^ += data_len
 
-        case .FILE:
+        case .REF:
             if offset^ + size_of(Bid) + size_of(u64) > len(body) {
                 return nil, fmt.tprintf("blob %d: missing ID and size", b)
             }
@@ -2182,11 +2184,17 @@ read_blob_table :: proc(
                 return nil, fmt.tprintf("blob %d: cannot read %s: %v", b, path, read_err)
             }
 
-            // A length that disagrees with the index means the file was truncated, most likely by a save that died
+            // A length that disagrees with the state file means the blob was truncated, most likely by a save that died
             // mid-write. Without this it would load as valid short data.
             if u64(len(data)) != file_size {
                 delete(data)
-                return nil, fmt.tprintf("blob %d: %s holds %d bytes, the index says %d", b, path, len(data), file_size)
+                return nil, fmt.tprintf(
+                    "blob %d: %s holds %d bytes, the state file says %d",
+                    b,
+                    path,
+                    len(data),
+                    file_size,
+                )
             }
 
             blobs[b] = new_rc_blob(data, id)
@@ -2385,4 +2393,60 @@ unmarshal_state_entries :: proc(
     }
 
     return count, nil
+}
+
+// Format unix epoch timestamp as date time
+format_unix_timestamp :: proc(timestamp: i64, buf: ^[19]u8) -> string {
+    t := time.unix(timestamp, 0)
+    y, m, d := time.date(t)
+    h, min, s := time.clock(t)
+    return fmt.bprintf(buf[:], "%04d-%02d-%02d %02d:%02d:%02d", y, int(m), d, h, min, s)
+}
+
+// Return byte count as two parts, the num and unit in binary prefix form.
+human_readable_byte_count :: proc(size: u64) -> (num: string, unit: string) {
+    kib_size :: 1024
+    mib_size :: kib_size * 1024
+    gib_size :: mib_size * 1024
+    switch {
+    case size < kib_size:
+        return fmt.tprintf("%d", size), "B"
+    case size < mib_size:
+        return fmt.tprintf("%.1f", f64(size) / kib_size), "KiB"
+    case size < gib_size:
+        return fmt.tprintf("%.1f", f64(size) / mib_size), "MiB"
+    }
+    return fmt.tprintf("%.1f", f64(size) / gib_size), "GiB"
+}
+
+// Byte count for display as one string, e.g. `67.4 KiB`.
+human_readable_size :: proc(size: u64) -> string {
+    num, unit := human_readable_byte_count(size)
+    return fmt.tprintf("%s %s", num, unit)
+}
+
+// Escape a string for a JSON string literal. Caller must have established the input is valid UTF-8 -- this iterates
+// runes, so invalid bytes would silently become U+FFFD. See `json_content` for that check.
+json_escape_string :: proc(str: string) -> string {
+    escaped := strings.builder_make(context.temp_allocator)
+    for ch in str {
+        switch ch {
+        case '"':
+            strings.write_string(&escaped, `\"`)
+        case '\\':
+            strings.write_string(&escaped, `\\`)
+        case '\n':
+            strings.write_string(&escaped, `\n`)
+        case '\t':
+            strings.write_string(&escaped, `\t`)
+        case '\r':
+            strings.write_string(&escaped, `\r`)
+        case 0 ..< 0x20:
+            // Valid UTF-8 but illegal unescaped in JSON.
+            fmt.sbprintf(&escaped, "\\u%04x", int(ch))
+        case:
+            strings.write_rune(&escaped, ch)
+        }
+    }
+    return strings.to_string(escaped)
 }

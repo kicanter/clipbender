@@ -22,6 +22,8 @@ main :: proc() {
             lib.print_version()
         case "help", "-h", "--help":
             fmt.println("help command not implemented yet")
+        case "dump-state":
+            os.exit(cmd_dump_state(args[1:]))
         case:
             fmt.eprintfln("Error: unknown argument %q", args[0])
             os.exit(1)
@@ -66,20 +68,7 @@ main :: proc() {
     defer cleanup_registers(&server.registers)
 
     // Load the persisted state
-    // HACK: make a config option or maybe a flag or something?
-    persist_state := false
-    // The two modes fail differently by design: persistence was explicitly requested, so an unresolvable durable
-    // location is fatal, whereas ephemeral state is expendable and we simply stop persisting.
-    if persist_state {
-        dir, err := persistent_state_dir()
-        if err != nil {
-            fmt.eprintfln("Error: persistence is enabled but %s", err.?)
-            os.exit(1)
-        }
-        server.state_dir = dir
-    } else {
-        server.state_dir = ephemeral_state_dir()
-    }
+    server.state_dir = resolve_state_dir()
 
     defer if server.state_dir != nil {delete(server.state_dir.?)}
     defer delete(server.bid_store)
@@ -99,10 +88,7 @@ main :: proc() {
         case:
             load_registers(&server.registers, &regs) // load the registers into server register store
             // build blob table from loaded registers
-            table := lib.build_blob_table(
-                get_registers(&server.registers, lib.CMD_GET_FILTER_ALL),
-                context.temp_allocator,
-            )
+            table := lib.unique_blobs(get_registers(&server.registers, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
             lib.rebuild_bids(&server.bid_store, table[:]) // build the Blob ID store from blob table
         }
     }
