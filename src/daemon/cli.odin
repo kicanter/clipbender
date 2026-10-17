@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strconv"
+import "core:strings"
 
 import lib "src:libclipbender"
 
@@ -21,24 +22,37 @@ Blob_State_Info :: struct {
 }
 
 DUMP_USAGE ::
-    "Usage: clipbenderd dump-state [fmt=stanza|json]\n\n" +
-    "Print the daemon's on-disk register state: the blob table, every register's representations, and which blob\n" +
-    "each one references. `fmt=stanza` is the default on a terminal and `fmt=json` when piped.\n"
+    "Usage: clipbenderd dump-state [dir=<path>] [fmt=stanza|json]\n\n" +
+    "Print a state directory's register state: the blob table and register table,\n" +
+    "including every register's representations and which blob each one references.\n" +
+    "A state file that cannot be parsed is still dumped as far as it decoded, then\n" +
+    "reports where parsing stopped.\n\n" +
+    "`dir=` reads an arbitrary state directory, or defaults to the one the daemon\n" +
+    "itself would use.\n" +
+    "`fmt=stanza` is the default when outputting to tty, `fmt=json` when piped.\n"
 
 // Returns the process exit code.
 @(require_results)
 cmd_dump_state :: proc(args: []string) -> int {
     // Default to stanza during normal stdout, default to JSON when piping.
     format := Dump_Format.STANZA if os.is_tty(os.stdout) else Dump_Format.JSON
+    dir_arg: Maybe(string)
     for arg in args {
-        switch arg {
-        case "-h", "--help", "help":
+        switch {
+        case arg == "-h", arg == "--help", arg == "help":
             fmt.print(DUMP_USAGE)
             return 0
-        case "fmt=stanza":
+        case arg == "fmt=stanza":
             format = .STANZA
-        case "fmt=json":
+        case arg == "fmt=json":
             format = .JSON
+        case strings.has_prefix(arg, "dir="):
+            path := arg[len("dir="):]
+            if len(path) == 0 {
+                fmt.eprintln("Error: dir= needs a path")
+                return 1
+            }
+            dir_arg = path
         case:
             fmt.eprintfln("Error: unknown argument %q to dump-state", arg)
             fmt.eprint(DUMP_USAGE)
@@ -46,12 +60,18 @@ cmd_dump_state :: proc(args: []string) -> int {
         }
     }
 
-    dir, dir_ok := resolve_state_dir().?
-    if !dir_ok {
-        fmt.eprintln("Error: no state directory to dump")
-        return 1
+    dir: string
+    if path, exists := dir_arg.?; exists {
+        dir = path
+    } else {
+        resolved, ok := resolve_state_dir().? // allocates, need to free
+        if !ok {
+            fmt.eprintln("Error: no state directory to dump")
+            return 1
+        }
+        dir = resolved
     }
-    defer delete(dir)
+    defer if dir_arg == nil {delete(dir)}     // we don't need to free if we're borrowing the dir from the cli arg
 
     state_path := state_file_path(dir)
     defer delete(state_path)
@@ -66,21 +86,28 @@ cmd_dump_state :: proc(args: []string) -> int {
     }
 
     // Retrieve the tag, size, and offset (INLINE) or bid (REF) for each unique blob
-    blob_state_infos, walk_err := get_blob_state_infos(buf)
-    if walk_err != nil {
-        fmt.eprintfln("Error: %s is unreadable: %s", state_path, walk_err.?)
-        return 1
-    }
+    blob_state_infos, walk_err := get_blob_state_infos(buf) // don't immediately exit on failure, handle after unmarshal
     defer delete(blob_state_infos)
 
-    // The load is the authority on everything else, so the dump cannot disagree with what the daemon would restore.
     regs: [lib.MAX_REGS]lib.Reg_Entry
-    _, parse_err := lib.unmarshal_state(buf, &regs, blobs_dir)
-    if parse_err != nil {
-        fmt.eprintfln("Error: %s is unreadable: %s", state_path, parse_err.?)
-        return 1
+    parse_err: Maybe(string)
+    if walk_err == nil {
+        // Load registers from state as if we were loading on startup.
+        _, parse_err = lib.unmarshal_state(buf, &regs, blobs_dir) // don't immediately exit on failure, handle below
     }
     defer for &entry in regs {lib.free_reg_entry(&entry)}
+
+    // Whichever stage errored first is the one worth reporting.
+    stopped := walk_err if walk_err != nil else parse_err
+    if stopped != nil {
+        switch format {
+        case .STANZA:
+            dump_print_partial_stanza(state_path, blobs_dir, buf, blob_state_infos[:], stopped.?)
+        case .JSON:
+            dump_print_partial_json(state_path, blobs_dir, buf, blob_state_infos[:], stopped.?)
+        }
+        return 1
+    }
 
     // Create a pointer for every non-empty register to build the blob table.
     reg_ptrs: [lib.MAX_REGS]^lib.Reg_Entry
@@ -111,13 +138,13 @@ get_blob_state_infos :: proc(buf: []byte) -> (blobs: [dynamic]Blob_State_Info, e
     count := int(transmute(u16)count_bytes)
     offset += size_of(u16)
 
-    // Accumulate into local variable first, then pass to named return as to not hand back half-filled data on error.
+    // Deliberately hands back the partially filled slice alongside the error.
+    // Caller is responsible for freeing.
     acc := make([dynamic]Blob_State_Info, 0, count)
-    defer if err != nil {delete(acc)}
 
     for b in 0 ..< count {
         if offset + size_of(lib.Blob_Tag) > len(body) {
-            return nil, fmt.tprintf("blob %d: missing tag", b)
+            return acc, fmt.tprintf("blob %d: missing tag", b)
         }
         tag := lib.Blob_Tag(body[offset])
         offset += size_of(lib.Blob_Tag)
@@ -125,7 +152,7 @@ get_blob_state_infos :: proc(buf: []byte) -> (blobs: [dynamic]Blob_State_Info, e
         switch tag {
         case .INLINE:
             if offset + size_of(u64) > len(body) {
-                return nil, fmt.tprintf("blob %d: missing data length", b)
+                return acc, fmt.tprintf("blob %d: missing data length", b)
             }
             size_bytes: [size_of(u64)]byte
             copy(size_bytes[:], body[offset:][:size_of(u64)])
@@ -133,7 +160,7 @@ get_blob_state_infos :: proc(buf: []byte) -> (blobs: [dynamic]Blob_State_Info, e
             offset += size_of(u64)
 
             if size > u64(len(body) - offset) {
-                return nil, fmt.tprintf("blob %d: data length %d exceeds the bytes remaining", b, size)
+                return acc, fmt.tprintf("blob %d: data length %d exceeds the bytes remaining", b, size)
             }
             // File-relative, so the offset is pasteable into `xxd -s` / `dd skip=` directly.
             append(&acc, Blob_State_Info{tag = .INLINE, size = size, offset = lib.STATE_HEADER_SIZE + offset})
@@ -141,7 +168,7 @@ get_blob_state_infos :: proc(buf: []byte) -> (blobs: [dynamic]Blob_State_Info, e
 
         case .REF:
             if offset + size_of(lib.Bid) + size_of(u64) > len(body) {
-                return nil, fmt.tprintf("blob %d: missing ID and size", b)
+                return acc, fmt.tprintf("blob %d: missing ID and size", b)
             }
             id_bytes: [size_of(lib.Bid)]byte
             copy(id_bytes[:], body[offset:][:size_of(lib.Bid)])
@@ -154,7 +181,7 @@ get_blob_state_infos :: proc(buf: []byte) -> (blobs: [dynamic]Blob_State_Info, e
             append(&acc, Blob_State_Info{tag = .REF, id = transmute(lib.Bid)id_bytes, size = transmute(u64)size_bytes})
 
         case:
-            return nil, fmt.tprintf("blob %d: unknown tag %d", b, u8(tag))
+            return acc, fmt.tprintf("blob %d: unknown tag %d", b, u8(tag))
         }
     }
     return acc, nil
@@ -233,9 +260,7 @@ dump_print_stanza :: proc(
         total_reprs += len(entry.reprs)
     }
 
-    fmt.printfln("State v%d", lib.STATE_VERSION)
-    fmt.printfln("State file:  %s", state_path)
-    fmt.printfln("Blobs dir:   %s/", blobs_dir)
+    dump_print_header(state_path, blobs_dir)
 
     for entry, id in regs {
         if entry == nil {continue}
@@ -338,27 +363,7 @@ dump_print_json :: proc(
     live_blobs: []^lib.Rc_Blob,
     regs: [lib.MAX_REGS]^lib.Reg_Entry,
 ) {
-    stats, have_blobs_dir := dump_blob_dir_stats(blobs_dir, disk_blobs)
-
-    fmt.printf(
-        `{{"state_version": %d, "state_file": {{"path": "%s", "bytes": %d}}`,
-        lib.STATE_VERSION,
-        lib.json_escape_string(state_path),
-        len(buf),
-    )
-    // The whole `blobs_dir` object is null when there is no blobs dir. This is not necessarily an error if the state
-    // file only has inline blobs so the blob dir was never created.
-    if have_blobs_dir {
-        fmt.printf(
-            `, "blobs_dir": {{"path": "%s", "bytes": %d, "files": %d, "orphaned": %d}}`,
-            lib.json_escape_string(blobs_dir),
-            stats.bytes,
-            stats.files,
-            stats.orphaned,
-        )
-    } else {
-        fmt.printf(`, "blobs_dir": null`)
-    }
+    dump_print_json_head(state_path, blobs_dir, buf, disk_blobs)
 
     // Blob list, effectively the blob table
     fmt.printf(`, "blobs": [`)
@@ -416,5 +421,82 @@ dump_print_json :: proc(
     }
 
     fmt.printf(`]}`)
+    fmt.println()
+}
+
+// Preliminary info in state dump. Used by the full and partial (failure) dumps.
+dump_print_header :: proc(state_path, blobs_dir: string) {
+    fmt.printfln("State v%d", lib.STATE_VERSION)
+    fmt.printfln("State file:  %s", state_path)
+    fmt.printfln("Blobs dir:   %s/", blobs_dir)
+}
+
+// Everything before the `"blobs"` list.
+dump_print_json_head :: proc(state_path, blobs_dir: string, buf: []byte, disk_blobs: []Blob_State_Info) {
+    stats, have_blobs_dir := dump_blob_dir_stats(blobs_dir, disk_blobs)
+
+    fmt.printf(
+        `{{"state_version": %d, "state_file": {{"path": "%s", "bytes": %d}}`,
+        lib.STATE_VERSION,
+        lib.json_escape_string(state_path),
+        len(buf),
+    )
+    // The whole `blobs_dir` object is null when there is no blobs dir. This is not necessarily an error if the state
+    // file only has inline blobs so the blob dir was never created.
+    if have_blobs_dir {
+        fmt.printf(
+            `, "blobs_dir": {{"path": "%s", "bytes": %d, "files": %d, "orphaned": %d}}`,
+            lib.json_escape_string(blobs_dir),
+            stats.bytes,
+            stats.files,
+            stats.orphaned,
+        )
+    } else {
+        fmt.printf(`, "blobs_dir": null`)
+    }
+}
+
+// A state file that stopped decoding. Prints the blob entries that did decode and where parsing stopped. Register
+// entries can't be printed because the load either never ran or discarded everything on failure.
+dump_print_partial_stanza :: proc(
+    state_path, blobs_dir: string,
+    buf: []byte,
+    blobs: []Blob_State_Info,
+    stopped: string,
+) {
+    dump_print_header(state_path, blobs_dir)
+
+    if len(blobs) > 0 {fmt.println()}
+    for blob, i in blobs {
+        num, unit := lib.human_readable_byte_count(blob.size)
+        fmt.printfln("%*s[%d]  %*s %-3s  %s", DUMP_REPR_COL, "", i, DUMP_SIZE_COL, num, unit, dump_storage_field(blob))
+    }
+
+    fmt.printfln("\n%-*s%d decoded", DUMP_SUMMARY_COL, "Blobs", len(blobs))
+    fmt.printfln("%-*s%s", DUMP_SUMMARY_COL, "State file", lib.human_readable_size(u64(len(buf))))
+    fmt.printfln("\n! parsing stopped: %s", stopped)
+}
+
+// `registers` is null rather than `[]` to indicate failure instead of suggesting there are just no registers in the
+// state. `error` key carries the same message the stanza prints.
+dump_print_partial_json :: proc(
+    state_path, blobs_dir: string,
+    buf: []byte,
+    blobs: []Blob_State_Info,
+    stopped: string,
+) {
+    dump_print_json_head(state_path, blobs_dir, buf, blobs)
+
+    fmt.printf(`, "blobs": [`)
+    for blob, i in blobs {
+        if i > 0 {fmt.print(", ")}
+        switch blob.tag {
+        case .INLINE:
+            fmt.printf(`{{"index": %d, "storage": "inline", "size": %d, "offset": %d}}`, i, blob.size, blob.offset)
+        case .REF:
+            fmt.printf(`{{"index": %d, "storage": "file", "size": %d, "id": %d}}`, i, blob.size, u16(blob.id))
+        }
+    }
+    fmt.printf(`], "registers": null, "error": "%s"}`, lib.json_escape_string(stopped))
     fmt.println()
 }

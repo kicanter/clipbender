@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -9,6 +10,26 @@ import lib "src:libclipbender"
 
 // Build a one-register state buffer so the walk below is checked against the real marshaller rather than a
 // hand-assembled byte string. Returns the marshalled bytes and the entry, which the caller frees.
+// Two registers with distinct payloads, so the blob table has two entries and a cut can land inside the second.
+dump_marshal_two :: proc(a, b: []byte) -> (buf: []byte, entries: [2]lib.Reg_Entry) {
+    entries[0] = lib.Reg_Entry {
+        reprs     = lib.data_repr_single(slice.clone(a), strings.clone("text/plain")),
+        timestamp = 1,
+    }
+    entries[1] = lib.Reg_Entry {
+        reprs     = lib.data_repr_single(slice.clone(b), strings.clone("text/plain")),
+        timestamp = 2,
+    }
+
+    regs: [lib.MAX_REGS]^lib.Reg_Entry
+    regs[lib.NAMED_START] = &entries[0]
+    regs[lib.NAMED_START + 1] = &entries[1]
+
+    buf = make([]byte, lib.state_size(regs))
+    written := lib.marshal_state(regs, buf)
+    return buf[:written], entries
+}
+
 dump_marshal_one :: proc(
     data: []byte,
     mime: string,
@@ -129,4 +150,95 @@ test_dump_blob_dir_stats_tolerates_missing_dir :: proc(t: ^testing.T) {
     stats, ok := dump_blob_dir_stats("test_dump_blobs_absent", nil)
     testing.expect(t, !ok, "a missing blobs directory should report not-ok")
     testing.expect_value(t, stats, Blob_Dir_Stats{})
+}
+
+// A state file that stops decoding partway must still hand back the entries that *did* decode -- that is the whole
+// point of the partial dump, and it is the opposite of the usual "discard everything on error" contract, so pin it.
+@(test)
+test_get_blob_state_infos_returns_partial_results :: proc(t: ^testing.T) {
+    // Two blobs, the second truncated: `dump_marshal_one` only makes one, so build the pair by hand.
+    first := transmute([]byte)string("hello world")
+    buf, entries := dump_marshal_two(first, transmute([]byte)string("second"))
+    defer delete(buf)
+    defer {entries := entries; for &e in entries {lib.free_reg_entry(&e)}}
+
+    // Cut inside the second entry: past the first blob's payload, but short of the second's length prefix.
+    cut ::
+        lib.STATE_HEADER_SIZE +
+        size_of(u16) +
+        size_of(lib.Blob_Tag) +
+        size_of(u64) +
+        len("hello world") +
+        size_of(lib.Blob_Tag) +
+        2
+    blobs, err := get_blob_state_infos(buf[:cut])
+    defer delete(blobs)
+
+    testing.expect(t, err != nil, "a truncated second entry should report an error")
+    if !testing.expect_value(t, len(blobs), 1) {return}
+    testing.expect_value(t, blobs[0].tag, lib.Blob_Tag.INLINE)
+    testing.expect_value(t, blobs[0].size, u64(len(first)))
+}
+
+// `dir=` plus the exit codes, which is the whole contract `main.odin` relies on: 0 for a readable state dir, 1 for one
+// that will not parse -- while still having printed what it could.
+@(test)
+test_cmd_dump_state_honours_dir_and_exit_codes :: proc(t: ^testing.T) {
+    dir := fmt.tprintf("/tmp/clipbender-dumpcli-%d", os.get_pid())
+    lib.make_private_directory(dir)
+    defer os.remove_all(dir)
+
+    buf, entry := dump_marshal_one(transmute([]byte)string("hello world"), "text/plain")
+    defer delete(buf)
+    defer {entry := entry; lib.free_reg_entry(&entry)}
+
+    path := state_file_path(dir)
+    defer delete(path)
+    testing.expect_value(t, os.write_entire_file(path, buf), nil)
+
+    dir_arg := fmt.tprintf("dir=%s", dir)
+    testing.expect_value(t, cmd_dump_state({dir_arg, "fmt=json"}), 0)
+
+    // Truncated inside the blob table: still dumped, but a non-zero code so a script can tell.
+    testing.expect_value(t, os.write_entire_file(path, buf[:len(buf) - 4]), nil)
+    testing.expect_value(t, cmd_dump_state({dir_arg, "fmt=json"}), 1)
+
+    // A `dir=` with no path is a usage error, not an empty dump.
+    testing.expect_value(t, cmd_dump_state({"dir="}), 1)
+    testing.expect_value(t, cmd_dump_state({"fmt=yaml"}), 1)
+}
+
+// Covers the branch `dir=` bypasses: with no argument, the directory comes from `resolve_state_dir`, which hands back
+// an *owned* string -- so this is the only path where `cmd_dump_state`'s conditional `defer delete(dir)` actually
+// frees anything. Without this the ASan run never exercises it, and a leak or a bad free there would go unnoticed.
+//
+// `$XDG_RUNTIME_DIR` is process-global and the runner is multi-threaded, so this is only safe because no other test
+// reads it: `resolve_state_dir` has exactly two callers, this command and `main`.
+@(test)
+test_cmd_dump_state_defaults_to_resolved_state_dir :: proc(t: ^testing.T) {
+    root := fmt.tprintf("/tmp/clipbender-dumpenv-%d", os.get_pid())
+    lib.make_private_directory(root)
+    defer os.remove_all(root)
+
+    // `ephemeral_state_dir` appends the subdir to `$XDG_RUNTIME_DIR`, so the state file has to land inside it.
+    state_dir := fmt.tprintf("%s/%s", root, lib.CLIPBENDER_SUBDIR)
+    lib.make_private_directory(state_dir)
+
+    buf, entry := dump_marshal_one(transmute([]byte)string("hello world"), "text/plain")
+    defer delete(buf)
+    defer {entry := entry; lib.free_reg_entry(&entry)}
+
+    path := state_file_path(state_dir)
+    defer delete(path)
+    testing.expect_value(t, os.write_entire_file(path, buf), nil)
+
+    saved := os.get_env(lib.RUNTIME_ENV_VAR, context.temp_allocator)
+    testing.expect_value(t, os.set_env(lib.RUNTIME_ENV_VAR, root), nil)
+    defer if len(saved) > 0 {
+        os.set_env(lib.RUNTIME_ENV_VAR, saved)
+    } else {
+        os.unset_env(lib.RUNTIME_ENV_VAR)
+    }
+
+    testing.expect_value(t, cmd_dump_state({"fmt=json"}), 0)
 }
