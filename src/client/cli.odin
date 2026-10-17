@@ -13,7 +13,7 @@ RESP_BUF_SMALL :: 256 // OK/ERROR responses
 
 print_usage_and_exit :: proc(is_err: bool) {
     usage_str :=
-        "Usage: clipbender [command] \n\n" +
+        "Usage: clipbender [command]\n\n" +
         "Commands:\n" +
         "\t(none)                                  Launch the clipbender GUI\n" +
         "\tset <dest-reg> [source-reg]             Set the `dest-reg` with the content from `source-reg` or stdin.\n" +
@@ -48,85 +48,88 @@ print_usage_and_exit :: proc(is_err: bool) {
     }
 }
 
-print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type) {
+print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type, is_err: bool) {
+    usage: string
     switch cmd_type {
     case .SET:
-        fmt.eprintln(
-            "Usage: clipbender set <dest-reg> [source-reg] [mime=<type/subtype>]...\n\n" +
-            "Set the contents of `dest-reg` to the contents of `source-reg`. If no `source-reg` is passed, stdin is\n" +
-            "used. This allows the user to pipe or stdin redirect data inline to a register.\n\n" +
-            "`mime=` labels stdin explicitly and may be repeated, because one payload can legitimately carry several\n" +
-            "names (an RTF document is both `application/rtf` and `text/plain`). Listed most-specific-first. When given,\n" +
-            "it replaces magic-byte detection rather than adding to it, so name every mime you want the register to\n" +
-            "claim. Applies to stdin only, not to a `source-reg`.\n\n" +
-            "Registers:\n" +
-            "\t0-9                                Numbered clipboard registers: clipboard selection recency (source-only).\n" +
-            "\t@0-@9                              Numbered primary registers: primary selection recency (source-only).\n" +
-            "\ta-z                                Named registers: store data (dest/source).\n" +
-            "\tA-Z                                Named registers: append data to corresponding lowercase register (dest-only).\n" +
-            "\tselection                          Live clipboard selection (dest/source).\n" +
-            "\t@selection                         Live primary selection (dest/source).\n\n" +
-            "Examples:\n" +
-            "\tclipbender set a selection         Set register `a` from the live clipboard selection\n" +
-            "\tclipbender set selection 1         Set the live clipboard selection from clipboard register `1`\n" +
-            "\tclipbender set a @selection        Set register `a` from the live primary selection\n" +
-            "\tclipbender set A selection         Append the live clipboard selection to register `a`\n" +
-            "\tclipbender set @selection @5       Set the live primary selection from primary register `5`\n" +
-            "\t<cmd> | clipbender set a           Set register `a` from stdin pipe\n" +
-            "\tclipbender set a < <file>          Set register `a` from stdin redirection\n" +
-            "\tclipbender set a mime=text/markdown mime=text/plain < notes.md\n" +
-            "\t                                   Label stdin explicitly instead of detecting it\n",
-        )
+        usage =
+            ("Usage: clipbender set <dest-reg> [source-reg] [mime=<type/subtype>]...\n\n" +
+                "Set the contents of `dest-reg` to the contents of `source-reg`. If no `source-reg` is passed, stdin is\n" +
+                "used. This allows the user to pipe or stdin redirect data inline to a register.\n\n" +
+                "`mime=` labels stdin explicitly and may be repeated, because one payload can legitimately carry several\n" +
+                "names (an RTF document is both `application/rtf` and `text/plain`). Listed most-specific-first. When given,\n" +
+                "it replaces magic-byte detection rather than adding to it, so name every mime you want the register to\n" +
+                "claim. Applies to stdin only, not to a `source-reg`.\n\n" +
+                "Registers:\n" +
+                "\t0-9                                Numbered clipboard registers: clipboard selection recency (source-only).\n" +
+                "\t@0-@9                              Numbered primary registers: primary selection recency (source-only).\n" +
+                "\ta-z                                Named registers: store data (dest/source).\n" +
+                "\tA-Z                                Named registers: append data to corresponding lowercase register (dest-only).\n" +
+                "\tselection                          Live clipboard selection (dest/source).\n" +
+                "\t@selection                         Live primary selection (dest/source).\n\n" +
+                "Examples:\n" +
+                "\tclipbender set a selection         Set register `a` from the live clipboard selection\n" +
+                "\tclipbender set selection 1         Set the live clipboard selection from clipboard register `1`\n" +
+                "\tclipbender set a @selection        Set register `a` from the live primary selection\n" +
+                "\tclipbender set A selection         Append the live clipboard selection to register `a`\n" +
+                "\tclipbender set @selection @5       Set the live primary selection from primary register `5`\n" +
+                "\t<cmd> | clipbender set a           Set register `a` from stdin pipe\n" +
+                "\tclipbender set a < <file>          Set register `a` from stdin redirection\n" +
+                "\tclipbender set a mime=text/markdown mime=text/plain < notes.md\n" +
+                "\t                                   Label stdin explicitly instead of detecting it\n")
     case .GET:
-        fmt.eprintln(
-            "Usage: clipbender get <filter...> [fmt=<table|json|raw>]\n\n" +
-            "Retrieve the content, mime type, and timestamp of the registers matching `filter`. `fmt=table` (the default)\n" +
-            "prints an aligned table, `fmt=json` emits structured JSON, and `fmt=raw` emits just the register contents\n" +
-            "separated by NUL bytes (recoverable with `read -d ''`, `xargs -0`; use `fmt=json` for binary contents).\n\n" +
-            "Keywords (double prefix `++`/`--`), `@` selects the primary-side variant:\n" +
-            "\t++all, --all                                         All registers\n" +
-            "\t++numbered, ++@numbered                              Clipboard / primary recency registers\n" +
-            "\t++named                                              Named registers (a-z)\n" +
-            "\t++selection, ++@selection                            Live clipboard / primary selection\n\n" +
-            "Exact mime (attaches to any `+`/`++` token with `=`; quote mimes containing `;`):\n" +
-            "\t+a=image/png                                         Fetch that exact representation\n" +
-            "\t++all=text/plain                                     ...for every register\n" +
-            "\t++all=text/plain +a=image/png                        Broad default, narrow override\n" +
-            "\t'+a=text/plain;charset=utf-8'                        Quote it: `;` ends the command otherwise\n\n" +
-            "Register tokens (single prefix `+`/`-`):\n" +
-            "\t+adz, +038, +@038                                    Include specific registers\n" +
-            "\t-adz, -038, -@038                                    Exclude specific registers\n" +
-            "\t+0:5, +a:f, +@0:5                                    Include range\n" +
-            "\t-0:5, -a:f, -@0:5                                    Exclude range\n\n" +
-            "Examples:\n" +
-            "\tclipbender get ++all                                 Print all registers.\n" +
-            "\tclipbender get ++all --@selection                    Print all registers except the live primary selection.\n" +
-            "\tclipbender get ++named -adz                          Print named registers except `a`, `d`, `z`.\n" +
-            "\tclipbender get +@012 +012                            Print the first three numbered registers from primary and clipboard.\n" +
-            "\tclipbender get +0:5 +@0:3                            Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
-            "\tclipbender get ++numbered fmt=json                   Print clipboard recency registers as structured JSON.\n" +
-            "\tclipbender get ++selection                           Print the live clipboard selection.\n" +
-            "\tclipbender get +a fmt=raw | wl-copy                  Pipe only the contents of register `a` into wl-copy.\n" +
-            "\tclipbender get +a fmt=raw > <file>                   Redirect the contents of register `a` to `file`.\n" +
-            "\tclipbender get +a=image/png fmt=raw > out.png        Write register `a`'s PNG representation to a file.\n",
-        )
+        usage =
+            ("Usage: clipbender get <filter...> [fmt=<table|json|raw>]\n\n" +
+                "Retrieve the content, mime type, and timestamp of the registers matching `filter`. `fmt=table` (the default)\n" +
+                "prints an aligned table, `fmt=json` emits structured JSON, and `fmt=raw` emits just the register contents\n" +
+                "separated by NUL bytes (recoverable with `read -d ''`, `xargs -0`; use `fmt=json` for binary contents).\n\n" +
+                "Keywords (double prefix `++`/`--`), `@` selects the primary-side variant:\n" +
+                "\t++all, --all                                         All registers\n" +
+                "\t++numbered, ++@numbered                              Clipboard / primary recency registers\n" +
+                "\t++named                                              Named registers (a-z)\n" +
+                "\t++selection, ++@selection                            Live clipboard / primary selection\n\n" +
+                "Exact mime (attaches to any `+`/`++` token with `=`; quote mimes containing `;`):\n" +
+                "\t+a=image/png                                         Fetch that exact representation\n" +
+                "\t++all=text/plain                                     ...for every register\n" +
+                "\t++all=text/plain +a=image/png                        Broad default, narrow override\n" +
+                "\t+a='text/plain;charset=utf-8'                        Quote it: `;` ends the command otherwise\n\n" +
+                "Register tokens (single prefix `+`/`-`):\n" +
+                "\t+adz, +038, +@038                                    Include specific registers\n" +
+                "\t-adz, -038, -@038                                    Exclude specific registers\n" +
+                "\t+0:5, +a:f, +@0:5                                    Include range\n" +
+                "\t-0:5, -a:f, -@0:5                                    Exclude range\n\n" +
+                "Examples:\n" +
+                "\tclipbender get ++all                                 Print all registers.\n" +
+                "\tclipbender get ++all --@selection                    Print all registers except the live primary selection.\n" +
+                "\tclipbender get ++named -adz                          Print named registers except `a`, `d`, `z`.\n" +
+                "\tclipbender get +@012 +012                            Print the first three numbered registers from primary and clipboard.\n" +
+                "\tclipbender get +0:5 +@0:3                            Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
+                "\tclipbender get ++numbered fmt=json                   Print clipboard recency registers as structured JSON.\n" +
+                "\tclipbender get ++selection                           Print the live clipboard selection.\n" +
+                "\tclipbender get +a fmt=raw | wl-copy                  Pipe only the contents of register `a` into wl-copy.\n" +
+                "\tclipbender get +a fmt=raw > <file>                   Redirect the contents of register `a` to `file`.\n" +
+                "\tclipbender get +a=image/png fmt=raw > out.png        Write register `a`'s PNG representation to a file.\n")
     case .CLEAR:
-        fmt.eprintln(
-            "Usage: clipbender clear <reg-id>\n\n" +
-            "Clear the contents of a single register.\n\n" +
-            "Examples:\n" +
-            "\tclipbender clear a                 Clear register `a`.\n" +
-            "\tclipbender clear z                 Clear register `z`.\n",
-        )
+        usage =
+            ("Usage: clipbender clear <reg-id>\n\n" +
+                "Clear the contents of a single register.\n\n" +
+                "Examples:\n" +
+                "\tclipbender clear a                 Clear register `a`.\n" +
+                "\tclipbender clear z                 Clear register `z`.\n")
     case .SHUTDOWN:
-        fmt.eprintln(
-            "Usage: clipbender shutdown\n\n" +
-            "Stop running the clipbenderd daemon.\n\n" +
-            "Example:\n" +
-            "\tclipbender shutdown                Shutdown the daemon.\n",
-        )
+        usage =
+            ("Usage: clipbender shutdown\n\n" +
+                "Stop running the clipbenderd daemon.\n\n" +
+                "Example:\n" +
+                "\tclipbender shutdown                Shutdown the daemon.\n")
     }
-    os.exit(1)
+
+    if is_err {
+        fmt.eprintln(usage)
+        os.exit(1)
+    }
+    fmt.println(usage)
+    os.exit(0)
 }
 
 // Live selections are named `selection`/`@selection` rather than `clipboard`/`primary` so the `@`-marks-primary
@@ -256,7 +259,7 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
     explicit_mimes, mime_err := parse_set_mime_flags(args)
     if mime_err != nil {
         fmt.eprintfln("Error: %v", mime_err.?)
-        print_cmd_usage_and_exit(.SET)
+        print_cmd_usage_and_exit(.SET, true)
     }
     positional := make([dynamic]string, 0, len(args))
     defer delete(positional)
@@ -270,12 +273,12 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
         // mimes already describe it -- so silently ignoring the flag here would be worse than refusing.
         if len(explicit_mimes) > 0 {
             fmt.eprintln("Error: `mime=` applies to inline/stdin input, not to a source register")
-            print_cmd_usage_and_exit(.SET)
+            print_cmd_usage_and_exit(.SET, true)
         }
         dest_reg, set_mode, source_reg, err := parse_cmd_set_reg(positional[0], positional[1])
         if err != nil {
             fmt.eprintfln("Error: %v", err.?)
-            print_cmd_usage_and_exit(.SET)
+            print_cmd_usage_and_exit(.SET, true)
         }
         msg: [lib.CMD_SET_REG_SIZE]byte
         written := lib.marshal_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
@@ -294,7 +297,7 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
         dest_reg, set_mode, mimes, data, err := parse_cmd_set_inline(positional[0], os.stdin, explicit_mimes)
         if err != nil {
             fmt.eprintfln("Error: %v", err.?)
-            print_cmd_usage_and_exit(.SET)
+            print_cmd_usage_and_exit(.SET, true)
         }
 
         // SET with inline data is an N-byte message; size it to the content rather than guessing.
@@ -322,7 +325,7 @@ cmd_set :: proc(args: []string, client_fd: linux.Fd) {
             mimes,
         )
     } else {
-        print_cmd_usage_and_exit(.SET)
+        print_cmd_usage_and_exit(.SET, true)
     }
 
     // Receive response from daemon
@@ -1149,13 +1152,13 @@ retry_get :: proc(
 // `args` includes everything after the `clipbender get` subcommand.
 cmd_get :: proc(args: []string, client_fd: linux.Fd) {
     if len(args) < 1 {
-        print_cmd_usage_and_exit(.GET)
+        print_cmd_usage_and_exit(.GET, true)
     }
 
     filter, format, err := parse_cmd_get(args)
     if err != nil {
         fmt.eprintfln("Error: %v", err.?)
-        print_cmd_usage_and_exit(.GET)
+        print_cmd_usage_and_exit(.GET, true)
     }
 
     // Try to infer the output preference for a single-register request that isn't going to stdout.
@@ -1251,13 +1254,13 @@ parse_cmd_clear :: proc(reg_arg: string) -> (reg: lib.Reg_Id, err: Maybe(string)
 // `args` includes everything after the `clipbender clear` subcommand
 cmd_clear :: proc(args: []string, client_fd: linux.Fd) {
     if len(args) != 1 {
-        print_cmd_usage_and_exit(.CLEAR)
+        print_cmd_usage_and_exit(.CLEAR, true)
     }
 
     reg_id, err := parse_cmd_clear(args[0])
     if err != nil {
         fmt.eprintfln("Error: %v", err.?)
-        print_cmd_usage_and_exit(.CLEAR)
+        print_cmd_usage_and_exit(.CLEAR, true)
     }
 
     // Send CLEAR message
@@ -1294,7 +1297,7 @@ cmd_clear :: proc(args: []string, client_fd: linux.Fd) {
 // `args` includes everything after the `clipbender shutdown` subcommand
 cmd_shutdown :: proc(args: []string, client_fd: linux.Fd) {
     if len(args) != 0 {
-        print_cmd_usage_and_exit(.SHUTDOWN)
+        print_cmd_usage_and_exit(.SHUTDOWN, true)
     }
 
     // Send SHUTDOWN message
@@ -1329,17 +1332,36 @@ cmd_shutdown :: proc(args: []string, client_fd: linux.Fd) {
 }
 
 run_cli :: proc(client_fd: linux.Fd, args: []string) {
-    subcommand := args[0]
-    switch subcommand {
+    cmd_type: lib.Command_Type
+    switch args[0] {
     case "set":
-        cmd_set(args[1:], client_fd)
+        cmd_type = .SET
     case "get":
-        cmd_get(args[1:], client_fd)
+        cmd_type = .GET
     case "clear":
-        cmd_clear(args[1:], client_fd)
+        cmd_type = .CLEAR
     case "shutdown":
-        cmd_shutdown(args[1:], client_fd)
+        cmd_type = .SHUTDOWN
     case:
         print_usage_and_exit(true)
+    }
+
+    // Check for `help` arg before dispatch.
+    for arg in args[1:] {
+        switch arg {
+        case "-h", "--help", "help":
+            print_cmd_usage_and_exit(cmd_type, false)
+        }
+    }
+
+    switch cmd_type {
+    case .SET:
+        cmd_set(args[1:], client_fd)
+    case .GET:
+        cmd_get(args[1:], client_fd)
+    case .CLEAR:
+        cmd_clear(args[1:], client_fd)
+    case .SHUTDOWN:
+        cmd_shutdown(args[1:], client_fd)
     }
 }
