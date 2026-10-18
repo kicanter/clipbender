@@ -633,11 +633,6 @@ validate_exact_mime :: proc(mime: string) -> Maybe(string) {
     if len(mime) > lib.MAX_MIME_LEN {
         return fmt.tprintf("mime is %d bytes, the maximum is %d (got `%v`)", len(mime), lib.MAX_MIME_LEN, mime)
     }
-    if !strings.contains(mime, "/") {
-        // Deliberately no prefix matching, unlike wl-paste's `-t image`: that discards the ranked order the VISUAL policy
-        // exists to provide, since alphabetically `image/gif` would beat `image/png`.
-        return fmt.tprintf("mime must be a full `type/subtype` (got `%v`)", mime)
-    }
     return nil
 }
 
