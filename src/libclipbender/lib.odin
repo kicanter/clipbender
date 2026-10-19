@@ -1946,9 +1946,8 @@ STATE_HEADER_SIZE :: len(STATE_MAGIC) + size_of(Monotonic_Version)
 
 // Unique blobs in the order they are first named. A blob's position here is its wire index.
 unique_blobs :: proc(regs: [MAX_REGS]^Reg_Entry, allocator := context.allocator) -> [dynamic]^Rc_Blob {
-    // We could count the number of reprs we have and pre-allocate the dynamic array capacity to save on allocations,
-    // but this is dominated by the linear scan across registers anyhow. We may also be passed an arena allocator which
-    // would theoretically also improve speed, but realistically may save microseconds.
+    // Cost dominated by the `blob_index()` scans, not the allocations. Linear scan across the "seen" table is faster
+    // than keeping a "seen" map due to hashing and cache misses.
     table := make([dynamic]^Rc_Blob, allocator)
     for entry in regs {
         if entry == nil {continue}
