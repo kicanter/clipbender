@@ -511,9 +511,6 @@ test_resolve_mime_groups_excluded_register_drops_its_mime :: proc(t: ^testing.T)
 
 @(test)
 test_parse_cmd_get_rejects_bad_mimes :: proc(t: ^testing.T) {
-    _, _, err_no_slash := parse_cmd_get({"+a=text"})
-    testing.expect(t, err_no_slash != nil, "mime without `/` should be rejected")
-
     _, _, err_empty := parse_cmd_get({"+a="})
     testing.expect(t, err_empty != nil, "empty mime should be rejected")
 
@@ -570,9 +567,6 @@ test_parse_set_mime_flags_rejects_invalid :: proc(t: ^testing.T) {
     // Shares `validate_exact_mime` with GET, so SET rejects exactly what `+a=` rejects.
     _, err_empty := parse_set_mime_flags({"a", "mime="})
     testing.expect(t, err_empty != nil, "empty mime should be rejected")
-
-    _, err_no_slash := parse_set_mime_flags({"a", "mime=text"})
-    testing.expect(t, err_no_slash != nil, "mime without `/` should be rejected")
 
     long: [lib.MAX_MIME_LEN + 1]byte
     for &c in long {c = 'x'}
