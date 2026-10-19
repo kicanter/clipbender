@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/linux"
+import "core:time"
 import "core:unicode/utf8"
 
 import lib "src:libclipbender"
@@ -938,16 +939,23 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     table_sep := "├────────────┼─────────────────────┼────────────────────────────┼──────────────────────────────────────────┤"
     table_bot := "└────────────┴─────────────────────┴────────────────────────────┴──────────────────────────────────────────┘"
     fmt.println(table_top)
-    fmt.println(
-        "│  Register  │ Timestamp           │ Mimes                      │ Content                                  │",
-    )
 
     // Mime and content cells are pre-padded by `table_cell`, so the format string must not pad them again.
     CONTENT_FMT :: "│ % 10s │ % -19s │ %s │ %s │"
     MIME_COL_WIDTH :: 26 // 24 for the longest common mime, +2 for the `= `/`+ ` mark
     CONTENT_COL_WIDTH :: 40
 
-    ts_buf: [19]u8
+    ts_buf: [lib.TIMESTAMP_LEN]u8
+    // Timestamp stored as UTC epoch seconds, translate to local wall-clock time.
+    tz := lib.local_timezone()
+    defer lib.free_local_timezone(tz)
+
+    // UTC/time zone offset
+    offset_buf: [lib.UTC_OFFSET_LEN]u8
+    fmt.printfln(
+        "│  Register  │ Timestamp %s │ Mimes                      │ Content                                  │",
+        lib.format_utc_offset(tz, time.to_unix_seconds(time.now()), &offset_buf),
+    )
     any_printed := false
     for group in REG_GROUPS {
         group_printed := false
@@ -964,7 +972,7 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
             fmt.printfln(
                 CONTENT_FMT,
                 lib.reg_id_to_string(id),
-                lib.format_unix_timestamp(entry.timestamp, &ts_buf),
+                lib.format_unix_timestamp(entry.timestamp, &ts_buf, tz),
                 table_cell(fmt.tprintf("%c %s", REPR_MARK, entry.reprs[head].mimes[0]), MIME_COL_WIDTH),
                 display_content(entry, CONTENT_COL_WIDTH),
             )

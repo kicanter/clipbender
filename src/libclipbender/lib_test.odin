@@ -1,9 +1,13 @@
 package libclipbender
 
 import "core:fmt"
+import "core:log"
+import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:testing"
+import "core:time/datetime"
+import "core:time/timezone"
 
 @(test)
 test_reg_id_validity :: proc(t: ^testing.T) {
@@ -2354,4 +2358,125 @@ test_rebuild_bids_ignores_inline_blobs :: proc(t: ^testing.T) {
 
     rebuild_bids(&store, []^Rc_Blob{small})
     testing.expect(t, len(store) == 0 || !(3 in store[0]), "an inline blob should not hold an ID claim")
+}
+
+// A nil region keeps the pre-timezone behaviour: timestamps format as UTC, labelled as such by `timezone_label`.
+@(test)
+test_format_unix_timestamp_utc :: proc(t: ^testing.T) {
+    buf: [TIMESTAMP_LEN]u8
+    testing.expect_value(t, format_unix_timestamp(0, &buf), "1970-01-01 00:00:00")
+    testing.expect_value(t, format_unix_timestamp(1768478400, &buf), "2026-01-15 12:00:00")
+}
+
+// The offset has to be resolved per timestamp, not once: these two instants are in the same zone but on opposite sides
+// of a DST transition, so a single cached offset would misreport one of them by an hour.
+@(test)
+test_format_unix_timestamp_applies_dst_per_timestamp :: proc(t: ^testing.T) {
+    tz, ok := timezone.region_load("America/New_York")
+    if !ok {
+        log.warn("America/New_York unavailable, skipping timezone formatting test")
+        return
+    }
+    defer free_local_timezone(tz)
+
+    buf: [TIMESTAMP_LEN]u8
+    testing.expect_value(t, format_unix_timestamp(1768478400, &buf, tz), "2026-01-15 07:00:00")
+    testing.expect_value(t, format_unix_timestamp(1784116800, &buf, tz), "2026-07-15 08:00:00")
+    // Negative local time: UTC epoch 0 is still 1969 in New York
+    testing.expect_value(t, format_unix_timestamp(0, &buf, tz), "1969-12-31 19:00:00")
+}
+
+// A zone east of UTC, and one on a 45-minute offset, since both shift the wall-clock differently than the western
+// whole-hour case above.
+@(test)
+test_format_unix_timestamp_eastern_and_subhour_zones :: proc(t: ^testing.T) {
+    buf: [TIMESTAMP_LEN]u8
+    if tz, ok := timezone.region_load("Europe/Berlin"); ok {
+        defer free_local_timezone(tz)
+        testing.expect_value(t, format_unix_timestamp(1768478400, &buf, tz), "2026-01-15 13:00:00")
+    }
+    if tz, ok := timezone.region_load("Asia/Kathmandu"); ok {
+        defer free_local_timezone(tz)
+        testing.expect_value(t, format_unix_timestamp(1768478400, &buf, tz), "2026-01-15 17:45:00")
+    }
+}
+
+// `TZ` is the manual override, so a set `TZ` must win over the system zone. This also covers the resolution path the
+// CLI actually takes, which the tests above bypass by loading a region by name.
+@(test)
+test_local_timezone_honors_tz_env :: proc(t: ^testing.T) {
+    saved, had_saved := os.lookup_env("TZ", context.temp_allocator)
+    defer if had_saved {os.set_env("TZ", saved)} else {os.unset_env("TZ")}
+
+    os.set_env("TZ", "America/New_York")
+    tz := local_timezone()
+    if tz == nil {
+        log.warn("No tzdata for America/New_York, skipping TZ override test")
+        return
+    }
+    defer free_local_timezone(tz)
+
+    buf: [TIMESTAMP_LEN]u8
+    testing.expect_value(t, format_unix_timestamp(1768478400, &buf, tz), "2026-01-15 07:00:00")
+}
+
+// The caption is the only thing telling a reader what zone the 19-char timestamps are in, so it must never be blank
+// or misleading: a named zone reports its name, an unnamed one says "local time", and no zone at all says UTC.
+@(test)
+test_timezone_label :: proc(t: ^testing.T) {
+    testing.expect_value(t, timezone_label(nil), "UTC")
+
+    if tz, ok := timezone.region_load("America/New_York"); ok {
+        defer free_local_timezone(tz)
+        testing.expect_value(t, timezone_label(tz), "America/New_York")
+    }
+
+    unnamed := datetime.TZ_Region{}
+    testing.expect_value(t, timezone_label(&unnamed), "local time")
+}
+
+// The zone name comes out of the `/etc/localtime` symlink, which is normally relative, so the tail has to survive
+// resolution. Only asserts the shape, since the value is whatever this machine is set to.
+@(test)
+test_localtime_zone_name_shape :: proc(t: ^testing.T) {
+    name := local_timezone_name(context.temp_allocator)
+    if name == "" {
+        log.warn("No /etc/localtime on this machine, skipping zone name test")
+        return
+    }
+    testing.expect(t, !strings.contains(name, ".."), "a relative symlink should be resolved before the tail is taken")
+    testing.expect(t, !strings.has_prefix(name, "/"), "the name should be the Area/Location tail, not a full path")
+    testing.expect(t, !strings.contains(name, "zoneinfo"), "the zoneinfo prefix should be stripped")
+}
+
+// The offset label fills the `Timestamp` header cell exactly, so any variation in its width would shift the table's
+// second column out of alignment with its border.
+@(test)
+test_format_utc_offset_is_fixed_width :: proc(t: ^testing.T) {
+    buf: [UTC_OFFSET_LEN]u8
+    testing.expect_value(t, format_utc_offset(nil, 0, &buf), "UTC+00:00")
+
+    Case :: struct {
+        zone:   string,
+        at:     i64,
+        expect: string,
+    }
+    cases := [?]Case {
+        {"America/New_York", 1768478400, "UTC-05:00"}, // EST
+        {"America/New_York", 1784116800, "UTC-04:00"}, // EDT, same zone
+        {"Europe/Berlin", 1768478400, "UTC+01:00"},
+        {"Asia/Kathmandu", 1768478400, "UTC+05:45"}, // 45-minute offset
+        {"Pacific/Kiritimati", 1768478400, "UTC+14:00"}, // widest offset in use
+    }
+    for c in cases {
+        tz, ok := timezone.region_load(c.zone)
+        if !ok {
+            log.warnf("No tzdata for %s, skipping", c.zone)
+            continue
+        }
+        defer free_local_timezone(tz)
+        label := format_utc_offset(tz, c.at, &buf)
+        testing.expect_value(t, label, c.expect)
+        testing.expect_value(t, len(label), UTC_OFFSET_LEN)
+    }
 }

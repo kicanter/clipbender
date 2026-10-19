@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
+import "core:time"
 
 import lib "src:libclipbender"
 
@@ -260,17 +261,29 @@ dump_print_stanza :: proc(
         total_reprs += len(entry.reprs)
     }
 
+    // Timestamp stored as UTC epoch seconds, translate to local wall-clock time.
+    tz := lib.local_timezone()
+    defer lib.free_local_timezone(tz)
+
     dump_print_header(state_path, blobs_dir)
+
+    // UTC/time zone offset
+    offset_buf: [lib.UTC_OFFSET_LEN]u8
+    fmt.printfln(
+        "Timezone:    %s (%s)",
+        lib.timezone_label(tz),
+        lib.format_utc_offset(tz, time.to_unix_seconds(time.now()), &offset_buf),
+    )
 
     for entry, id in regs {
         if entry == nil {continue}
-        ts_buf: [19]u8
+        ts_buf: [lib.TIMESTAMP_LEN]u8
         // <register>  <date> <time>
         fmt.printfln(
             "\n%*s  %s",
             DUMP_REG_COL,
             lib.reg_id_to_string(lib.Reg_Id(id)),
-            lib.format_unix_timestamp(entry.timestamp, &ts_buf),
+            lib.format_unix_timestamp(entry.timestamp, &ts_buf, tz),
         )
 
         for repr in entry.reprs {

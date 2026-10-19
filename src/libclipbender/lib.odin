@@ -10,6 +10,8 @@ import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:time"
+import "core:time/datetime"
+import "core:time/timezone"
 import "core:unicode/utf8"
 
 Semantic_Version :: struct {
@@ -2412,9 +2414,97 @@ unmarshal_state_entries :: proc(
     return count, nil
 }
 
-// Format unix epoch timestamp as date time
-format_unix_timestamp :: proc(timestamp: i64, buf: ^[19]u8) -> string {
+// The symlink the system keeps pointed at the configured zone's TZif file.
+LOCALTIME_PATH :: "/etc/localtime"
+// The directory that symlink points into, and the marker we split on to recover an `Area/Location` zone name from it.
+ZONEINFO_MARKER :: "zoneinfo/"
+
+// The `Area/Location` name behind `/etc/localtime`, or "" when it cannot be recovered.
+local_timezone_name :: proc(allocator := context.temp_allocator) -> string {
+    resolved, err := os.get_absolute_path(LOCALTIME_PATH, allocator)
+    if err != nil {return ""}
+    marker := strings.index(resolved, ZONEINFO_MARKER)
+    if marker < 0 {return ""}
+    return resolved[marker + len(ZONEINFO_MARKER):]
+}
+
+// The local timezone, or `nil` when it cannot be resolved. Load the TZif file once per process and reuse that region.
+//
+// `TZ` env var wins when set, `/etc/localtime` is the fallback.
+local_timezone :: proc() -> ^datetime.TZ_Region {
+    if name, found := os.lookup_env("TZ", context.temp_allocator); found && name != "" {
+        if region, loaded := timezone.region_load(name); loaded {
+            return region
+        }
+        log.debugf("TZ is `%s` but that zone could not be loaded, falling back to %s", name, LOCALTIME_PATH)
+    }
+    region, loaded := timezone.region_load_from_file(LOCALTIME_PATH, local_timezone_name())
+    if !loaded {
+        log.debugf("No local timezone could be loaded from %s, timestamps will read as UTC", LOCALTIME_PATH)
+        return nil
+    }
+    return region
+}
+
+// Uses named zone e.g. "America/New_York" if defined, otherwise falls back to "local time" or "UTC" if no tz region.
+timezone_label :: proc(tz: ^datetime.TZ_Region) -> string {
+    if tz == nil {return "UTC"}
+    return tz.name if tz.name != "" else "local time"
+}
+
+// For converting days to seconds when using the `Delta` struct returned from `datetime.subtract_datetimes()`.
+SECONDS_PER_DAY :: 60 * 60 * 24
+
+// Width of a `UTC[+|-]HH:MM` label. Every zone's offset is a whole number of minutes, so this never varies.
+UTC_OFFSET_LEN :: 9
+
+// `tz`'s HH:MM` offset from UTC at `timestamp` in seconds. Zero when `tz` is nil.
+timezone_offset_seconds :: proc(tz: ^datetime.TZ_Region, timestamp: i64) -> i64 {
+    if tz == nil {return 0}
+    utc, ok := time.time_to_datetime(time.unix(timestamp, 0))
+    if !ok {return 0}
+    local, converted := timezone.datetime_to_tz(utc, tz)
+    if !converted {return 0}
+    delta, err := datetime.subtract_datetimes(local, utc)
+    if err != .None {return 0}
+    return delta.days * SECONDS_PER_DAY + delta.seconds
+}
+
+// `UTC[+|-]HH:MM` for `tz` at `timestamp`.
+format_utc_offset :: proc(tz: ^datetime.TZ_Region, timestamp: i64, buf: ^[UTC_OFFSET_LEN]u8) -> string {
+    offset := timezone_offset_seconds(tz, timestamp)
+    sign: rune = '+' if offset >= 0 else '-'
+    magnitude := abs(offset)
+    return fmt.bprintf(buf[:], "UTC%c%02d:%02d", sign, magnitude / 3600, (magnitude % 3600) / 60)
+}
+
+free_local_timezone :: proc(region: ^datetime.TZ_Region) {
+    if region != nil {timezone.region_destroy(region)}
+}
+
+// Width of a formatted timestamp: `YYYY-MM-DD HH:MM:SS`.
+TIMESTAMP_LEN :: 19
+
+// Format unix epoch timestamp as a date time in `tz`, or UTC when `tz` is nil. UTC offset is included in the actual
+// time calculation, just not the final output string.
+format_unix_timestamp :: proc(timestamp: i64, buf: ^[TIMESTAMP_LEN]u8, tz: ^datetime.TZ_Region = nil) -> string {
     t := time.unix(timestamp, 0)
+    if tz != nil {
+        utc, ok := time.time_to_datetime(t)
+        local, converted := timezone.datetime_to_tz(utc, tz)
+        if ok && converted {
+            return fmt.bprintf(
+                buf[:],
+                "%04d-%02d-%02d %02d:%02d:%02d",
+                local.year,
+                local.month,
+                local.day,
+                local.hour,
+                local.minute,
+                local.second,
+            )
+        }
+    }
     y, m, d := time.date(t)
     h, min, s := time.clock(t)
     return fmt.bprintf(buf[:], "%04d-%02d-%02d %02d:%02d:%02d", y, int(m), d, h, min, s)
