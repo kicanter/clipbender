@@ -69,3 +69,21 @@ test_set_inline_dedups_by_content :: proc(t: ^testing.T) {
     table := lib.unique_blobs(get_registers(&server.registers, lib.CMD_GET_FILTER_ALL), context.temp_allocator)
     testing.expect_value(t, len(table), 2)
 }
+
+// The whole point of the classification is that a persistent ring failure must not be retried: a loop that logs and
+// continues through `EBADF` spins hot against a broken ring forever. Retryable errnos are the ones that carry no
+// information beyond "call again".
+@(test)
+test_classify_loop_errno_retryable :: proc(t: ^testing.T) {
+    for errno in ([?]linux.Errno{.EINTR, .EAGAIN, .EBUSY}) {
+        testing.expect_value(t, uring_error_is_fatal(errno), false)
+    }
+}
+
+@(test)
+test_classify_loop_errno_fatal :: proc(t: ^testing.T) {
+    // Every errno `io_uring_enter` can report that will not heal on a retry.
+    for errno in ([?]linux.Errno{.EBADF, .EINVAL, .ENXIO, .EOPNOTSUPP, .EFAULT}) {
+        testing.expect_value(t, uring_error_is_fatal(errno), true)
+    }
+}

@@ -99,5 +99,5 @@ main :: proc() {
     // Free any temp allocations made during initialization
     free_all(context.temp_allocator)
     // Run socket event loop
-    uds_serve(&server, socket_path)
+    if !uds_serve(&server, socket_path) {os.exit(1)}
 }

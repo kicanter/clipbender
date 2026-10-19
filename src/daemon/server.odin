@@ -576,7 +576,23 @@ dispatch_cqe :: proc(
     return running
 }
 
-uds_serve :: proc(server: ^Server_State, socket_path: string) {
+// Decide whether the errno from `copy_cqes`/`submit` is fatal or not. Only call this when the errno is not `.NONE`.
+//
+// `EINTR` arrives whenever a signal lands and carries no information beyond "call again".
+// `EAGAIN` and `EBUSY` mean the kernel could not take the work right now; queued SQEs stay queued, so the next iteration picks them up.
+//
+// Everything else indicates the ring or its FD is broken in a way that will not heal.
+uring_error_is_fatal :: proc(errno: linux.Errno) -> bool {
+    #partial switch errno {
+    case .EINTR, .EAGAIN, .EBUSY:
+        return false
+    }
+    return true
+}
+
+// Returns the process exit code: 0 on a clean shutdown (SIGINT/SIGTERM), non-zero when the event loop hit an
+// unrecoverable ring error and wants the supervisor to restart the daemon.
+uds_serve :: proc(server: ^Server_State, socket_path: string) -> (ok_exit: bool = true) {
     server_fd, sockerr := linux.socket(.UNIX, .SEQPACKET, {.CLOEXEC}, {})
     fmt.assertf(sockerr == nil, "Failed to create server socket fd: err %d", sockerr)
 
@@ -627,36 +643,55 @@ uds_serve :: proc(server: ^Server_State, socket_path: string) {
         fmt.assertf(ok, "Failed to submit original WAYLAND poll SQE, submission queue for io_uring is full")
     }
 
-    // Submit the submission queue (tells the kernel to start asynchronously wait for these FDs to get written)
+    // Submit the submission queue (tells the kernel to start asynchronously wait for these FDs to get written). A
+    // retryable errno is fine (the SQEs stay queued and the loop's own submit picks them up). A fatal one leaves the
+    // daemon with nothing to wait on, so it would spin in `copy_cqes` against an empty ring forever.
     _, err = uring.submit(&ring)
-    if (err != .NONE) {
-        log.errorf("Error: could not submit SQEs in submission queue: errno %v", err)
+    if err != .NONE && uring_error_is_fatal(err) {
+        log.errorf(
+            "Could not submit initial SQEs (errno %v), exiting so the daemon is restarted with a fresh ring",
+            err,
+        )
+        save_state(server)
+        return false
     }
 
     log.debug("Daemon ready, entering event loop")
     // Completion queue event loop
     running := true
     cqes: [16]linux.IO_Uring_CQE
-    for running {
-        num_cqes: u32
-        num_cqes, err = uring.copy_cqes(&ring, cqes[:], 1)
-        if (err != .NONE) {
-            log.errorf("Error: could not copy CQEs from completion queue: errno %v", err)
+    eloop: for running {
+        // Free temp arena memory on every loop.
+        defer free_all(context.temp_allocator)
+
+        num_cqes, cqe_err := uring.copy_cqes(&ring, cqes[:], 1)
+        if cqe_err != .NONE {
+            if uring_error_is_fatal(cqe_err) {
+                log.errorf("Completion queue unusable (errno %v), exiting clipbender", cqe_err)
+                ok_exit = false
+                break eloop
+            }
+            // Nothing was copied, so there is nothing to dispatch and no point submitting again this time around.
+            log.debugf("copy_cqes returned %v, retrying", cqe_err)
+            continue eloop
         }
 
         for i in 0 ..< num_cqes {
             running = dispatch_cqe(server, cqes[i], &ring, server_fd)
         }
 
-        _, err = uring.submit(&ring)
-        if (err != .NONE) {
-            log.errorf("Error: could not submit SQEs in submission queue: errno %v", err)
+        if _, sub_err := uring.submit(&ring); sub_err != .NONE {
+            if uring_error_is_fatal(sub_err) {
+                log.errorf("Submission queue unusable (errno %v), exiting clipbender", sub_err)
+                ok_exit = false
+                break eloop
+            }
+            // Unsubmitted SQEs stay in the queue, so the next iteration's submit covers them.
+            log.debugf("submit returned %v, retrying next iteration", sub_err)
         }
-
-        // Clear arena allocator to not balloon
-        free_all(context.temp_allocator)
     }
 
-    // Flush any unsaved register state before exiting so a pending (debounced) save isn't lost on shutdown
+    // Flush any unsaved register state before exiting so a pending (debounced) save isn't lost on shutdown.
     save_state(server)
+    return
 }
