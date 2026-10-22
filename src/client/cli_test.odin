@@ -127,7 +127,6 @@ test_parse_cmd_get_incomplete_token_error :: proc(t: ^testing.T) {
 
 // truncate_content tests
 
-DATA_COL_WIDTH :: 40
 
 @(test)
 test_table_cell_pads_to_width :: proc(t: ^testing.T) {
@@ -692,4 +691,74 @@ test_parse_cmd_get_live_selection_rejects_groups :: proc(t: ^testing.T) {
         _, _, err := parse_cmd_get({arg})
         testing.expect(t, err != nil, fmt.tprintf("`%s` should be rejected", arg))
     }
+}
+
+// The point of measuring display width instead of runes: a CJK rune occupies two cells, so padding by rune count
+// leaves the column short by one cell per character and every column to the right of it shifts.
+@(test)
+test_table_cell_pads_wide_characters_by_cells :: proc(t: ^testing.T) {
+    result := table_cell("日本語", DATA_COL_WIDTH)
+    _, runes, cells := utf8.grapheme_count(result)
+
+    testing.expect_value(t, cells, DATA_COL_WIDTH)
+    // The rune count is deliberately *not* the column width here -- that difference is the bug this fixes.
+    testing.expect(
+        t,
+        runes < DATA_COL_WIDTH,
+        fmt.tprintf("3 wide chars should need fewer runes than cells, got %d runes", runes),
+    )
+}
+
+// Mixed-width content still lands on exactly the column width.
+@(test)
+test_table_cell_pads_mixed_width_by_cells :: proc(t: ^testing.T) {
+    for s in ([?]string{"ascii only", "日本語 mixed", "aé日b", "", "\t日\n"}) {
+        _, _, cells := utf8.grapheme_count(table_cell(s, DATA_COL_WIDTH))
+        testing.expect_value(t, cells, DATA_COL_WIDTH)
+    }
+}
+
+// Truncation has to cut on a grapheme boundary: slicing bytes would leave a partial UTF-8 sequence, which renders as
+// a replacement character and costs a different number of cells than the one it replaced.
+@(test)
+test_table_cell_truncates_wide_characters_on_a_boundary :: proc(t: ^testing.T) {
+    wide := strings.repeat("日", 40, context.temp_allocator)
+    result := table_cell(wide, DATA_COL_WIDTH)
+
+    _, _, cells := utf8.grapheme_count(result)
+    testing.expect_value(t, cells, DATA_COL_WIDTH)
+    // Trailing space, not trailing ellipsis: wide characters advance two cells at a time, so the ellipsis lands on an
+    // odd cell count and the remainder is padded rather than split.
+    testing.expect(
+        t,
+        strings.has_suffix(strings.trim_right_space(result), "..."),
+        fmt.tprintf("an overlong cell should end in the ellipsis, got %q", result),
+    )
+    testing.expect(t, utf8.valid_string(result), "truncation must not split a multi-byte sequence")
+}
+
+// `TABLE_WIDTH` sizes the group rules, so it has to equal the width of a fully populated row. If a column constant
+// changes without the others, the rules stop spanning the columns and the table looks broken rather than wrong.
+@(test)
+test_table_width_matches_a_full_row :: proc(t: ^testing.T) {
+    row := fmt.tprintf(
+        ROW_FMT,
+        REG_COL_WIDTH,
+        strings.repeat("x", REG_COL_WIDTH, context.temp_allocator),
+        lib.TIMESTAMP_LEN,
+        strings.repeat("x", lib.TIMESTAMP_LEN, context.temp_allocator),
+        table_cell("mime", MIME_COL_WIDTH),
+        table_cell("data", DATA_COL_WIDTH),
+    )
+    _, _, cells := utf8.grapheme_count(row)
+    testing.expect_value(t, cells, TABLE_WIDTH)
+}
+
+// The timestamp heading carries the zone offset in place of a per-row suffix, so it has to fit the column exactly --
+// one character over and every column to its right shifts.
+@(test)
+test_timestamp_heading_fits_its_column :: proc(t: ^testing.T) {
+    offset_buf: [lib.UTC_OFFSET_LEN]u8
+    heading := fmt.tprintf("TIMESTAMP %s", lib.format_utc_offset(nil, 0, &offset_buf))
+    testing.expect_value(t, len(heading), lib.TIMESTAMP_LEN)
 }

@@ -850,51 +850,61 @@ has_flag :: proc(args: []string, key: string) -> bool {
     return false
 }
 
-// Sanitize control characters and truncate string to fit column width, appending "..." if truncated.
-// Prepare a string for a fixed-width table cell: escape anything that would move the terminal cursor, truncate to
-// `width`, then pad to exactly `width`.
+// Sanitize control characters. One grapheme as it should appear in a cell, plus how many monospace cells it occupies
+// there.
+escape_grapheme :: proc(text: string, measured: int) -> (piece: string, cells: int) {
+    switch text {
+    case "\n":
+        return `\n`, 2
+    case "\t":
+        return `\t`, 2
+    case "\r":
+        return `\r`, 2
+    }
+    // Every other control byte, escaped rather than printed.
+    if len(text) == 1 && (text[0] < 0x20 || text[0] == 0x7F) {
+        return fmt.tprintf("\\x%02x", text[0]), 4
+    }
+    return text, measured
+}
+
+// `str` escaped and padded to exactly `width` monospace cells, truncated with an ellipsis if it does not fit.
 //
-// Widths are counted in runes, not bytes.
+// Steps grapheme clusters and sums their display widths rather than counting runes to account for multi-length
+// characters (e.g. CJK text or emojis).
 table_cell :: proc(str: string, width: int) -> string {
+    ELLIPSIS :: "..."
+
     escaped := strings.builder_make(context.temp_allocator)
-    runes := 0
+    cells := 0
+    // The longest prefix that still leaves room for the ellipsis, so we don't cut off mid-grapheme.
+    cut_bytes, cut_cells := 0, 0
     truncated := false
-    for ch in str {
-        if runes > width - 1 {
-            // Only pay for the ellipsis if something actually remains.
+
+    it := utf8.decode_grapheme_iterator_make(str)
+    for _, grapheme in utf8.decode_grapheme_iterate(&it) {
+        cluster := str[grapheme.byte_index:it.curr_offset]
+
+        piece, piece_cells := escape_grapheme(cluster, grapheme.width)
+        if cells + piece_cells > width {
             truncated = true
             break
         }
-
-        switch ch {
-        case '\n':
-            strings.write_string(&escaped, `\n`)
-            runes += 2
-        case '\t':
-            strings.write_string(&escaped, `\t`)
-            runes += 2
-        case '\r':
-            strings.write_string(&escaped, `\r`)
-            runes += 2
-        case 0 ..< 0x20, 0x7F:
-            // Every other control byte, escaped rather than printed. A form feed or an escape sequence in clipboard
-            // content would otherwise move the cursor and wreck the table -- and clipboard content is untrusted text.
-            fmt.sbprintf(&escaped, "\\x%02x", int(ch))
-            runes += 4
-        case:
-            strings.write_rune(&escaped, ch)
-            runes += 1
+        if cells + piece_cells <= width - len(ELLIPSIS) {
+            cut_bytes = strings.builder_len(escaped) + len(piece)
+            cut_cells = cells + piece_cells
         }
+        strings.write_string(&escaped, piece)
+        cells += piece_cells
     }
 
     cell := strings.to_string(escaped)
     if truncated {
-        cell = cell[:len(cell) - 3]
-        cell = fmt.tprintf("%s...", cell)
-        runes += 3
+        cell = fmt.tprintf("%s%s", cell[:cut_bytes], ELLIPSIS)
+        cells = cut_cells + len(ELLIPSIS)
     }
-    if runes >= width {return cell}
-    return fmt.tprintf("%s%s", cell, strings.repeat(" ", width - runes, context.temp_allocator))
+    if cells >= width {return cell}
+    return fmt.tprintf("%s%s", cell, strings.repeat(" ", width - cells, context.temp_allocator))
 }
 
 // `REPR_MARK` indicates a repr with its own payload, `ALIAS_MARK` is another mime for the payload above it.
@@ -927,8 +937,7 @@ describe_repr :: proc(repr: lib.Resp_Repr) -> string {
 }
 
 
-// Ordered groups of register IDs for display: clipboard recency, named, primary recency, then live selections.
-// Each group is an inclusive [start, end] range so consumers can iterate directly by Reg_Id.
+// The order we want to display register groups and their `Reg_Id` ranges.
 Reg_Group :: struct {
     start: lib.Reg_Id,
     end:   lib.Reg_Id,
@@ -940,44 +949,56 @@ REG_GROUPS :: [?]Reg_Group {
     {lib.SELECTION_PRIMARY, lib.SELECTION_CLIPBOARD},
 }
 
-// Print `regs` register entries formatted as an ascii table.
-cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
-    table_top := "┌────────────┬─────────────────────┬────────────────────────────┬──────────────────────────────────────────┐"
-    table_sep := "├────────────┼─────────────────────┼────────────────────────────┼──────────────────────────────────────────┤"
-    table_bot := "└────────────┴─────────────────────┴────────────────────────────┴──────────────────────────────────────────┘"
-    fmt.println(table_top)
+// Constants for use in `get` command with table formatting
+REG_COL_WIDTH :: len("REGISTER") // no register name exceeds the heading length
+MIME_COL_WIDTH :: 26 // 24 for the longest common mime, +2 for the `= `/`+ ` mark
+DATA_COL_WIDTH :: 40
+COL_GAP :: 2
+TABLE_WIDTH :: REG_COL_WIDTH + COL_GAP + lib.TIMESTAMP_LEN + COL_GAP + MIME_COL_WIDTH + COL_GAP + DATA_COL_WIDTH
 
-    // Mime and content cells are pre-padded by `table_cell`, so the format string must not pad them again.
-    DATA_FMT :: "│ % 10s │ % -19s │ %s │ %s │"
-    MIME_COL_WIDTH :: 26 // 24 for the longest common mime, +2 for the `= `/`+ ` mark
-    DATA_COL_WIDTH :: 40
+// Left-pad register name, left-pad timestamp, no-pad mime(s), no-pad data (mimes and data are padded in `table_cell()`)
+ROW_FMT :: "%-*s  %-*s  %s  %s"
+
+// A row with its trailing padding removed.
+print_table_row :: proc(reg, timestamp, mimes, data: string) {
+    fmt.println(
+        strings.trim_right_space(fmt.tprintf(ROW_FMT, REG_COL_WIDTH, reg, lib.TIMESTAMP_LEN, timestamp, mimes, data)),
+    )
+}
+
+// Print `regs` register entries as a borderless table, with a horizontal rule between register groups (no vertical
+// rules).
+cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
+    group_rule := strings.repeat("\u2500", TABLE_WIDTH, context.temp_allocator)
 
     ts_buf: [lib.TIMESTAMP_LEN]u8
     // Timestamp stored as UTC epoch seconds, translate to local wall-clock time.
     tz := lib.local_timezone()
     defer lib.free_local_timezone(tz)
 
-    // UTC/time zone offset
+    // UTC offset goes in TIMESTAMP heading instead of repeating it for every timestamp in the table.
     offset_buf: [lib.UTC_OFFSET_LEN]u8
-    fmt.printfln(
-        "│  Register  │ Timestamp %s │ Mimes                      │ Data                                     │",
-        lib.format_utc_offset(tz, time.to_unix_seconds(time.now()), &offset_buf),
+    print_table_row(
+        "REGISTER",
+        fmt.tprintf("TIMESTAMP %s", lib.format_utc_offset(tz, time.to_unix_seconds(time.now()), &offset_buf)),
+        table_cell("MIMES", MIME_COL_WIDTH),
+        "DATA",
     )
+
     any_printed := false
     for group in REG_GROUPS {
         group_printed := false
         for id := group.start; id <= group.end; id += 1 {
             entry := regs[id]
             if lib.resp_reg_is_empty(entry) {continue}
-            // Print a rule above each group that has at least one entry (also separates the header from the body)
+            // A rule above each group that has at least one entry, which also separates the heading from the body.
             if !group_printed {
-                fmt.println(table_sep)
+                fmt.println(group_rule)
             }
 
             // The first repr is the one chosen by the preference. If none matched, just show the first repr.
             head := int(entry.selected) if lib.resp_reg_selected(entry) != nil else 0
-            fmt.printfln(
-                DATA_FMT,
+            print_table_row(
                 lib.reg_id_to_string(id),
                 lib.format_unix_timestamp(entry.timestamp, &ts_buf, tz),
                 table_cell(fmt.tprintf("%c %s", REPR_MARK, entry.reprs[head].mimes[0]), MIME_COL_WIDTH),
@@ -991,13 +1012,7 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
                     mark := REPR_MARK if m == 0 else ALIAS_MARK
                     label := fmt.tprintf("%c %s", mark, mime)
                     content := "" if m > 0 || r == head else describe_repr(repr)
-                    fmt.printfln(
-                        DATA_FMT,
-                        "",
-                        "",
-                        table_cell(label, MIME_COL_WIDTH),
-                        table_cell(content, DATA_COL_WIDTH),
-                    )
+                    print_table_row("", "", table_cell(label, MIME_COL_WIDTH), table_cell(content, DATA_COL_WIDTH))
                 }
             }
 
@@ -1007,19 +1022,9 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     }
 
     if !any_printed {
-        fmt.println(
-            "├────────────┴─────────────────────┴──────────────────────────┴──────────────────────────────────────────┤",
-        )
-        fmt.println(
-            "│                                        No registers to display                                         │",
-        )
-        fmt.println(
-            "└────────────────────────────────────────────────────────────────────────────────────────────────────────┘",
-        )
-        return
+        fmt.println(group_rule)
+        fmt.println("No registers to display")
     }
-
-    fmt.println(table_bot)
 }
 
 // Render `data` as a JSON value i.e a string when it is valid UTF-8, else base64 with a sibling `encoding` field.
