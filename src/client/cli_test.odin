@@ -127,56 +127,56 @@ test_parse_cmd_get_incomplete_token_error :: proc(t: ^testing.T) {
 
 // truncate_content tests
 
-CONTENT_COL_WIDTH :: 40
+DATA_COL_WIDTH :: 40
 
 @(test)
 test_table_cell_pads_to_width :: proc(t: ^testing.T) {
     // Cells are pre-padded because `fmt`'s `%-Ns` pads by bytes; the table's borders depend on exact widths.
-    result := table_cell("hello", CONTENT_COL_WIDTH)
-    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+    result := table_cell("hello", DATA_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), DATA_COL_WIDTH)
     testing.expect_value(t, result[:5], "hello")
 }
 
 @(test)
 test_table_cell_exact_width :: proc(t: ^testing.T) {
     s := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // exactly 40
-    result := table_cell(s, CONTENT_COL_WIDTH)
-    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+    result := table_cell(s, DATA_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), DATA_COL_WIDTH)
 }
 
 @(test)
 test_table_cell_truncates_with_ellipsis :: proc(t: ^testing.T) {
     s := "this string is definitely longer than forty characters and should be truncated"
-    result := table_cell(s, CONTENT_COL_WIDTH)
-    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+    result := table_cell(s, DATA_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), DATA_COL_WIDTH)
     testing.expect_value(t, result[len(result) - 3:], "...")
 }
 
 @(test)
 test_table_cell_escapes_whitespace :: proc(t: ^testing.T) {
-    testing.expect_value(t, strings.trim_space(table_cell("hello\nworld", CONTENT_COL_WIDTH)), `hello\nworld`)
-    testing.expect_value(t, strings.trim_space(table_cell("hello\tworld", CONTENT_COL_WIDTH)), `hello\tworld`)
-    testing.expect_value(t, strings.trim_space(table_cell("hello\rworld", CONTENT_COL_WIDTH)), `hello\rworld`)
+    testing.expect_value(t, strings.trim_space(table_cell("hello\nworld", DATA_COL_WIDTH)), `hello\nworld`)
+    testing.expect_value(t, strings.trim_space(table_cell("hello\tworld", DATA_COL_WIDTH)), `hello\tworld`)
+    testing.expect_value(t, strings.trim_space(table_cell("hello\rworld", DATA_COL_WIDTH)), `hello\rworld`)
 }
 
 @(test)
 test_table_cell_escapes_other_control_bytes :: proc(t: ^testing.T) {
     // A form feed printed raw moves the terminal cursor and wrecks the row. Clipboard content is untrusted text, so
     // every control byte has to be neutralised, not just the three common whitespace ones.
-    result := table_cell("a\x01b\x0cc\x7fd", CONTENT_COL_WIDTH)
+    result := table_cell("a\x01b\x0cc\x7fd", DATA_COL_WIDTH)
     testing.expect_value(t, strings.trim_space(result), `a\x01b\x0cc\x7fd`)
-    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), DATA_COL_WIDTH)
 }
 
 @(test)
 test_table_cell_multibyte_width_counted_in_runes :: proc(t: ^testing.T) {
     // "é" is two bytes but one column: byte-based padding left the cell short and skewed every border to its right.
-    result := table_cell("ééé", CONTENT_COL_WIDTH)
-    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+    result := table_cell("ééé", DATA_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), DATA_COL_WIDTH)
 }
 
 @(test)
-test_display_content_binary_is_described_not_rendered :: proc(t: ^testing.T) {
+test_display_data_binary_is_described_not_rendered :: proc(t: ^testing.T) {
     data := [?]byte{0x89, 'P', 'N', 'G', 0xFF, 0xFE}
     mimes := [?]string{"image/png"}
     reprs := [?]lib.Resp_Repr{{mimes = mimes[:], size = u64(len(data))}}
@@ -185,13 +185,13 @@ test_display_content_binary_is_described_not_rendered :: proc(t: ^testing.T) {
         selected = 0,
         data     = data[:],
     }
-    result := display_content(entry, CONTENT_COL_WIDTH)
+    result := display_data(entry, DATA_COL_WIDTH)
     testing.expect_value(t, strings.trim_space(result), "[image/png 6 B]")
-    testing.expect_value(t, utf8.rune_count_in_string(result), CONTENT_COL_WIDTH)
+    testing.expect_value(t, utf8.rune_count_in_string(result), DATA_COL_WIDTH)
 }
 
 @(test)
-test_display_content_describes_unsent_repr :: proc(t: ^testing.T) {
+test_display_data_describes_unsent_repr :: proc(t: ^testing.T) {
     // Nothing matched the preference, so no bytes arrived -- but the descriptor did, which is what lets the cell say what
     // the register actually holds instead of rendering as blank.
     mimes := [?]string{"image/png"}
@@ -200,19 +200,19 @@ test_display_content_describes_unsent_repr :: proc(t: ^testing.T) {
         reprs    = reprs[:],
         selected = lib.RESP_SELECTED_NONE,
     }
-    result := display_content(entry, CONTENT_COL_WIDTH)
+    result := display_data(entry, DATA_COL_WIDTH)
     testing.expect_value(t, strings.trim_space(result), "[image/png 600x300 65.8 KiB]")
 }
 
 @(test)
-test_display_content_unsent_repr_without_dims :: proc(t: ^testing.T) {
+test_display_data_unsent_repr_without_dims :: proc(t: ^testing.T) {
     mimes := [?]string{"application/pdf"}
     reprs := [?]lib.Resp_Repr{{mimes = mimes[:], size = 2048}}
     entry := lib.Resp_Reg {
         reprs    = reprs[:],
         selected = lib.RESP_SELECTED_NONE,
     }
-    result := display_content(entry, CONTENT_COL_WIDTH)
+    result := display_data(entry, DATA_COL_WIDTH)
     testing.expect_value(t, strings.trim_space(result), "[application/pdf 2.0 KiB]")
 }
 

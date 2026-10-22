@@ -903,7 +903,7 @@ ALIAS_MARK :: '+'
 
 // The content cell for one register. Non-text content is described rather than rendered: replacement characters are
 // noise, and their widths would skew the column even after escaping.
-display_content :: proc(entry: lib.Resp_Reg, width: int) -> string {
+display_data :: proc(entry: lib.Resp_Reg, width: int) -> string {
     if !entry.data_sent {
         // No bytes to render, either because nothing matched the preference or because the match did not fit the
         // message. Describe the repr the policy chose when there was one, else the first, rather than leaving the cell
@@ -948,9 +948,9 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     fmt.println(table_top)
 
     // Mime and content cells are pre-padded by `table_cell`, so the format string must not pad them again.
-    CONTENT_FMT :: "│ % 10s │ % -19s │ %s │ %s │"
+    DATA_FMT :: "│ % 10s │ % -19s │ %s │ %s │"
     MIME_COL_WIDTH :: 26 // 24 for the longest common mime, +2 for the `= `/`+ ` mark
-    CONTENT_COL_WIDTH :: 40
+    DATA_COL_WIDTH :: 40
 
     ts_buf: [lib.TIMESTAMP_LEN]u8
     // Timestamp stored as UTC epoch seconds, translate to local wall-clock time.
@@ -960,7 +960,7 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     // UTC/time zone offset
     offset_buf: [lib.UTC_OFFSET_LEN]u8
     fmt.printfln(
-        "│  Register  │ Timestamp %s │ Mimes                      │ Content                                  │",
+        "│  Register  │ Timestamp %s │ Mimes                      │ Data                                     │",
         lib.format_utc_offset(tz, time.to_unix_seconds(time.now()), &offset_buf),
     )
     any_printed := false
@@ -977,11 +977,11 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
             // The first repr is the one chosen by the preference. If none matched, just show the first repr.
             head := int(entry.selected) if lib.resp_reg_selected(entry) != nil else 0
             fmt.printfln(
-                CONTENT_FMT,
+                DATA_FMT,
                 lib.reg_id_to_string(id),
                 lib.format_unix_timestamp(entry.timestamp, &ts_buf, tz),
                 table_cell(fmt.tprintf("%c %s", REPR_MARK, entry.reprs[head].mimes[0]), MIME_COL_WIDTH),
-                display_content(entry, CONTENT_COL_WIDTH),
+                display_data(entry, DATA_COL_WIDTH),
             )
 
             // Remaining mimes, stacked below. Mimes belonging to the same repr group are indented.
@@ -992,11 +992,11 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
                     label := fmt.tprintf("%c %s", mark, mime)
                     content := "" if m > 0 || r == head else describe_repr(repr)
                     fmt.printfln(
-                        CONTENT_FMT,
+                        DATA_FMT,
                         "",
                         "",
                         table_cell(label, MIME_COL_WIDTH),
-                        table_cell(content, CONTENT_COL_WIDTH),
+                        table_cell(content, DATA_COL_WIDTH),
                     )
                 }
             }
@@ -1022,7 +1022,7 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
     fmt.println(table_bot)
 }
 
-// Render `data` as a JSON value i.e a string when it is valid UTF-8, else base64 with a sibling `content_encoding` field.
+// Render `data` as a JSON value i.e a string when it is valid UTF-8, else base64 with a sibling `encoding` field.
 json_content :: proc(data: []byte) -> (value: string, is_base64: bool) {
     str := string(data)
     if utf8.valid_string(str) {

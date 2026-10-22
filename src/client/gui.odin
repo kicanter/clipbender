@@ -799,7 +799,7 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (err:
 
 draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: uint, y: uint, color: u32) {
     CONTENT_WIDTH :: 100
-    // `display_content` pads to CONTENT_WIDTH itself, so the format string must not pad again.
+    // `display_data` pads to CONTENT_WIDTH itself, so the format string must not pad again.
     reg_fmt := "% 10s  %s"
 
     // `regs` is indexed by Reg_Id; a slot the response did not mention renders as a blank register line.
@@ -808,7 +808,7 @@ draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: uint, y: uin
     if !lib.resp_reg_is_empty(entry) {
         // Shares the CLI's sanitising: control bytes render as garbage glyphs here rather than moving a cursor, and
         // non-text content is described instead of drawn.
-        content = display_content(entry, CONTENT_WIDTH)
+        content = display_data(entry, CONTENT_WIDTH)
     }
     reg_str := fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), content)
 
