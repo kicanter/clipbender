@@ -24,11 +24,11 @@ print_usage_and_exit :: proc(is_err: bool) {
         "Examples:\n" +
         "\tclipbender                              Open GUI popup.\n" +
         "\tclipbender shutdown                     Stop daemon.\n" +
-        "\tclipbender set a selection              Set register `a` from the live clipboard selection.\n" +
-        "\tclipbender set selection 1              Set the live clipboard selection from clipboard register `1`.\n" +
-        "\tclipbender set a @selection             Set register `a` from the live primary selection.\n" +
-        "\tclipbender set A selection              Append the live clipboard selection to register `a`.\n" +
-        "\tclipbender set @selection @5            Set the live primary selection from primary register `5`.\n" +
+        "\tclipbender set a .                      Set register `a` from the live clipboard selection.\n" +
+        "\tclipbender set . 1                      Set the live clipboard selection from clipboard register `1`.\n" +
+        "\tclipbender set a @.                     Set register `a` from the live primary selection.\n" +
+        "\tclipbender set A .                      Append the live clipboard selection to register `a`.\n" +
+        "\tclipbender set @. @5                    Set the live primary selection from primary register `5`.\n" +
         "\t<cmd> | clipbender set a                Set register `a` from stdin pipe.\n" +
         "\tclipbender set a < <file>               Set register `a` from stdin redirection.\n" +
         "\tclipbender clear a                      Clear register `a`.\n" +
@@ -66,14 +66,14 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type, is_err: bool) {
                 "\t@0-@9                              Numbered primary registers: primary selection recency (source-only).\n" +
                 "\ta-z                                Named registers: store data (dest/source).\n" +
                 "\tA-Z                                Named registers: append data to corresponding lowercase register (dest-only).\n" +
-                "\tselection                          Live clipboard selection (dest/source).\n" +
-                "\t@selection                         Live primary selection (dest/source).\n\n" +
+                "\t.                                  Live clipboard selection (dest/source).\n" +
+                "\t@.                                 Live primary selection (dest/source).\n\n" +
                 "Examples:\n" +
-                "\tclipbender set a selection         Set register `a` from the live clipboard selection\n" +
-                "\tclipbender set selection 1         Set the live clipboard selection from clipboard register `1`\n" +
-                "\tclipbender set a @selection        Set register `a` from the live primary selection\n" +
-                "\tclipbender set A selection         Append the live clipboard selection to register `a`\n" +
-                "\tclipbender set @selection @5       Set the live primary selection from primary register `5`\n" +
+                "\tclipbender set a .                 Set register `a` from the live clipboard selection\n" +
+                "\tclipbender set . 1                 Set the live clipboard selection from clipboard register `1`\n" +
+                "\tclipbender set a @.                Set register `a` from the live primary selection\n" +
+                "\tclipbender set A .                 Append the live clipboard selection to register `a`\n" +
+                "\tclipbender set @. @5               Set the live primary selection from primary register `5`\n" +
                 "\t<cmd> | clipbender set a           Set register `a` from stdin pipe\n" +
                 "\tclipbender set a < <file>          Set register `a` from stdin redirection\n" +
                 "\tclipbender set a mime=text/markdown mime=text/plain < notes.md\n" +
@@ -98,7 +98,8 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type, is_err: bool) {
                 "\t+adz, +038, +@038                                    Include specific registers\n" +
                 "\t-adz, -038, -@038                                    Exclude specific registers\n" +
                 "\t+0:5, +a:f, +@0:5                                    Include range\n" +
-                "\t-0:5, -a:f, -@0:5                                    Exclude range\n\n" +
+                "\t-0:5, -a:f, -@0:5                                    Exclude range\n" +
+                "\t+., +@., -., -@.                                     Live clipboard / primary selection\n\n" +
                 "Examples:\n" +
                 "\tclipbender get ++all                                 Print all registers.\n" +
                 "\tclipbender get ++all --@selection                    Print all registers except the live primary selection.\n" +
@@ -107,6 +108,7 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type, is_err: bool) {
                 "\tclipbender get +0:5 +@0:3                            Print clipboard registers in range 0-5 and primary registers in range 0-3.\n" +
                 "\tclipbender get ++numbered fmt=json                   Print clipboard recency registers as structured JSON.\n" +
                 "\tclipbender get ++selection                           Print the live clipboard selection.\n" +
+                "\tclipbender get +. +@.                                Same two registers, addressed individually.\n" +
                 "\tclipbender get +a fmt=raw | wl-copy                  Pipe only the contents of register `a` into wl-copy.\n" +
                 "\tclipbender get +a fmt=raw > <file>                   Redirect the contents of register `a` to `file`.\n" +
                 "\tclipbender get +a=image/png fmt=raw > out.png        Write register `a`'s PNG representation to a file.\n")
@@ -133,65 +135,59 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type, is_err: bool) {
     os.exit(0)
 }
 
-// Live selections are named `selection`/`@selection` rather than `clipboard`/`primary` so the `@`-marks-primary
-// convention holds everywhere: `5`/`@5` for recency, `selection`/`@selection` for the live selections, matching the
-// `++selection`/`++@selection` keywords GET uses.
-SELECTION_ARG :: "selection"
-PRIMARY_SELECTION_ARG :: "@selection"
-
-// destination register can be a lowercase/uppercase named register, `selection`, or `@selection`
+// Destination register can be a lowercase/uppercase named register, `.`, or `@.`
 parse_cmd_set_dest_reg :: proc(dest_arg: string) -> (dest: lib.Reg_Id, set_mode: lib.Set_Mode, err: Maybe(string)) {
-    if len(dest_arg) == 1 {     // single character register
+    if len(dest_arg) == 1 {
         ch := dest_arg[0]
-        if ch >= 'a' && ch <= 'z' {     // overwrite named reg
-            dest = lib.reg_id_from_named_index(ch - 'a')
-            set_mode = .OVERWRITE
-        } else if ch >= 'A' && ch <= 'Z' {     // append named reg
-            dest = lib.reg_id_from_named_index(ch - 'A')
-            set_mode = .APPEND
-        } else {
-            return {}, {}, fmt.tprintf("destination register must be a-z, A-Z, `selection`, or `@selection` (got `%v`)", dest_arg)
+        switch ch {
+        case 'a' ..= 'z':
+            // overwrite named reg
+            return lib.reg_id_from_named_index(ch - 'a'), .OVERWRITE, {}
+        case 'A' ..= 'Z':
+            // append named reg
+            return lib.reg_id_from_named_index(ch - 'A'), .APPEND, {}
+        case lib.SELECTION_REG_NAME:
+            // overwrite clipboard selection
+            return lib.SELECTION_CLIPBOARD, .OVERWRITE, {}
         }
-    } else if dest_arg == SELECTION_ARG {     // live clipboard selection
-        dest = lib.SELECTION_CLIPBOARD
-        set_mode = .OVERWRITE
-    } else if dest_arg == PRIMARY_SELECTION_ARG {     // live primary selection
-        dest = lib.SELECTION_PRIMARY
-        set_mode = .OVERWRITE
-    } else {
-        return {}, {}, fmt.tprintf("destination register must be a-z, A-Z, `selection`, or `@selection` (got `%v`)", dest_arg)
+    } else if len(dest_arg) == 2 && dest_arg[0] == '@' {     // primary numbered reg
+        ch := dest_arg[1]
+        switch ch {
+        case lib.SELECTION_REG_NAME:
+            // overwrite primary selection
+            return lib.SELECTION_PRIMARY, .OVERWRITE, {}
+        }
     }
-
-    return dest, set_mode, {}
+    return {}, {}, fmt.tprintf("destination register must be a-z, A-Z, `%s`, or `%s` (got `%v`)", lib.SELECTION_CLIPBOARD_REG_STR, lib.SELECTION_PRIMARY_REG_STR, dest_arg)
 }
 
-// source register can be a lowercase named register, numbered register, `selection`, or `@selection`
+// Source register can be a lowercase named register, numbered register, `.`, or `@.`
 parse_cmd_set_source_reg :: proc(source_arg: string) -> (source: lib.Reg_Id, err: Maybe(string)) {
     if len(source_arg) == 1 {
         ch := source_arg[0]
-        if ch >= 'a' && ch <= 'z' {     // lowercase named reg
-            source = lib.reg_id_from_named_index(ch - 'a')
-        } else if ch >= '0' && ch <= '9' {     // clipboard numbered reg
-            source = lib.reg_id_from_clipboard_index(ch - '0')
-        } else {
-            return {}, fmt.tprintf("source register must be 0-9, a-z, @0-@9, `selection`, or `@selection` (got `%v`)", source_arg)
+        switch ch {
+        case 'a' ..= 'z':
+            // lowercase named reg
+            return lib.reg_id_from_named_index(ch - 'a'), {}
+        case '0' ..= '9':
+            // clipboard numbered reg
+            return lib.reg_id_from_clipboard_index(ch - '0'), {}
+        case lib.SELECTION_REG_NAME:
+            // clipboard selection
+            return lib.SELECTION_CLIPBOARD, {}
         }
-    } else if len(source_arg) == 2 && source_arg[0] == '@' {     // primary numbered reg
+    } else if len(source_arg) == 2 && source_arg[0] == '@' {     // primary reg
         ch := source_arg[1]
-        if ch >= '0' && ch <= '9' {
-            source = lib.reg_id_from_primary_index(ch - '0')
-        } else {
-            return {}, fmt.tprintf("source register must be 0-9, a-z, @0-@9, `selection`, or `@selection` (got `%v`)", source_arg)
+        switch ch {
+        case '0' ..= '9':
+            // primary numbered
+            return lib.reg_id_from_primary_index(ch - '0'), {}
+        case lib.SELECTION_REG_NAME:
+            // primary selection
+            return lib.SELECTION_PRIMARY, {}
         }
-    } else if source_arg == SELECTION_ARG {     // live clipboard selection
-        source = lib.SELECTION_CLIPBOARD
-    } else if source_arg == PRIMARY_SELECTION_ARG {     // live primary selection
-        source = lib.SELECTION_PRIMARY
-    } else {
-        return {}, fmt.tprintf("source register must be 0-9, a-z, @0-@9, `selection`, or `@selection` (got `%v`)", source_arg)
     }
-
-    return source, {}
+    return {}, fmt.tprintf("source register must be 0-9, a-z, @0-@9, `%s`, or `%s` (got `%v`)", lib.SELECTION_CLIPBOARD_REG_STR, lib.SELECTION_PRIMARY_REG_STR, source_arg)
 }
 
 parse_cmd_set_reg :: proc(
@@ -417,6 +413,17 @@ parse_cmd_get_registers :: proc(mask: ^lib.Cmd_Get_Filter, arg: string) -> (err:
     }
 
     switch body[0] {
+    // parse the live selection -- a single register, so it takes no group or range
+    case lib.SELECTION_REG_NAME:
+        if len(body) != 1 {
+            return fmt.tprintf(
+                "`%c` is one register and takes no group or range (got `%v`)",
+                lib.SELECTION_REG_NAME,
+                body,
+            )
+        }
+        mask^ += {int(lib.SELECTION_PRIMARY if is_primary else lib.SELECTION_CLIPBOARD)}
+        return nil
     // parse clipboard/primary numbered
     case '0' ..= '9':
         offset := int(lib.CLIPBOARD_START) if !is_primary else int(lib.PRIMARY_START)

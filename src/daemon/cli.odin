@@ -242,7 +242,7 @@ dump_blob_dir_stats :: proc(blobs_dir: string, disk_blobs: []Blob_State_Info) ->
 
 DUMP_MIME_COL :: 26 // length of the mime column
 DUMP_SIZE_COL :: 5 // length of number portion of size
-DUMP_REG_COL :: 10 // `@selection` is the widest register label.
+DUMP_REG_COL :: 10 // Wider than any register label (`@0`, `@.` are the widest at 2); sized to align the stanza.
 DUMP_REPR_COL :: DUMP_REG_COL + 2 // align with timestamp (2 spaces after end of register)
 DUMP_SUMMARY_COL :: len("state file") + 2 // "state file" is the widest label of the summary + two spaces.
 

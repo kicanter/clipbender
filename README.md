@@ -68,11 +68,11 @@ Start the daemon (`clipbenderd`), then use the `clipbender` client. Running bare
 - `@0`-`@9` — primary-selection numbered registers (read-only source)
 - `a`-`z` — named registers (user-managed)
 - `A`-`Z` — append to the corresponding lowercase named register
-- `selection` / `@selection` — the live system selections (valid as a `set` destination or source,
-  and retrievable with `get ++selection` / `get ++@selection`)
+- `.` / `@.` — the live system selections (valid as a `set` destination or source, addressable as
+  `get +.` / `get +@.`, also retrievable with keywords `get ++selection` / `get ++@selection`)
 
-A leading `@` always means "the primary-selection variant of this": `5` vs `@5`, `selection` vs
-`@selection`, `++numbered` vs `++@numbered`.
+A leading `@` always means "the primary-selection variant of this": `5` vs `@5`, `.` vs `@.`,
+`++numbered` vs `++@numbered`.
 
 ### CLI
 
@@ -81,11 +81,11 @@ clipbender                       # open the popup
 clipbenderd                      # start the daemon
 clipbender shutdown              # stop the daemon
 
-clipbender set a selection       # set register `a` from the live clipboard selection
-clipbender set selection 1       # set the live clipboard selection from clipboard register 1
-clipbender set a @selection      # set register `a` from the live primary selection
-clipbender set A selection       # append the live clipboard selection to register `a`
-clipbender set @selection @5     # set the live primary selection from primary register 5
+clipbender set a .               # set register `a` from the live clipboard selection
+clipbender set . 1               # set the live clipboard selection from clipboard register 1
+clipbender set a @.              # set register `a` from the live primary selection
+clipbender set A .               # append the live clipboard selection to register `a`
+clipbender set @. @5             # set the live primary selection from primary register 5
 <cmd> | clipbender set a         # set register `a` from stdin
 clipbender set a < file          # set register `a` from stdin redirection
 
@@ -112,6 +112,7 @@ clipbender get ++all                  # every register
 clipbender get ++all --@selection     # everything except the live primary selection
 clipbender get ++named -abc           # named registers except a, b, c
 clipbender get ++selection            # just the live clipboard selection
+clipbender get +. +@.                 # both live selections, addressed individually
 clipbender get +@012 +012             # first three primary and clipboard numbered registers
 clipbender get +a:f +@0:3             # named range a-f plus primary range 0-3
 ```

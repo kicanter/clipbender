@@ -228,6 +228,13 @@ PRIMARY_END :: Reg_Id(45)
 SELECTION_PRIMARY :: Reg_Id(62)
 SELECTION_CLIPBOARD :: Reg_Id(63)
 
+// Use `.` for the single-char SELECTION register name.
+// `.` is equivalent to vim's `+` register
+// `@.` is equivalent to vim's `*` register
+SELECTION_REG_NAME :: '.'
+SELECTION_CLIPBOARD_REG_STR :: "."
+SELECTION_PRIMARY_REG_STR :: "@."
+
 // Register ID validation
 reg_id_is_valid :: proc(id: Reg_Id) -> bool {
     return id <= PRIMARY_END || id == SELECTION_CLIPBOARD || id == SELECTION_PRIMARY
@@ -282,9 +289,9 @@ reg_id_to_string :: proc(id: Reg_Id) -> string {
     } else if reg_id_is_named(id) {
         return fmt.tprintf("%c", rune(reg_id_to_named_index(id) + 'a'))
     } else if id == SELECTION_CLIPBOARD {
-        return "selection"
+        return SELECTION_CLIPBOARD_REG_STR
     } else if id == SELECTION_PRIMARY {
-        return "@selection"
+        return SELECTION_PRIMARY_REG_STR
     }
     return "unknown reg id"
 }

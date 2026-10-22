@@ -274,7 +274,7 @@ test_parse_cmd_set_dest_reg_append :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_set_dest_reg_selection :: proc(t: ^testing.T) {
-    dest, mode, err := parse_cmd_set_dest_reg("selection")
+    dest, mode, err := parse_cmd_set_dest_reg(lib.SELECTION_CLIPBOARD_REG_STR)
     testing.expect(t, err == nil)
     testing.expect_value(t, dest, lib.SELECTION_CLIPBOARD)
     testing.expect_value(t, mode, lib.Set_Mode.OVERWRITE)
@@ -282,7 +282,7 @@ test_parse_cmd_set_dest_reg_selection :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_set_dest_reg_primary_selection :: proc(t: ^testing.T) {
-    dest, mode, err := parse_cmd_set_dest_reg("@selection")
+    dest, mode, err := parse_cmd_set_dest_reg(lib.SELECTION_PRIMARY_REG_STR)
     testing.expect(t, err == nil)
     testing.expect_value(t, dest, lib.SELECTION_PRIMARY)
     testing.expect_value(t, mode, lib.Set_Mode.OVERWRITE)
@@ -319,14 +319,14 @@ test_parse_cmd_set_source_reg_named :: proc(t: ^testing.T) {
 
 @(test)
 test_parse_cmd_set_source_reg_selection :: proc(t: ^testing.T) {
-    source, err := parse_cmd_set_source_reg("selection")
+    source, err := parse_cmd_set_source_reg(lib.SELECTION_CLIPBOARD_REG_STR)
     testing.expect(t, err == nil)
     testing.expect_value(t, source, lib.SELECTION_CLIPBOARD)
 }
 
 @(test)
 test_parse_cmd_set_source_reg_primary_selection :: proc(t: ^testing.T) {
-    source, err := parse_cmd_set_source_reg("@selection")
+    source, err := parse_cmd_set_source_reg(lib.SELECTION_PRIMARY_REG_STR)
     testing.expect(t, err == nil)
     testing.expect_value(t, source, lib.SELECTION_PRIMARY)
 }
@@ -659,4 +659,37 @@ test_raw_fallback_mime_matches_visual_ranking :: proc(t: ^testing.T) {
     // A single unrankable repr still names itself.
     lone := [?]lib.Resp_Repr{{mimes = zip[:], size = 9}}
     testing.expect_value(t, raw_fallback_mime(lib.Resp_Reg{reprs = lone[:]}), "application/zip")
+}
+
+// `.` and `@.` address the live selections individually, the counterpart to the `++selection` keywords. `.` has to be
+// matched before the `a`-`z` register-group path, which would otherwise read it as an invalid group character.
+@(test)
+test_parse_cmd_get_live_selection_tokens :: proc(t: ^testing.T) {
+    clip, _, err := parse_cmd_get({"+."})
+    testing.expect_value(t, err, nil)
+    testing.expect_value(t, clip, lib.CMD_GET_FILTER_SELECTION)
+
+    primary, _, err_primary := parse_cmd_get({"+@."})
+    testing.expect_value(t, err_primary, nil)
+    testing.expect_value(t, primary, lib.CMD_GET_FILTER_PRIMARY_SELECTION)
+
+    // Excludable like any other register token. `parse_cmd_get` returns the resolved filter rather than the two masks,
+    // so this asserts the one bit dropped and the sibling bit kept instead of spelling out all 47.
+    rest, _, err_excl := parse_cmd_get({"++all", "-."})
+    testing.expect_value(t, err_excl, nil)
+    testing.expect(t, rest & lib.CMD_GET_FILTER_SELECTION == {}, "`-.` should drop the live clipboard selection")
+    testing.expect(
+        t,
+        rest & lib.CMD_GET_FILTER_PRIMARY_SELECTION == lib.CMD_GET_FILTER_PRIMARY_SELECTION,
+        "`-.` should leave the live primary selection alone",
+    )
+}
+
+// One register, so a group or range after it is a user error rather than something to interpret.
+@(test)
+test_parse_cmd_get_live_selection_rejects_groups :: proc(t: ^testing.T) {
+    for arg in ([?]string{"+.a", "+..", "+.0", "+@.a", "+.:5"}) {
+        _, _, err := parse_cmd_get({arg})
+        testing.expect(t, err != nil, fmt.tprintf("`%s` should be rejected", arg))
+    }
 }
