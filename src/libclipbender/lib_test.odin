@@ -2480,3 +2480,90 @@ test_format_utc_offset_is_fixed_width :: proc(t: ^testing.T) {
         testing.expect_value(t, len(label), UTC_OFFSET_LEN)
     }
 }
+
+// The case the elision exists for: right-truncation renders a Word document and an Excel sheet as the same cell,
+// because everything that distinguishes them is past the shared `application/vnd.openxmlformats-officedocument.`
+// prefix.
+@(test)
+test_elide_mime_distinguishes_shared_prefixes :: proc(t: ^testing.T) {
+    WIDTH :: 24
+    word := "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    excel := "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    word_cell := elide_mime(word, WIDTH)
+    excel_cell := elide_mime(excel, WIDTH)
+
+    testing.expect(t, word_cell != excel_cell, "a Word doc and an Excel sheet must not render identically")
+    testing.expect(t, strings.has_suffix(word_cell, "document"), word_cell)
+    testing.expect(t, strings.has_suffix(excel_cell, "sheet"), excel_cell)
+    // The type survives whole, since it is the part worth reading in full.
+    testing.expect(t, strings.has_prefix(word_cell, "application/"), word_cell)
+}
+
+// The ellipsis already implies a break, so a separator immediately after it reads as a typo.
+@(test)
+test_elide_mime_does_not_double_the_separator :: proc(t: ^testing.T) {
+    cell := elide_mime("application/vnd.openxmlformats-officedocument.wordprocessingml.document", 24)
+    testing.expect(
+        t,
+        !strings.contains(cell, MIME_ELLIPSIS + "."),
+        fmt.tprintf("the ellipsis should absorb the separator, got %q", cell),
+    )
+}
+
+// Mimes short enough to fit are untouched -- which is most of what a register actually holds.
+@(test)
+test_elide_mime_leaves_short_mimes_alone :: proc(t: ^testing.T) {
+    for mime in ([?]string{"text/plain", "image/png", "text/uri-list", "UTF8_STRING", "TARGETS", ""}) {
+        testing.expect_value(t, elide_mime(mime, 24), mime)
+    }
+}
+
+// Two fallbacks, both reachable: a mime with no type to keep, and one whose type alone would leave no useful tail.
+@(test)
+test_elide_mime_falls_back_to_middle :: proc(t: ^testing.T) {
+    WIDTH :: 24
+
+    no_slash := elide_mime("x-kde-passwordManagerHint", WIDTH)
+    testing.expect(t, strings.contains(no_slash, MIME_ELLIPSIS), no_slash)
+    testing.expect(t, strings.has_prefix(no_slash, "x-kde-pass"), no_slash)
+    testing.expect(t, strings.has_suffix(no_slash, "Hint"), no_slash)
+
+    // The type is longer than the budget, so keeping it whole would leave nothing but prefix.
+    long_type := elide_mime("averyveryverylongtypenamewithnosubtype/x", WIDTH)
+    testing.expect(t, !strings.has_prefix(long_type, "averyveryverylongtypenamewithnosubtype/"), long_type)
+    testing.expect(t, strings.has_suffix(long_type, "/x"), long_type)
+}
+
+// Byte slicing would split a multi-byte sequence into invalid UTF-8. An application can advertise any bytes it likes,
+// so those are handed back whole for the caller's cell renderer to cut on a grapheme boundary.
+@(test)
+test_elide_mime_passes_non_ascii_through :: proc(t: ^testing.T) {
+    mime := "application/vnd.日本語-very-long-subtype-name-here"
+    testing.expect_value(t, elide_mime(mime, 24), mime)
+}
+
+// Whatever path it takes, the result has to fit the column it was sized for.
+@(test)
+test_elide_mime_never_exceeds_width :: proc(t: ^testing.T) {
+    samples := [?]string {
+        "text/plain",
+        "x-kde-passwordManagerHint",
+        "chromium/x-internal-source-rfh-token",
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "averyveryverylongtypenamewithnosubtype/x",
+    }
+    for width in ([?]int{12, 18, 24, 30}) {
+        for mime in samples {
+            cell := elide_mime(mime, width)
+            // Either it fit the column, or the proc declined to touch the mime at all (non-ASCII, or a width too
+            // small to elide into). Anything else would overflow the column it was sized for.
+            testing.expect(
+                t,
+                len(cell) <= width || cell == mime,
+                fmt.tprintf("elide_mime(%q, %d) = %q is %d long", mime, width, cell, len(cell)),
+            )
+        }
+    }
+}

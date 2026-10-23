@@ -955,6 +955,7 @@ REG_GROUPS :: [?]Reg_Group {
 // Constants for use in `get` command with table formatting
 REG_COL_WIDTH :: len("REGISTER") // no register name exceeds the heading length
 MIME_COL_WIDTH :: 26 // 24 for the longest common mime, +2 for the `= `/`+ ` mark
+MIME_MARK_WIDTH :: 2 // `= ` or `+ `
 DATA_COL_WIDTH :: 40
 COL_GAP :: 2
 TABLE_WIDTH :: REG_COL_WIDTH + COL_GAP + lib.TIMESTAMP_LEN + COL_GAP + MIME_COL_WIDTH + COL_GAP + DATA_COL_WIDTH
@@ -1004,7 +1005,14 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
             print_table_row(
                 lib.reg_id_to_string(id),
                 lib.format_unix_timestamp(entry.timestamp, &ts_buf, tz),
-                table_cell(fmt.tprintf("%c %s", REPR_MARK, entry.reprs[head].mimes[0]), MIME_COL_WIDTH),
+                table_cell(
+                    fmt.tprintf(
+                        "%c %s",
+                        REPR_MARK,
+                        lib.elide_mime(entry.reprs[head].mimes[0], MIME_COL_WIDTH - MIME_MARK_WIDTH),
+                    ),
+                    MIME_COL_WIDTH,
+                ),
                 display_data(entry, DATA_COL_WIDTH),
             )
 
@@ -1013,7 +1021,7 @@ cmd_get_format_table :: proc(regs: ^[lib.MAX_REGS]lib.Resp_Reg) {
                 for mime, m in repr.mimes {
                     if r == head && m == 0 {continue}
                     mark := REPR_MARK if m == 0 else ALIAS_MARK
-                    label := fmt.tprintf("%c %s", mark, mime)
+                    label := fmt.tprintf("%c %s", mark, lib.elide_mime(mime, MIME_COL_WIDTH - MIME_MARK_WIDTH))
                     content := "" if m > 0 || r == head else describe_repr(repr)
                     print_table_row("", "", table_cell(label, MIME_COL_WIDTH), table_cell(content, DATA_COL_WIDTH))
                 }

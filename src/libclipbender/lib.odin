@@ -2462,6 +2462,40 @@ timezone_label :: proc(tz: ^datetime.TZ_Region) -> string {
 // For converting days to seconds when using the `Delta` struct returned from `datetime.subtract_datetimes()`.
 SECONDS_PER_DAY :: 60 * 60 * 24
 
+// String to replace elided info
+MIME_ELLIPSIS :: "..."
+// The minimum number of characters we want to retain at the end of the mime.
+// To avoid results like "application/...nt"
+MIME_MIN_TAIL :: 4
+
+// Elide `mime` to fit it into `width`, trying to keep the full type up to `/` if possible.
+//
+// For example, the mime `application/spreadsheetml.sheet` would get elided to `application/...tml.sheet` (the length of
+// the tail, that is, the text after the ellipsis, depending on `width`).
+//
+// Any mime without a type (i.e. no `/`) falls back to eliding the middle.
+elide_mime :: proc(mime: string, width: int) -> string {
+    if len(mime) <= width || width <= len(MIME_ELLIPSIS) {return mime}
+    // Don't risk slicing a multi-byte sequence in the case of the mime not being all ascii.
+    for i in 0 ..< len(mime) {
+        if mime[i] >= 0x80 {return mime}     // standard ascii is 7-bits (127)
+    }
+
+    slash := strings.index_byte(mime, '/')
+    if slash >= 0 && slash + 1 + len(MIME_ELLIPSIS) + MIME_MIN_TAIL <= width {
+        head := mime[:slash + 1] // Type including the slash e.g. `image/` or `text/`
+        tail := mime[len(mime) - (width - len(head) - len(MIME_ELLIPSIS)):] // After type
+        // Prevent an extra separator occurring right after the ellipsis e.g. `application/....document`.
+        tail = strings.trim_left(tail, "._-")
+        return fmt.tprintf("%s%s%s", head, MIME_ELLIPSIS, tail)
+    }
+
+    // Fall back to splitting down the middle.
+    budget := width - len(MIME_ELLIPSIS)
+    tail_len := budget / 2
+    return fmt.tprintf("%s%s%s", mime[:budget - tail_len], MIME_ELLIPSIS, mime[len(mime) - tail_len:])
+}
+
 // Width of a `UTC[+|-]HH:MM` label. Every zone's offset is a whole number of minutes, so this never varies.
 UTC_OFFSET_LEN :: 9
 

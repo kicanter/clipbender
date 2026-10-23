@@ -300,7 +300,7 @@ dump_print_stanza :: proc(
                 DUMP_REPR_COL,
                 "",
                 DUMP_MIME_COL,
-                repr.mimes[0] if len(repr.mimes) > 0 else "(no mime)",
+                lib.elide_mime(repr.mimes[0], DUMP_MIME_COL) if len(repr.mimes) > 0 else "(no mime)",
                 DUMP_SIZE_COL,
                 size_num,
                 size_unit,
