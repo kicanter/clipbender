@@ -84,6 +84,9 @@ print_cmd_usage_and_exit :: proc(cmd_type: lib.Command_Type, is_err: bool) {
                 "Retrieve the content, mime type, and timestamp of the registers matching `filter`. `fmt=table` (the default)\n" +
                 "prints an aligned table, `fmt=json` emits structured JSON, and `fmt=raw` emits just the register contents\n" +
                 "separated by NUL bytes (recoverable with `read -d ''`, `xargs -0`; use `fmt=json` for binary contents).\n\n" +
+                "Table marks in the mimes column:\n" +
+                "\t= <mime>                                             A representation, and the start of its mime list\n" +
+                "\t+ <mime>                                             Another name for the representation above it\n\n" +
                 "Keywords (double prefix `++`/`--`), `@` selects the primary-side variant:\n" +
                 "\t++all, --all                                         All registers\n" +
                 "\t++numbered, ++@numbered                              Clipboard / primary recency registers\n" +
