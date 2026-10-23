@@ -261,17 +261,24 @@ set_named_reg :: proc(
     unreachable()
 }
 
-// Hand `reprs` to the backend to advertise, taking ownership either way.
-set_selection_reg :: proc(backend: Backend_State, reg_id: lib.Reg_Id, reprs: []lib.Data_Repr) {
+// Hand `reprs` to the backend to advertise, taking ownership either way. Reports whether it was advertised; see
+// `backend_set_selection`.
+set_selection_reg :: proc(
+    backend: Backend_State,
+    reg_id: lib.Reg_Id,
+    reprs: []lib.Data_Repr,
+) -> (
+    ok: bool,
+) {
     if reg_id == lib.SELECTION_CLIPBOARD {
-        backend_set_selection(backend, reprs, .CLIPBOARD)
+        return backend_set_selection(backend, reprs, .CLIPBOARD)
     } else if reg_id == lib.SELECTION_PRIMARY {
-        backend_set_selection(backend, reprs, .PRIMARY)
-    } else {
-        // Not a selection register, so there is nothing to advertise and nobody else owns `reprs`.
-        log.errorf("`%s` is not a selection register", lib.reg_id_to_string(reg_id))
-        lib.free_data_reprs(reprs)
+        return backend_set_selection(backend, reprs, .PRIMARY)
     }
+    // Not a selection register, so there is nothing to advertise and nobody else owns `reprs`.
+    log.errorf("`%s` is not a selection register", lib.reg_id_to_string(reg_id))
+    lib.free_data_reprs(reprs)
+    return false
 }
 
 // Overwrite a named reg

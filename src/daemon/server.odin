@@ -75,18 +75,21 @@ backend_cleanup :: proc(backend: ^Backend_State) {
 
 // Advertise `reprs` as the `type` selection, taking ownership either way, including when no backend is active, since
 // the caller has already cloned them and has no way to reclaim them afterwards.
-backend_set_selection :: proc(backend: Backend_State, reprs: []lib.Data_Repr, type: lib.Selection_Type) {
+backend_set_selection :: proc(backend: Backend_State, reprs: []lib.Data_Repr, type: lib.Selection_Type) -> (ok: bool) {
     switch b in backend {
     case ^Wayland_State:
         wayland_set_selection(b, reprs, type)
-        return
+        return true
     case ^X11_State:
-        log.error("No active clipboard backend, can't set selection")
+        log.error("X11 not supported (yet), can't set selection")
         lib.free_data_reprs(reprs)
+        return false
     case:
         log.error("No active clipboard backend, can't set selection")
         lib.free_data_reprs(reprs)
+        return false
     }
+    return false
 }
 
 // True if `type`'s offer was staged since the last check, clearing the flag as it reports it. Staging happens in the
@@ -349,7 +352,7 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
         // Destination register must be a named register or SELECTION_CLIPBOARD/PRIMARY
         errmsg := ""
         if lib.reg_id_is_named(dest_reg) {
-            // ownership of reprs transferred
+            // Ownership of reprs transferred
             stored := set_named_reg(store, dest_reg, reprs, set_mode)
             reprs = nil
             // An APPEND fails when neither side has a plaintext representation.
@@ -360,9 +363,15 @@ handle_recv :: proc(server: ^Server_State, bytes_read: int, client_fd: linux.Fd)
                 )
             }
         } else if lib.reg_id_is_selection(dest_reg) {
-            // ownership of reprs transferred
-            set_selection_reg(server.backend, dest_reg, reprs)
+            // Ownership of reprs transferred
+            ok := set_selection_reg(server.backend, dest_reg, reprs)
             reprs = nil
+            if !ok {     // No valid backend
+                errmsg = fmt.tprintf(
+                    "cannot set register `%s`: no active clipboard backend, only named registers are available",
+                    lib.reg_id_to_string(dest_reg),
+                )
+            }
         } else {
             errmsg = fmt.tprintf(
                 "invalid destination register, must be named or selection register (got `%s`)",
