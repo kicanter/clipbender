@@ -263,13 +263,7 @@ set_named_reg :: proc(
 
 // Hand `reprs` to the backend to advertise, taking ownership either way. Reports whether it was advertised; see
 // `backend_set_selection`.
-set_selection_reg :: proc(
-    backend: Backend_State,
-    reg_id: lib.Reg_Id,
-    reprs: []lib.Data_Repr,
-) -> (
-    ok: bool,
-) {
+set_selection_reg :: proc(backend: Backend_State, reg_id: lib.Reg_Id, reprs: []lib.Data_Repr) -> (ok: bool) {
     if reg_id == lib.SELECTION_CLIPBOARD {
         return backend_set_selection(backend, reprs, .CLIPBOARD)
     } else if reg_id == lib.SELECTION_PRIMARY {
