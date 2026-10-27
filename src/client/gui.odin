@@ -37,7 +37,7 @@ TEXT_PADDING_X :: 16 // left margin
 TEXT_PADDING_Y :: 16 // top margin
 LINE_HEIGHT :: 18 // spacing between rows, doesn't include font size so needs to be greater than FONT_SIZE
 
-XKB_KEYSYM_ESCAPE :: xkb.Xkb_Keysym(0xFF1B)
+XKB_KEYSYM_ESCAPE :: xkb.Keysym(0xFF1B)
 
 Frame_Buffer :: struct {
     buffer:   ^wl.buffer,
@@ -50,9 +50,9 @@ Frame_Buffer :: struct {
 
 Keyboard :: struct {
     keyboard: ^wl.keyboard,
-    ctx:      ^xkb.Xkb_Context,
-    keymap:   ^xkb.Xkb_Keymap,
-    state:    ^xkb.Xkb_State,
+    ctx:      ^xkb.Context,
+    keymap:   ^xkb.Keymap,
+    state:    ^xkb.State,
     prefix:   Maybe(rune),
 }
 
@@ -570,7 +570,7 @@ keyboard_listener := wl.keyboard_listener {
         if gui_state.kb.state == nil {return}
 
         // evdev keycodes need +8 offset for xkbcommon
-        keycode := xkb.Xkb_Keycode(key_ + 8)
+        keycode := xkb.Keycode(key_ + 8)
 
         // Use the keysym (not the UTF-32 codepoint) as the logical key for dispatch. The keysym accounts for the user's
         // layout and any remaps, and it is NOT subject to the control-character transformation that
@@ -752,12 +752,12 @@ keyboard_listener := wl.keyboard_listener {
         if gui_state.kb.state == nil {return}
         xkb.xkb_state_update_mask(
             gui_state.kb.state,
-            cast(xkb.Xkb_Mod_Mask)mods_depressed_,
-            cast(xkb.Xkb_Mod_Mask)mods_latched_,
-            cast(xkb.Xkb_Mod_Mask)mods_locked_,
-            cast(xkb.Xkb_Layout_Index)0,
-            cast(xkb.Xkb_Layout_Index)0,
-            cast(xkb.Xkb_Layout_Index)group_,
+            cast(xkb.Mod_Mask)mods_depressed_,
+            cast(xkb.Mod_Mask)mods_latched_,
+            cast(xkb.Mod_Mask)mods_locked_,
+            cast(xkb.Layout_Index)0,
+            cast(xkb.Layout_Index)0,
+            cast(xkb.Layout_Index)group_,
         )
     },
     repeat_info = proc "c" (data: rawptr, keyboard: ^wl.keyboard, rate_: int, delay_: int) {},
