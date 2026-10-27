@@ -151,6 +151,14 @@ foreign cairo {
     /** cairo_set_line_width: Sets the current line width within the cairo context. */
     cairo_set_line_width :: proc "c" (cr: ^Context, width: f64) ---
 
+    /**
+     * cairo_move_to:
+     *
+     * Begins a new sub-path and sets the current point. Needed to position text: `pango_cairo_show_layout` draws at
+     * the context's current point rather than taking coordinates.
+     */
+    cairo_move_to :: proc "c" (cr: ^Context, x, y: f64) ---
+
     /** cairo_rectangle: Adds a closed sub-path rectangle to the current path. */
     cairo_rectangle :: proc "c" (cr: ^Context, x, y, width, height: f64) ---
 
