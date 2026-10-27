@@ -4,11 +4,12 @@ import "base:runtime"
 import "core:fmt"
 import "core:log"
 import "core:os"
-import "core:simd"
 import "core:strings"
 import "core:sys/linux"
-import "vendor:stb/truetype"
 
+import cairo "bindings:cairo"
+import pango "bindings:pango"
+import pc "bindings:pangocairo"
 import xkb "bindings:xkbcommon"
 import lib "src:libclipbender"
 import wl "wayland:odin-wayland"
@@ -18,24 +19,17 @@ import wlr_ls "wayland:wlr-layer-shell"
 POPUP_WIDTH :: 800
 POPUP_HEIGHT :: 900
 
-// Colors
-BG_COLOR: u32 : 0xFF2E3440 // full alpha, dark gray
-FG_COLOR: u32 : 0xFFFFFFFF // full alpha, all white
+// Colors as RGBA hex codes normalized to the [0, 1] scale
+BG :: [4]f64{0x2E / 255.0, 0x34 / 255.0, 0x40 / 255.0, 0xFF / 255.0} // dark gray
+FG :: [4]f64{0xFF / 255.0, 0xFF / 255.0, 0xFF / 255.0, 0xFF / 255.0} // white
 
-// Font
-FONT_SIZE :: 14 // pixel height of font
-FONT_PATHS :: [?]string {
-    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf", // Fedora
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", // Debian/Ubuntu
-    "/usr/share/fonts/TTF/DejaVuSansMono.ttf", // Arch
-    "/usr/share/fonts/dejavu/DejaVuSansMono.ttf", // Other
-    "/usr/share/fonts/DejaVuSansMono.ttf", // Other
-}
+// Font as a fontconfig pattern.
+FONT_DESC :: "monospace 11"
 
 // Text Layout
 TEXT_PADDING_X :: 16 // left margin
 TEXT_PADDING_Y :: 16 // top margin
-LINE_HEIGHT :: 18 // spacing between rows, doesn't include font size so needs to be greater than FONT_SIZE
+LINE_HEIGHT :: 18 // min spacing between rows, doesn't include font size so needs to be greater than FONT_SIZE
 
 XKB_KEYSYM_ESCAPE :: xkb.Keysym(0xFF1B)
 
@@ -43,6 +37,9 @@ Frame_Buffer :: struct {
     buffer:   ^wl.buffer,
     shm_pool: ^wl.shm_pool,
     shm_fd:   linux.Fd,
+    surface:  ^cairo.Surface,
+    ctx:       ^cairo.Context,
+    layout:   ^pango.Layout,
     pixels:   [^]u32, // mmap'd pixel data
     width:    uint,
     height:   uint,
@@ -56,14 +53,8 @@ Keyboard :: struct {
     prefix:   Maybe(rune),
 }
 
-Font :: struct {
-    info:  truetype.fontinfo,
-    data:  []byte, // loaded TTF file (must outlive info)
-    scale: f32,
-}
-
 Gui_State :: struct {
-    // Daemon IPC
+    // Client connection FD to daemon socket
     client_fd:        linux.Fd,
     // General connection state
     display:          ^wl.display,
@@ -84,8 +75,8 @@ Gui_State :: struct {
     frame_buf:        Frame_Buffer,
     // Keyboard input
     kb:               Keyboard,
-    // Font
-    font:             Font,
+    // Font description resolved by fontconfig. Outlives the buffer.
+    font_desc:        ^pango.Font_Description,
     // Register data, indexed by Reg_Id
     regs:             [lib.MAX_REGS]lib.Resp_Reg,
 }
@@ -112,108 +103,52 @@ gui_init_surface :: proc(gui_state: ^Gui_State) {
     wl.surface_commit(gui_state.surface)
 }
 
-// combine fg_color * alpha and bg_color * inv(alpha)
-alpha_blend :: proc(fg_color: u32, alpha: u8, bg_color: u32) -> u32 {
-    a := u32(alpha)
-    inv_a := 255 - a
-    r := (((fg_color >> 16) & 0xFF) * a + ((bg_color >> 16) & 0xFF) * inv_a) / 255
-    g := (((fg_color >> 8) & 0xFF) * a + ((bg_color >> 8) & 0xFF) * inv_a) / 255
-    b := ((fg_color & 0xFF) * a + (bg_color & 0xFF) * inv_a) / 255
-    return 0xFF000000 | (r << 16) | (g << 8) | b
-}
-
-// Draw a single character
-draw_char :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, char: rune, color: u32, font: ^Font) {
-    // Get bitmap from truetype font
-    width, height, xoff, yoff: i32
-    bitmap := truetype.GetCodepointBitmap(&font.info, 0, font.scale, char, &width, &height, &xoff, &yoff)
-    if bitmap == nil {return}
-    defer truetype.FreeBitmap(bitmap, nil)
-
-    // Set each pixel according to bitmap
-    for row in 0 ..< uint(height) {
-        for col in 0 ..< uint(width) {
-            alpha := bitmap[row * uint(width) + col] // How opaque pixel at (row,col) is
-            if alpha == 0 {continue}     // Fully transparent, nothing to draw
-
-            // Bounds check
-            px_i := i32(x) + i32(col) + xoff
-            py_i := i32(y) + i32(row) + yoff
-            if px_i < 0 || py_i < 0 || uint(px_i) >= frame_buf.width || uint(py_i) >= frame_buf.height {continue}
-
-            // Alpha blend text color over background
-            px := uint(px_i)
-            py := uint(py_i)
-            frame_buf.pixels[py * frame_buf.width + px] = alpha_blend(
-                color,
-                alpha,
-                frame_buf.pixels[py * frame_buf.width + px],
-            )
-        }
-    }
-}
-
-// Draw a single string
-draw_string :: proc(frame_buf: ^Frame_Buffer, x: uint, y: uint, text: string, color: u32, font: ^Font) {
-    cursor_x := x
-    for char in text {
-        draw_char(frame_buf, cursor_x, y, char, color, font)
-        // Advance cursor past char
-        advance, lsb: i32
-        truetype.GetCodepointHMetrics(&font.info, char, &advance, &lsb)
-        cursor_x += uint(f32(advance) * font.scale)
-    }
-}
-
+// Resolve the UI font once. Outlives the frame buffer.
 gui_init_font :: proc(gui_state: ^Gui_State) -> bool {
-    for path in FONT_PATHS {
-        font_data, err := os.read_entire_file(path, context.allocator)
-        if err != nil {continue}
-        if len(font_data) == 0 {
-            delete(font_data)
-            continue
-        }
-
-        font_info: truetype.fontinfo
-        if !truetype.InitFont(&font_info, raw_data(font_data), 0) {
-            log.warnf("Failed to parse font file: %s", path)
-            delete(font_data)
-            continue
-        }
-
-        gui_state.font.data = font_data
-        gui_state.font.info = font_info
-        gui_state.font.scale = truetype.ScaleForPixelHeight(&font_info, FONT_SIZE)
-        log.debugf(
-            "Loaded font from %s (scale=%.3f, glyphs=%d)",
-            path,
-            gui_state.font.scale,
-            gui_state.font.info.numGlyphs,
-        )
-        return true
+    gui_state.font_desc = pango.pango_font_description_from_string(FONT_DESC)
+    if gui_state.font_desc == nil {
+        log.errorf("Failed to resolve a font from %q", FONT_DESC)
+        return false
     }
-
-    log.error("Failed to load font from any known path")
-    return false
+    log.debugf("Resolved font description %q", FONT_DESC)
+    return true
 }
 
-// Fill pixel buffer with single color using 8 SIMD lanes
-fill_pixels_simdx8 :: proc(pixels: [^]u32, count: uint, color: u32) {
-    // 8 pixels at a time using 256-bit SIMD (8 lanes x u32 bits in each lane)
-    color_vec := simd.u32x8{color, color, color, color, color, color, color, color}
+// Wrap the mapped shm memory in a cairo surface and build the layout that draws into it. Called after every
+// `gui_init_buffer` since all three objects reference `pixels` and the buffer is recreated on configure.
+gui_init_cairo :: proc(gui_state: ^Gui_State) -> (err: Maybe(string)) {
+    fb := &gui_state.frame_buf
+    width := i32(fb.width)
+    height := i32(fb.height)
 
-    chunks := count / 8
-    rem := count % 8
-
-    pixel_vecs := cast([^]simd.u32x8)pixels
-    for i in 0 ..< chunks {
-        pixel_vecs[i] = color_vec
+    // Ensure stride of shm buffer matches what cairo expects
+    stride := cairo.cairo_format_stride_for_width(.ARGB32, width)
+    if stride != width * 4 {
+        return fmt.tprintf("cairo wants a stride of %d for %d px ARGB32, the shm buffer uses %d", stride, width, width * 4)
     }
 
-    rem_offset := chunks * 8
-    for i in 0 ..< rem {
-        pixels[rem_offset + i] = color
+    fb.surface = cairo.cairo_image_surface_create_for_data(cast([^]u8)fb.pixels, .ARGB32, width, height, stride)
+    if status := cairo.cairo_surface_status(fb.surface); status != .SUCCESS {
+        return fmt.tprintf("cairo surface: %s", cairo.cairo_status_to_string(status))
     }
+
+    fb.ctx = cairo.cairo_create(fb.surface)
+    if status := cairo.cairo_status(fb.ctx); status != .SUCCESS {
+        return fmt.tprintf("cairo context: %s", cairo.cairo_status_to_string(status))
+    }
+
+    // Reuse layout for every row
+    fb.layout = pc.pango_cairo_create_layout(fb.ctx)
+    if fb.layout == nil {
+        return fmt.tprint("Failed to create a pango layout")
+    }
+    pango.pango_layout_set_font_description(fb.layout, gui_state.font_desc)
+    // Ellipsize rather than wrap, so one long register cannot push the rest off the popup. Pango cuts on a grapheme
+    // boundary.
+    pango.pango_layout_set_width(fb.layout, (width - 2 * TEXT_PADDING_X) * pango.SCALE)
+    pango.pango_layout_set_ellipsize(fb.layout, .END)
+
+    return nil
 }
 
 gui_init_buffer :: proc(gui_state: ^Gui_State) -> (err: Maybe(string)) {
@@ -240,9 +175,6 @@ gui_init_buffer :: proc(gui_state: ^Gui_State) -> (err: Maybe(string)) {
         return fmt.tprintf("Failed to mmap shm FD for pixel array: errno %v", errno)
     }
     gui_state.frame_buf.pixels = cast([^]u32)pixels_ptr
-
-    // Set color of buffer
-    fill_pixels_simdx8(gui_state.frame_buf.pixels, width * height, BG_COLOR)
 
     // Create shm_pool
     gui_state.frame_buf.shm_pool = wl.shm_create_pool(gui_state.shm, int(gui_state.frame_buf.shm_fd), int(area_bytes))
@@ -314,8 +246,28 @@ gui_init :: proc(gui_state: ^Gui_State) -> Maybe(string) {
     return nil
 }
 
+gui_cleanup_cairo :: proc(gui_state: ^Gui_State) {
+    fb := &gui_state.frame_buf
+    // Reverse of creation order (pixels -> surface -> context -> layout)
+    if fb.layout != nil {
+        pango.g_object_unref(fb.layout) // GOBJECTTTTT!!!!
+        fb.layout = nil
+    }
+    if fb.ctx != nil {
+        cairo.cairo_destroy(fb.ctx)
+        fb.ctx = nil
+    }
+    if fb.surface != nil {
+        cairo.cairo_surface_destroy(fb.surface)
+        fb.surface = nil
+    }
+}
+
 gui_cleanup_font :: proc(gui_state: ^Gui_State) {
-    if gui_state.font.data != nil {delete(gui_state.font.data)}
+    if gui_state.font_desc != nil {
+        pango.pango_font_description_free(gui_state.font_desc)
+        gui_state.font_desc = nil
+    }
 }
 
 gui_cleanup_keyboard :: proc(gui_state: ^Gui_State) {
@@ -326,6 +278,8 @@ gui_cleanup_keyboard :: proc(gui_state: ^Gui_State) {
 }
 
 gui_cleanup_buffer :: proc(gui_state: ^Gui_State) {
+    // Cairo surface borrows `pixels`, so clean up cairo first.
+    gui_cleanup_cairo(gui_state)
     if gui_state.frame_buf.buffer != nil {wl.buffer_destroy(gui_state.frame_buf.buffer)}
     if gui_state.frame_buf.shm_pool != nil {wl.shm_pool_destroy(gui_state.frame_buf.shm_pool)}
     if gui_state.frame_buf.pixels != nil {
@@ -452,6 +406,12 @@ layer_surface_listener := wlr_ls.layer_surface_v1_listener {
         err := gui_init_buffer(gui_state)
         if err != nil {
             log.errorf("Failed to init GUI frame buffer: %v", err.?)
+            gui_state.running = false
+            return
+        }
+        // The cairo surface wraps the buffer that was just created, so it is rebuilt on every configure too.
+        if cairo_err := gui_init_cairo(gui_state); cairo_err != nil {
+            log.errorf("Failed to init cairo: %v", cairo_err.?)
             gui_state.running = false
             return
         }
@@ -797,7 +757,8 @@ gui_fetch_registers :: proc(client_fd: linux.Fd, gui_state: ^Gui_State) -> (err:
     return nil
 }
 
-draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: uint, y: uint, color: u32) {
+// One register row. Returns the height it occupied, which the caller uses to advance.
+draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: f64, y: f64) -> f64 {
     CONTENT_WIDTH :: 100
     // `display_data` pads to CONTENT_WIDTH itself, so the format string must not pad again.
     reg_fmt := "% 10s  %s"
@@ -806,42 +767,59 @@ draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: uint, y: uin
     entry := gui_state.regs[reg_id]
     content := ""
     if !lib.resp_reg_is_empty(entry) {
-        // Shares the CLI's sanitising: control bytes render as garbage glyphs here rather than moving a cursor, and
-        // non-text content is described instead of drawn.
+        // Shares the CLI's sanitising, so a control byte cannot move the cursor or wreck the layout, and non-text
+        // content is described instead of drawn.
         content = display_data(entry, CONTENT_WIDTH)
     }
     reg_str := fmt.tprintf(reg_fmt, lib.reg_id_to_string(reg_id), content)
 
-    draw_string(&gui_state.frame_buf, x, y, reg_str, color, &gui_state.font)
+    fb := &gui_state.frame_buf
+    cairo.cairo_move_to(fb.ctx, x, y)
+    pango.pango_layout_set_text(fb.layout, raw_data(reg_str), i32(len(reg_str)))
+    pc.pango_cairo_show_layout(fb.ctx, fb.layout)
+
+    row_w, row_h: i32
+    pango.pango_layout_get_pixel_size(fb.layout, &row_w, &row_h)
+    return f64(row_h)
 }
 
-draw_all_registers :: proc(gui_state: ^Gui_State, x: uint, y: uint, color: u32) {
+draw_all_registers :: proc(gui_state: ^Gui_State, x: f64, y: f64) {
     cursor_x := x
     cursor_y := y
 
+    draw_group :: proc(gui_state: ^Gui_State, first, last: lib.Reg_Id, x: f64, cursor_y: ^f64) {
+        for i := first; i <= last; i += 1 {
+            row_h := draw_register(gui_state, i, x, cursor_y^)
+            cursor_y^ += max(row_h, LINE_HEIGHT)
+        }
+    }
+
     // Draw all clipboard registers first
-    for i := lib.CLIPBOARD_START; i <= lib.CLIPBOARD_END; i += 1 {
-        draw_register(gui_state, i, cursor_x, cursor_y, color)
-        cursor_y += LINE_HEIGHT
-    }
-
+    draw_group(gui_state, lib.CLIPBOARD_START, lib.CLIPBOARD_END, cursor_x, &cursor_y)
     // TODO: Probably increase cursor_x to place clipboard + primary side-by-side at some point
-    // Draw all primary registers
-    for i := lib.PRIMARY_START; i <= lib.PRIMARY_END; i += 1 {
-        draw_register(gui_state, i, cursor_x, cursor_y, color)
-        cursor_y += LINE_HEIGHT
-    }
-
+    draw_group(gui_state, lib.PRIMARY_START, lib.PRIMARY_END, cursor_x, &cursor_y)
     // TODO: If clipboard + primary are side-by-side, reset cursor_x to x
-    // Draw all named registers
-    for i := lib.NAMED_START; i <= lib.NAMED_END; i += 1 {
-        draw_register(gui_state, i, cursor_x, cursor_y, color)
-        cursor_y += LINE_HEIGHT
-    }
+    draw_group(gui_state, lib.NAMED_START, lib.NAMED_END, cursor_x, &cursor_y)
 }
 
 gui_render :: proc(gui_state: ^Gui_State) {
-    draw_all_registers(gui_state, TEXT_PADDING_X, TEXT_PADDING_Y, FG_COLOR)
+    fb := &gui_state.frame_buf
+    if fb.ctx == nil {return} // configure has not run yet, so there is nothing to draw into
+
+    // Repaint the background rather than drawing over the previous frame.
+    cairo.cairo_set_operator(fb.ctx, .SOURCE)
+    cairo.cairo_set_source_rgba(fb.ctx, BG[0], BG[1], BG[2], BG[3])
+    cairo.cairo_paint(fb.ctx)
+
+    cairo.cairo_set_operator(fb.ctx, .OVER)
+    cairo.cairo_set_source_rgba(fb.ctx, FG[0], FG[1], FG[2], FG[3])
+    draw_all_registers(gui_state, TEXT_PADDING_X, TEXT_PADDING_Y)
+
+    // The compositor reads the mapped memory directly, so pending drawing has to be flushed before it does.
+    cairo.cairo_surface_flush(fb.surface)
+    if status := cairo.cairo_status(fb.ctx); status != .SUCCESS {
+        log.errorf("cairo render: %s", cairo.cairo_status_to_string(status))
+    }
 }
 
 run_gui :: proc(client_fd: linux.Fd) {
