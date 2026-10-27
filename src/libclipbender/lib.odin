@@ -27,7 +27,7 @@ Monotonic_Version :: distinct u8
 
 CLIPBENDER_VERSION :: Semantic_Version {
     major = 0,
-    minor = 2,
+    minor = 3,
     patch = 0,
     pre   = "alpha",
     build = #config(BUILD, ""),
