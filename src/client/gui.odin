@@ -268,6 +268,8 @@ gui_cleanup_font :: proc(gui_state: ^Gui_State) {
         pango.pango_font_description_free(gui_state.font_desc)
         gui_state.font_desc = nil
     }
+    // Release pango's own reference to the process-wide default font map.
+    pc.pango_cairo_font_map_set_default(nil)
 }
 
 gui_cleanup_keyboard :: proc(gui_state: ^Gui_State) {

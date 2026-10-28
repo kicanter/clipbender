@@ -33,6 +33,18 @@ foreign pangocairo {
     pango_cairo_show_layout :: proc "c" (cr: ^cairo.Context, layout: ^pango.Layout) ---
 
     /**
+     * pango_cairo_font_map_set_default:
+     *
+     * Sets the default `PangoCairoFontMap`, or with nil resets it so the next lookup lazily creates a fresh one.
+     *
+     * Called once at shutdown to release pango's own reference to the singleton font map. Unref'ing a layout does not
+     * reach it -- the map is pango's, not ours, and it owns every font loaded through it, each of which owns a
+     * fontconfig pattern with strdup'd names and a charset bitmap. Without this, exiting leaks the whole chain: tens
+     * of KB per script rendered, which buries any real leak in an ASAN run.
+     */
+    pango_cairo_font_map_set_default :: proc "c" (fontmap: ^pango.Font_Map) ---
+
+    /**
      * pango_cairo_create_context:
      *
      * A `PangoContext` configured for @cr, for the case where layouts are created from the context rather than

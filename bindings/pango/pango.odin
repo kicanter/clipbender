@@ -20,6 +20,15 @@ Layout :: struct {}
 Font_Description :: struct {}
 
 /**
+ * PangoFontMap:
+ *
+ * A `PangoFontMap` represents the set of fonts available for a particular rendering system. pango keeps a
+ * process-wide default one and owns it, so releasing it is `pango_cairo_font_map_set_default(nil)` rather than an
+ * unref of our own.
+ */
+Font_Map :: struct {}
+
+/**
  * PangoContext:
  *
  * Stores global information used to control rendering. Obtained from a cairo context via
