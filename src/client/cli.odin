@@ -945,11 +945,12 @@ Reg_Group :: struct {
     start: lib.Reg_Id,
     end:   lib.Reg_Id,
 }
+// Live selections first: they are what the user just copied, so they are the most likely thing being looked for.
 REG_GROUPS :: [?]Reg_Group {
+    {lib.SELECTION_CLIPBOARD, lib.SELECTION_PRIMARY},
     {lib.CLIPBOARD_START, lib.CLIPBOARD_END},
     {lib.NAMED_START, lib.NAMED_END},
     {lib.PRIMARY_START, lib.PRIMARY_END},
-    {lib.SELECTION_PRIMARY, lib.SELECTION_CLIPBOARD},
 }
 
 // Constants for use in `get` command with table formatting

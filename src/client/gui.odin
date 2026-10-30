@@ -796,7 +796,9 @@ draw_all_registers :: proc(gui_state: ^Gui_State, x: f64, y: f64) {
         }
     }
 
-    // Draw all clipboard registers first
+    // Live selections first: they are what the user just copied, and they were previously not drawn at all despite
+    // the GET filter already fetching them.
+    draw_group(gui_state, lib.SELECTION_CLIPBOARD, lib.SELECTION_PRIMARY, cursor_x, &cursor_y)
     draw_group(gui_state, lib.CLIPBOARD_START, lib.CLIPBOARD_END, cursor_x, &cursor_y)
     // TODO: Probably increase cursor_x to place clipboard + primary side-by-side at some point
     draw_group(gui_state, lib.PRIMARY_START, lib.PRIMARY_END, cursor_x, &cursor_y)

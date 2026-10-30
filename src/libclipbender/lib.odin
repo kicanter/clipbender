@@ -225,8 +225,11 @@ PRIMARY_START :: Reg_Id(36)
 PRIMARY_END :: Reg_Id(45)
 // Live system selections. Kept in the top of the 0-63 range so they fit in the Cmd_Get_Filter bit_set (u64-backed)
 // and can be filtered/returned by GET like any other register. Bits 46-61 are reserved for future expansion.
-SELECTION_PRIMARY :: Reg_Id(62)
-SELECTION_CLIPBOARD :: Reg_Id(63)
+// Clipboard before primary, matching the ordering everywhere else in the id space (`CLIPBOARD_START` 0 precedes
+// `PRIMARY_START` 36). That lets a renderer walk the pair as one `Reg_Id` range and get `.` before `@.` without a
+// special case.
+SELECTION_CLIPBOARD :: Reg_Id(62)
+SELECTION_PRIMARY :: Reg_Id(63)
 
 // Use `.` for the single-char SELECTION register name.
 // `.` is equivalent to vim's `+` register
@@ -493,8 +496,8 @@ Cmd_Get_Filter :: distinct bit_set[0 ..< MAX_REGS;u64]
 CMD_GET_FILTER_NUMBERED :: transmute(Cmd_Get_Filter)u64(0x3FF) // clipboard recency, bits 0-9
 CMD_GET_FILTER_NAMED :: transmute(Cmd_Get_Filter)(u64(0x3FFFFFF) << 10) // named a-z, bits 10-35
 CMD_GET_FILTER_PRIMARY_NUMBERED :: transmute(Cmd_Get_Filter)(u64(0x3FF) << 36) // primary recency, bits 36-45
-CMD_GET_FILTER_PRIMARY_SELECTION :: transmute(Cmd_Get_Filter)(u64(1) << 62) // live primary selection, bit 62
-CMD_GET_FILTER_SELECTION :: transmute(Cmd_Get_Filter)(u64(1) << 63) // live clipboard selection, bit 63
+CMD_GET_FILTER_SELECTION :: transmute(Cmd_Get_Filter)(u64(1) << 62) // live clipboard selection, bit 62
+CMD_GET_FILTER_PRIMARY_SELECTION :: transmute(Cmd_Get_Filter)(u64(1) << 63) // live primary selection, bit 63
 CMD_GET_FILTER_ALL ::
     CMD_GET_FILTER_NUMBERED +
     CMD_GET_FILTER_NAMED +

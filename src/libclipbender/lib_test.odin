@@ -2567,3 +2567,16 @@ test_elide_mime_never_exceeds_width :: proc(t: ^testing.T) {
         }
     }
 }
+
+// Renderers walk the two live selections as a single `Reg_Id` range, so the ids have to be adjacent and ordered
+// clipboard-then-primary. Both the `get` table and the popup rely on that to show `.` before `@.` without a special
+// case, matching how `0`-`9` precede `@0`-`@9`.
+@(test)
+test_live_selection_ids_are_adjacent_and_clipboard_first :: proc(t: ^testing.T) {
+    testing.expect_value(t, int(SELECTION_PRIMARY) - int(SELECTION_CLIPBOARD), 1)
+    testing.expect(t, SELECTION_CLIPBOARD < SELECTION_PRIMARY, "clipboard should sort before primary")
+
+    // And the filter bits have to track the ids, since a filter is a bit_set indexed by Reg_Id.
+    testing.expect_value(t, CMD_GET_FILTER_SELECTION, Cmd_Get_Filter{int(SELECTION_CLIPBOARD)})
+    testing.expect_value(t, CMD_GET_FILTER_PRIMARY_SELECTION, Cmd_Get_Filter{int(SELECTION_PRIMARY)})
+}
