@@ -209,6 +209,28 @@ Keycode :: distinct u32
  */
 Keysym :: distinct u32
 
+// Keysym values from `xkbcommon/xkbcommon-keysyms.h`.
+KEYSYM_c :: Keysym(0x0063)
+KEYSYM_d :: Keysym(0x0064)
+KEYSYM_e :: Keysym(0x0065)
+KEYSYM_j :: Keysym(0x006A)
+KEYSYM_k :: Keysym(0x006B)
+KEYSYM_n :: Keysym(0x006E)
+KEYSYM_p :: Keysym(0x0070)
+KEYSYM_u :: Keysym(0x0075)
+KEYSYM_y :: Keysym(0x0079)
+KEYSYM_bracketleft :: Keysym(0x005B)
+KEYSYM_Return :: Keysym(0xFF0D)
+KEYSYM_Escape :: Keysym(0xFF1B)
+KEYSYM_Up :: Keysym(0xFF52)
+KEYSYM_Down :: Keysym(0xFF54)
+
+// Modifier names from `xkbcommon/xkbcommon-names.h`.
+MOD_NAME_SHIFT :: "Shift"
+MOD_NAME_CTRL :: "Control"
+MOD_NAME_ALT :: "Mod1"
+MOD_NAME_SUPER :: "Mod4"
+
 // Bindings for libxkbcommon to support keycode resolution for wl_keyboard
 foreign xkb {
     /**

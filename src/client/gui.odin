@@ -31,14 +31,126 @@ TEXT_PADDING_X :: 16 // left margin
 TEXT_PADDING_Y :: 16 // top margin
 LINE_HEIGHT :: 18 // min spacing between rows, doesn't include font size so needs to be greater than FONT_SIZE
 
-XKB_KEYSYM_ESCAPE :: xkb.Keysym(0xFF1B)
+// Keymaps:
+// * Main mode actions are functions of (mods, leader, class)
+// * Main mode navigations are functions of (mods, keysym)
+// * Mime list navigations are functions of (mods, keysym)
+// * `Escape`, `<C-[>`, and `<C-c>` are hardcoded to prevent the user from getting trapped
+
+Mod :: enum u8 {
+    Ctrl,
+    Shift,
+    Alt,
+    Super,
+}
+Mod_Flags :: bit_set[Mod;u8]
+
+// Prefix of the key sequence, accumulated as keys arrive.
+Leader :: enum u8 {
+    Clipboard_And_Named, // none by default
+    Primary, // `@`
+    Mime, // `=`
+    Edit, // `:`
+}
+
+// The fixed register alphabets.
+Main_Class :: enum u8 {
+    Digit, // `0`-`9`, the recency rings
+    Alpha, // `a`-`z`, named registers
+    Dot, // `.`, the live selections
+}
+
+// Actions to be taken after a MAIN mode key sequence.
+Main_Action :: enum u8 {
+    Read_Clipboard_Recency,
+    Read_Named,
+    Read_Live_Clipboard,
+    Read_Primary_Recency,
+    Read_Live_Primary,
+    Write_Overwrite,
+    Write_Append,
+    Open_Mime_List,
+    Edit_Named,
+    Scroll_Row_Down,
+    Scroll_Row_Up,
+    Scroll_Page_Down,
+    Scroll_Page_Up,
+}
+
+Main_Keymap :: struct {
+    mods:    Mod_Flags,
+    leaders: bit_set[Leader],
+    class:   Main_Class,
+    action:  Main_Action,
+}
+
+// The complete MAIN mode register grammar. Any (mods, leaders, class) absent from this is invalid.
+MAIN_KEYMAPS :: [?]Main_Keymap {
+    {{}, {.Clipboard_And_Named}, .Digit, .Read_Clipboard_Recency},
+    {{}, {.Clipboard_And_Named}, .Alpha, .Read_Named},
+    {{}, {.Clipboard_And_Named}, .Dot, .Read_Live_Clipboard},
+    {{}, {.Primary}, .Digit, .Read_Primary_Recency},
+    {{}, {.Primary}, .Dot, .Read_Live_Primary},
+    {{.Alt}, {.Clipboard_And_Named}, .Alpha, .Write_Overwrite},
+    {{.Alt, .Shift}, {.Clipboard_And_Named}, .Alpha, .Write_Append},
+    {{}, {.Mime, .Clipboard_And_Named}, .Digit, .Open_Mime_List},
+    {{}, {.Mime, .Clipboard_And_Named}, .Alpha, .Open_Mime_List},
+    {{}, {.Mime, .Clipboard_And_Named}, .Dot, .Open_Mime_List},
+    {{}, {.Mime, .Primary}, .Digit, .Open_Mime_List},
+    {{}, {.Mime, .Primary}, .Dot, .Open_Mime_List},
+    {{}, {.Edit, .Clipboard_And_Named}, .Alpha, .Edit_Named},
+}
+
+// Config-owned. Several keys may share one action.
+Main_Nav_Keymap :: struct {
+    mods:   Mod_Flags,
+    keysym: xkb.Keysym,
+    action: Main_Action,
+}
+
+// Navigation within MAIN mode if registers exceed window height.
+MAIN_NAV_KEYMAPS :: [?]Main_Nav_Keymap {
+    {{.Ctrl}, xkb.KEYSYM_e, .Scroll_Row_Down},
+    {{.Ctrl}, xkb.KEYSYM_y, .Scroll_Row_Up},
+    {{.Ctrl}, xkb.KEYSYM_d, .Scroll_Page_Down},
+    {{.Ctrl}, xkb.KEYSYM_u, .Scroll_Page_Up},
+}
+
+// Actions to be taken in a mime list.
+Mime_Action :: enum u8 {
+    Cursor_Down,
+    Cursor_Up,
+    Commit,
+}
+
+Mime_Nav_Keymap :: struct {
+    mods:   Mod_Flags,
+    keysym: xkb.Keysym,
+    action: Mime_Action,
+}
+
+MIME_NAV_KEYMAPS :: [?]Mime_Nav_Keymap {
+    {{}, xkb.KEYSYM_j, .Cursor_Down},
+    {{}, xkb.KEYSYM_Down, .Cursor_Down},
+    {{.Ctrl}, xkb.KEYSYM_n, .Cursor_Down},
+    {{}, xkb.KEYSYM_k, .Cursor_Up},
+    {{}, xkb.KEYSYM_Up, .Cursor_Up},
+    {{.Ctrl}, xkb.KEYSYM_p, .Cursor_Up},
+    {{}, xkb.KEYSYM_Return, .Commit},
+}
+
+// State of the open mime list. `cursor` indexes `reg`'s mimes and is clamped to that count, never wrapped.
+Mime_List_State :: struct {
+    reg:    lib.Reg_Id,
+    cursor: u8,
+}
 
 Frame_Buffer :: struct {
     buffer:   ^wl.buffer,
     shm_pool: ^wl.shm_pool,
     shm_fd:   linux.Fd,
     surface:  ^cairo.Surface,
-    ctx:       ^cairo.Context,
+    ctx:      ^cairo.Context,
     layout:   ^pango.Layout,
     pixels:   [^]u32, // mmap'd pixel data
     width:    uint,
@@ -124,7 +236,12 @@ gui_init_cairo :: proc(gui_state: ^Gui_State) -> (err: Maybe(string)) {
     // Ensure stride of shm buffer matches what cairo expects
     stride := cairo.cairo_format_stride_for_width(.ARGB32, width)
     if stride != width * 4 {
-        return fmt.tprintf("cairo wants a stride of %d for %d px ARGB32, the shm buffer uses %d", stride, width, width * 4)
+        return fmt.tprintf(
+            "cairo wants a stride of %d for %d px ARGB32, the shm buffer uses %d",
+            stride,
+            width,
+            width * 4,
+        )
     }
 
     fb.surface = cairo.cairo_image_surface_create_for_data(cast([^]u8)fb.pixels, .ARGB32, width, height, stride)
@@ -540,7 +657,7 @@ keyboard_listener := wl.keyboard_listener {
         // ASCII printable range, keysym values equal their ASCII codepoint, so `rune(keysym)` is the char.
         keysym := xkb.xkb_state_key_get_one_sym(gui_state.kb.state, keycode)
         // ESC to exit GUI
-        if keysym == XKB_KEYSYM_ESCAPE {
+        if keysym == xkb.KEYSYM_Escape {
             gui_state.running = false
             return
         }
@@ -808,7 +925,7 @@ draw_all_registers :: proc(gui_state: ^Gui_State, x: f64, y: f64) {
 
 gui_render :: proc(gui_state: ^Gui_State) {
     fb := &gui_state.frame_buf
-    if fb.ctx == nil {return} // configure has not run yet, so there is nothing to draw into
+    if fb.ctx == nil {return}     // configure has not run yet, so there is nothing to draw into
 
     // Repaint the background rather than drawing over the previous frame.
     cairo.cairo_set_operator(fb.ctx, .SOURCE)
