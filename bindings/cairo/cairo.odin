@@ -159,6 +159,9 @@ foreign cairo {
      */
     cairo_move_to :: proc "c" (cr: ^Context, x, y: f64) ---
 
+    /** cairo_line_to: Adds a line to the path from the current point to position (x, y) in user-space. */
+    cairo_line_to :: proc "c" (cr: ^Context, x, y: f64) ---
+
     /** cairo_rectangle: Adds a closed sub-path rectangle to the current path. */
     cairo_rectangle :: proc "c" (cr: ^Context, x, y, width, height: f64) ---
 
