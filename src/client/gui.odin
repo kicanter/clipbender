@@ -142,7 +142,7 @@ MIME_NAV_KEYMAPS :: [?]Mime_Nav_Keymap {
 // State of the open mime list. `cursor` indexes `reg`'s mimes and is clamped to that count, never wrapped.
 Mime_List_State :: struct {
     reg:    lib.Reg_Id,
-    cursor: u8,
+    cursor: u16,
 }
 
 Frame_Buffer :: struct {
