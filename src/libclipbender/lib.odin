@@ -284,6 +284,46 @@ reg_id_to_primary_index :: proc(id: Reg_Id) -> u8 {
     return u8(id - PRIMARY_START)
 }
 
+// Longest name `reg_id_from_string` accepts, i.e. the `@`-prefixed forms.
+MAX_REG_NAME_LEN :: 2
+
+// Three-state enum to represent incrementally matching an input.
+Match_Status :: enum u8 {
+    Miss, // nothing can make this match
+    Partial, // a valid prefix -- more input could complete it
+    Hit,
+}
+
+// Parse a register from its name. Named registers are matched case-insensitively.
+reg_id_from_string :: proc(s: string) -> (reg: Reg_Id, status: Match_Status) {
+    switch len(s) {
+    case 1:
+        switch c := s[0]; c {
+        case '0' ..= '9':
+            return reg_id_from_clipboard_index(c - '0'), .Hit
+        case 'a' ..= 'z':
+            return reg_id_from_named_index(c - 'a'), .Hit
+        case 'A' ..= 'Z':
+            return reg_id_from_named_index(c - 'A'), .Hit
+        case SELECTION_REG_NAME:
+            return SELECTION_CLIPBOARD, .Hit
+        case '@':
+            return {}, .Partial
+        }
+    case 2:
+        if s[0] == '@' {
+            switch c := s[1]; c {
+            case '0' ..= '9':
+                return reg_id_from_primary_index(c - '0'), .Hit
+            case SELECTION_REG_NAME:
+                return SELECTION_PRIMARY, .Hit
+            }
+        }
+    }
+    return {}, .Miss
+}
+
+// Convert a register ID to its string name.
 reg_id_to_string :: proc(id: Reg_Id) -> string {
     if reg_id_is_clipboard_num(id) {
         return fmt.tprintf("%d", reg_id_to_clipboard_index(id))

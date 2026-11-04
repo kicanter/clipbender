@@ -31,112 +31,244 @@ TEXT_PADDING_X :: 16 // left margin
 TEXT_PADDING_Y :: 16 // top margin
 LINE_HEIGHT :: 18 // min spacing between rows, doesn't include font size so needs to be greater than FONT_SIZE
 
-// Keymaps:
-// * Main mode actions are functions of (mods, leader, class)
-// * Main mode navigations are functions of (mods, keysym)
-// * Mime list navigations are functions of (mods, keysym)
-// * `Escape`, `<C-[>`, and `<C-c>` are hardcoded to prevent the user from getting trapped
+// KEYMAP STUFF
 
-Mod :: enum u8 {
+// Modifier keys. Caps lock intentionally left out and keysyms are case-insensitive to prevent caps+a being construed as
+// shift+a.
+Modifier :: enum u8 {
     Ctrl,
     Shift,
-    Alt,
+    Meta,
     Super,
 }
-Mod_Flags :: bit_set[Mod;u8]
+Modifier_Flags :: bit_set[Modifier;u8] // activated modifiers
 
-// Prefix of the key sequence, accumulated as keys arrive.
-Leader :: enum u8 {
-    Clipboard_And_Named, // none by default
-    Primary, // `@`
-    Mime, // `=`
-    Edit, // `:`
+// A key chord is the activated modifiers plus one key.
+Key_Chord :: struct {
+    mods:   Modifier_Flags,
+    keysym: xkb.Keysym,
 }
 
-// The fixed register alphabets.
-Main_Class :: enum u8 {
-    Digit, // `0`-`9`, the recency rings
-    Alpha, // `a`-`z`, named registers
-    Dot, // `.`, the live selections
+// Plain type to represent a register name token:
+// - clipboard registers `0-9`
+// - primary registers `@0-@9`
+// - named registers `a-z`
+// - live clipboard register `.`
+// - live primary register `@.`
+//
+// Grouping every register under one token is what collapses the table. A single binding covers all 48 names instead of
+// one near-duplicate entry each.
+Reg_Token :: struct {}
+
+// A single token in a binding's sequence, either the literal chord or we matched a register token name.
+Key_Token :: union {
+    Key_Chord,
+    Reg_Token,
 }
 
-// Actions to be taken after a MAIN mode key sequence.
-Main_Action :: enum u8 {
-    Read_Clipboard_Recency,
-    Read_Named,
-    Read_Live_Clipboard,
-    Read_Primary_Recency,
-    Read_Live_Primary,
-    Write_Overwrite,
-    Write_Append,
+// The action a resolved binding carries out.
+Action :: enum u8 {
+    Set_Reg,
+    Clear_Reg,
     Open_Mime_List,
-    Edit_Named,
     Scroll_Row_Down,
     Scroll_Row_Up,
     Scroll_Page_Down,
     Scroll_Page_Up,
-}
-
-Main_Keymap :: struct {
-    mods:    Mod_Flags,
-    leaders: bit_set[Leader],
-    class:   Main_Class,
-    action:  Main_Action,
-}
-
-// The complete MAIN mode register grammar. Any (mods, leaders, class) absent from this is invalid.
-MAIN_KEYMAPS :: [?]Main_Keymap {
-    {{}, {.Clipboard_And_Named}, .Digit, .Read_Clipboard_Recency},
-    {{}, {.Clipboard_And_Named}, .Alpha, .Read_Named},
-    {{}, {.Clipboard_And_Named}, .Dot, .Read_Live_Clipboard},
-    {{}, {.Primary}, .Digit, .Read_Primary_Recency},
-    {{}, {.Primary}, .Dot, .Read_Live_Primary},
-    {{.Alt}, {.Clipboard_And_Named}, .Alpha, .Write_Overwrite},
-    {{.Alt, .Shift}, {.Clipboard_And_Named}, .Alpha, .Write_Append},
-    {{}, {.Mime, .Clipboard_And_Named}, .Digit, .Open_Mime_List},
-    {{}, {.Mime, .Clipboard_And_Named}, .Alpha, .Open_Mime_List},
-    {{}, {.Mime, .Clipboard_And_Named}, .Dot, .Open_Mime_List},
-    {{}, {.Mime, .Primary}, .Digit, .Open_Mime_List},
-    {{}, {.Mime, .Primary}, .Dot, .Open_Mime_List},
-    {{}, {.Edit, .Clipboard_And_Named}, .Alpha, .Edit_Named},
-}
-
-// Config-owned. Several keys may share one action.
-Main_Nav_Keymap :: struct {
-    mods:   Mod_Flags,
-    keysym: xkb.Keysym,
-    action: Main_Action,
-}
-
-// Navigation within MAIN mode if registers exceed window height.
-MAIN_NAV_KEYMAPS :: [?]Main_Nav_Keymap {
-    {{.Ctrl}, xkb.KEYSYM_e, .Scroll_Row_Down},
-    {{.Ctrl}, xkb.KEYSYM_y, .Scroll_Row_Up},
-    {{.Ctrl}, xkb.KEYSYM_d, .Scroll_Page_Down},
-    {{.Ctrl}, xkb.KEYSYM_u, .Scroll_Page_Up},
-}
-
-// Actions to be taken in a mime list.
-Mime_Action :: enum u8 {
     Cursor_Down,
     Cursor_Up,
     Commit,
+    Unwind,
 }
 
-Mime_Nav_Keymap :: struct {
-    mods:   Mod_Flags,
-    keysym: xkb.Keysym,
-    action: Mime_Action,
+// A keymap is a sequence of tokens with the resulting action.
+Keymap :: struct {
+    seq:    []Key_Token,
+    action: Action,
 }
 
-MIME_NAV_KEYMAPS :: [?]Mime_Nav_Keymap {
-    {{}, xkb.KEYSYM_j, .Cursor_Down},
-    {{}, xkb.KEYSYM_Down, .Cursor_Down},
-    {{.Ctrl}, xkb.KEYSYM_n, .Cursor_Down},
-    {{}, xkb.KEYSYM_k, .Cursor_Up},
-    {{}, xkb.KEYSYM_Up, .Cursor_Up},
-    {{.Ctrl}, xkb.KEYSYM_p, .Cursor_Up},
-    {{}, xkb.KEYSYM_Return, .Commit},
+// Reading a register onto the clipboard is one keypress because it's the common usage of the GUI. All other register
+// setting goes through the <space> leader key. TODO: maybe I'll make the leader configurable or something later.
+MAIN_KEYMAPS := []Keymap {
+    {{Reg_Token{}}, .Set_Reg},
+    {{Key_Chord{{}, xkb.KEYSYM_space}, Reg_Token{}, Reg_Token{}}, .Set_Reg},
+    {{Key_Chord{{}, xkb.KEYSYM_equal}, Reg_Token{}}, .Open_Mime_List},
+    {{Key_Chord{{}, xkb.KEYSYM_minus}, Reg_Token{}}, .Clear_Reg},
+    {{Key_Chord{{.Ctrl}, xkb.KEYSYM_e}}, .Scroll_Row_Down},
+    {{Key_Chord{{.Ctrl}, xkb.KEYSYM_y}}, .Scroll_Row_Up},
+    {{Key_Chord{{.Ctrl}, xkb.KEYSYM_d}}, .Scroll_Page_Down},
+    {{Key_Chord{{.Ctrl}, xkb.KEYSYM_u}}, .Scroll_Page_Up},
+}
+
+// All literal navigation chords.
+MIME_LIST_KEYMAPS := []Keymap {
+    {{Key_Chord{{}, xkb.KEYSYM_j}}, .Cursor_Down},
+    {{Key_Chord{{}, xkb.KEYSYM_Down}}, .Cursor_Down},
+    {{Key_Chord{{.Ctrl}, xkb.KEYSYM_n}}, .Cursor_Down},
+    {{Key_Chord{{}, xkb.KEYSYM_k}}, .Cursor_Up},
+    {{Key_Chord{{}, xkb.KEYSYM_Up}}, .Cursor_Up},
+    {{Key_Chord{{.Ctrl}, xkb.KEYSYM_p}}, .Cursor_Up},
+    {{Key_Chord{{}, xkb.KEYSYM_Return}}, .Commit},
+}
+
+// Unwind one level e.g. close mime list, drop pending key sequence, or dismiss the popup otherwise. Always matched
+// against the current key press independent of the pending sequence.
+UNWIND_KEYMAPS := []Keymap {
+    {{Key_Chord{{}, xkb.KEYSYM_Escape}}, .Unwind},
+    {{Key_Chord{{.Ctrl}, xkb.KEYSYM_bracketleft}}, .Unwind},
+    {{Key_Chord{{.Ctrl}, xkb.KEYSYM_c}}, .Unwind},
+}
+
+// You might think of this as the "mode" we're in. We need to define what activity we're focused in to determine which
+// keymaps to match against, sort of like vim's `nmap`/`imap`/`vmap`, etc.
+Activity_Focus :: enum u8 {
+    Main, // the main register panel
+    Mime_List, // a register's mime list is open
+    //Edit, // TODO: used for inline edit mode in the future
+}
+
+// Get the keymaps for whatever activity we're currently focused in.
+keymaps_for :: proc(activity_focus: Activity_Focus) -> []Keymap {
+    switch activity_focus {
+    case .Main:
+        return MAIN_KEYMAPS
+    case .Mime_List:
+        return MIME_LIST_KEYMAPS
+    }
+    return nil
+}
+
+
+// Captured args from a key sequence (currently these args are always going to be registers which is why we have `regs`,
+// but perhaps this changes in the future), with the modifiers held on the last keypress of a register such that we can
+// differentiate between `a` and `A` for overwrite or append on a named register.
+//
+// Index 0 is the src and index 1 is the dst.
+MAX_CAPTURES :: 2 // max amount of args for any action we may need to account for.
+Captures :: struct {
+    regs: [MAX_CAPTURES]lib.Reg_Id,
+    mods: [MAX_CAPTURES]Modifier_Flags,
+    len:  u8,
+}
+
+// From the captures of a keymap, return the needed values to invoke a set command through the daemon, i.e. a register
+// operation's operands and mode. Ignore shift for the source register.
+//
+// If we have a single capture, we automatically treat that as loading that register as src into the live selection
+// clipboard. This is the most common functionality we want to short-circuit via the single the keymaps that consist of
+// a single register name.
+reg_args :: proc(captures: Captures) -> (src: lib.Reg_Id, dst: lib.Reg_Id, mode: lib.Set_Mode, ok: bool) {
+    switch captures.len {
+    case 1:
+        src = captures.regs[0]
+        return src, lib.SELECTION_CLIPBOARD, .OVERWRITE, true
+    case 2:
+        src = captures.regs[0]
+        dst = captures.regs[1]
+        mode = .OVERWRITE
+        if lib.reg_id_is_named(dst) && .Shift in captures.mods[1] {mode = .APPEND}
+        return src, dst, mode, true
+    case:
+        return 0, 0, .OVERWRITE, false
+    }
+}
+
+// Modifiers/lock keys arrive as ordinary key events in the `key()` callback as well as `modifiers()`. We already update
+// the modifiers in the kb state from `modifiers()`, so we need to filter these out in `key()` to avoid recognizing them
+// as an invalid keypress in a keymap.
+keysym_is_modifier :: proc(keysym: xkb.Keysym) -> bool {
+    return(
+        (keysym >= xkb.KEYSYM_Shift_L && keysym <= xkb.KEYSYM_Hyper_R) ||
+        (keysym >= xkb.KEYSYM_ISO_Lock && keysym <= xkb.KEYSYM_ISO_Level5_Lock) ||
+        keysym == xkb.KEYSYM_Mode_switch ||
+        keysym == xkb.KEYSYM_Num_Lock \
+    )
+}
+
+
+// Consume one register name from the front of `presses`, reporting the modifiers held on its final
+// keypress.
+parse_reg_token :: proc(
+    presses: []Key_Chord,
+) -> (
+    reg: lib.Reg_Id,
+    mods: Modifier_Flags,
+    consumed: int,
+    status: lib.Match_Status,
+) {
+    if len(presses) == 0 {return 0, {}, 0, .Partial}
+
+    // Build candidate string for potential register name
+    buf: [lib.MAX_REG_NAME_LEN]u8
+    avail := 0
+    for avail < len(presses) && avail < lib.MAX_REG_NAME_LEN {
+        // Exit early if non-Latin-1 keysym or any mods other than shift
+        if presses[avail].keysym > 0x7F || presses[avail].mods - {.Shift} != {} {break}
+
+        buf[avail] = u8(presses[avail].keysym) // Latin-1 keysyms equal their codepoint
+        avail += 1
+    }
+
+    // Match the longest name possible (e.g. if we were given `@3` we don't want to match just `3`).
+    for name_len := avail; name_len >= 1; name_len -= 1 {
+        if id, name := lib.reg_id_from_string(string(buf[:name_len])); name == .Hit {
+            return id, presses[name_len - 1].mods, name_len, .Hit
+        }
+    }
+
+    // Check if the full candidate partially matches a register id (e.g. `@`).
+    if avail == len(presses) {
+        if _, name := lib.reg_id_from_string(string(buf[:avail])); name == .Partial {
+            return 0, {}, 0, .Partial
+        }
+    }
+    return 0, {}, 0, .Miss
+}
+
+// Match a sequence of key presses against a single keymap. If `presses` matches a prefix of `keymap` but not the entire
+// thing, it returns `Partial`. If we successfully match a register name or known keymap and have no leftover key
+// presses, it's a `Hit`, otherwise a `Miss`.
+match_keymap :: proc(keymap: Keymap, presses: []Key_Chord) -> (captures: Captures, status: lib.Match_Status) {
+    press_index := 0
+    for token in keymap.seq {
+        if press_index >= len(presses) {return captures, .Partial}
+        switch tok in token {
+        // match the literal keychord
+        case Key_Chord:
+            if tok != presses[press_index] {return captures, .Miss}
+            press_index += 1
+        // or try to parse a register from this press onward
+        case Reg_Token:
+            _ = tok // empty value, just discard it
+            reg, mods, consumed, reg_status := parse_reg_token(presses[press_index:])
+            if reg_status != .Hit {return captures, reg_status}
+            assert(captures.len < MAX_CAPTURES, "binding names more register slots than MAX_CAPTURES")
+            captures.regs[captures.len] = reg
+            captures.mods[captures.len] = mods
+            captures.len += 1
+            press_index += consumed // advance the press index by the number we had to consume during parsing
+        }
+    }
+    if press_index < len(presses) {return captures, .Miss}     // input left over
+    return captures, .Hit
+}
+
+// Match user-invoked key presses against a list of defined keymaps that result in some action.
+resolve_keymap :: proc(
+    keymaps: []Keymap,
+    presses: []Key_Chord,
+) -> (
+    keymap: Keymap,
+    captures: Captures,
+    status: lib.Match_Status,
+) {
+    partial := false
+    for candidate in keymaps {
+        caps, candidate_status := match_keymap(candidate, presses)
+        if candidate_status == .Hit {return candidate, caps, .Hit}
+        if candidate_status == .Partial {partial = true}
+    }
+    return {}, {}, partial ? .Partial : .Miss
 }
 
 // State of the open mime list. `cursor` indexes `reg`'s mimes and is clamped to that count, never wrapped.
@@ -187,6 +319,8 @@ Gui_State :: struct {
     frame_buf:        Frame_Buffer,
     // Keyboard input
     kb:               Keyboard,
+    // Context of what "mode" or activity the user is focused in, defines which keymaps are valid
+    activity_focus:   Activity_Focus,
     // Font description resolved by fontconfig. Outlives the buffer.
     font_desc:        ^pango.Font_Description,
     // Register data, indexed by Reg_Id
@@ -665,8 +799,10 @@ keyboard_listener := wl.keyboard_listener {
         codepoint := rune(keysym)
 
         // Check modifier state
-        ctrl_active := xkb.xkb_state_mod_name_is_active(gui_state.kb.state, "Control", .XKB_STATE_MODS_EFFECTIVE) == 1
-        shift_active := xkb.xkb_state_mod_name_is_active(gui_state.kb.state, "Shift", .XKB_STATE_MODS_EFFECTIVE) == 1
+        ctrl_active :=
+            xkb.xkb_state_mod_name_is_active(gui_state.kb.state, xkb.MOD_NAME_CTRL, .XKB_STATE_MODS_EFFECTIVE) == 1
+        shift_active :=
+            xkb.xkb_state_mod_name_is_active(gui_state.kb.state, xkb.MOD_NAME_SHIFT, .XKB_STATE_MODS_EFFECTIVE) == 1
 
         log.debugf(
             "Key pressed: keysym='%d' (codepoint='%c'), ctrl=%v, shift=%v",

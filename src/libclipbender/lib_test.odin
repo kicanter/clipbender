@@ -2580,3 +2580,33 @@ test_live_selection_ids_are_adjacent_and_clipboard_first :: proc(t: ^testing.T) 
     testing.expect_value(t, CMD_GET_FILTER_SELECTION, Cmd_Get_Filter{int(SELECTION_CLIPBOARD)})
     testing.expect_value(t, CMD_GET_FILTER_PRIMARY_SELECTION, Cmd_Get_Filter{int(SELECTION_PRIMARY)})
 }
+
+// `reg_id_from_string` round-trips every register `reg_id_to_string` can emit, which is the
+// property the popup and CLI both rely on.
+@(test)
+test_reg_id_from_string_round_trips :: proc(t: ^testing.T) {
+    for id in Reg_Id(0) ..= Reg_Id(63) {
+        if !reg_id_is_valid(id) {continue}
+        name := reg_id_to_string(id)
+        got, status := reg_id_from_string(name)
+        testing.expectf(t, status == .Hit, "reg_id_from_string(%q) = %v for id %d", name, status, id)
+        testing.expectf(t, got == id, "reg_id_from_string(%q) = %d, want %d", name, got, id)
+    }
+}
+
+@(test)
+test_reg_id_from_string_rejects_and_folds_case :: proc(t: ^testing.T) {
+    upper, status := reg_id_from_string("A")
+    testing.expect(t, status == .Hit, "`A` should parse as named register a")
+    testing.expect(t, upper == reg_id_from_named_index(0), "`A` and `a` name the same register")
+
+    for bad in ([]string{"", "@@", "@a", "!", "ab", "0a", "@.x"}) {
+        _, bad_status := reg_id_from_string(bad)
+        testing.expectf(t, bad_status == .Miss, "reg_id_from_string(%q) = %v, want Miss", bad, bad_status)
+    }
+
+    // `@` is neither valid nor garbage: it is the one prefix a longer name can grow from, which is
+    // what lets the popup defer the wait-or-reject decision to this proc.
+    _, at := reg_id_from_string("@")
+    testing.expectf(t, at == .Partial, "`@` should be Partial, got %v", at)
+}
