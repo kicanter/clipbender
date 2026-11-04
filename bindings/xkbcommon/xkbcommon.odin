@@ -209,7 +209,10 @@ Keycode :: distinct u32
  */
 Keysym :: distinct u32
 
-// Keysym values from `xkbcommon/xkbcommon-keysyms.h`.
+/**** Keysym values from `xkbcommon/xkbcommon-keysyms.h` ****/
+KEYSYM_space :: Keysym(0x0020)
+KEYSYM_minus :: Keysym(0x002D)
+KEYSYM_equal :: Keysym(0x003D)
 KEYSYM_c :: Keysym(0x0063)
 KEYSYM_d :: Keysym(0x0064)
 KEYSYM_e :: Keysym(0x0065)
@@ -219,17 +222,105 @@ KEYSYM_n :: Keysym(0x006E)
 KEYSYM_p :: Keysym(0x0070)
 KEYSYM_u :: Keysym(0x0075)
 KEYSYM_y :: Keysym(0x0079)
+KEYSYM_at :: Keysym(0x0040)
 KEYSYM_bracketleft :: Keysym(0x005B)
+KEYSYM_BackSpace :: Keysym(0xFF08)
 KEYSYM_Return :: Keysym(0xFF0D)
 KEYSYM_Escape :: Keysym(0xFF1B)
+KEYSYM_Home :: Keysym(0xFF50)
+KEYSYM_Left :: Keysym(0xFF51)
 KEYSYM_Up :: Keysym(0xFF52)
+KEYSYM_Right :: Keysym(0xFF53)
 KEYSYM_Down :: Keysym(0xFF54)
+KEYSYM_End :: Keysym(0xFF57)
+KEYSYM_Delete :: Keysym(0xFFFF)
 
-// Modifier names from `xkbcommon/xkbcommon-names.h`.
+// Modifier and lock keys
+KEYSYM_ISO_Lock :: Keysym(0xFE01)
+KEYSYM_ISO_Level5_Lock :: Keysym(0xFE13)
+KEYSYM_Mode_switch :: Keysym(0xFF7E) // aliases ISO_Group_Shift
+KEYSYM_Num_Lock :: Keysym(0xFF7F)
+KEYSYM_Shift_L :: Keysym(0xFFE1)
+KEYSYM_Hyper_R :: Keysym(0xFFEE)
+
+/**** Modifier names from `xkbcommon/xkbcommon-names.h` ****/
+
+/**
+ * @defgroup real-modifier-names Real modifiers names
+ *
+ * [*Real* modifiers][real modifier] names are hardcoded in xkbcommon.
+ *
+ * [real modifier]: @ref real-modifier-def
+ *
+ * @{
+ */
 MOD_NAME_SHIFT :: "Shift"
+MOD_NAME_CAPS :: "Lock"
 MOD_NAME_CTRL :: "Control"
-MOD_NAME_ALT :: "Mod1"
-MOD_NAME_SUPER :: "Mod4"
+MOD_NAME_MOD1 :: "Mod1"
+MOD_NAME_MOD2 :: "Mod2"
+MOD_NAME_MOD3 :: "Mod3"
+MOD_NAME_MOD4 :: "Mod4"
+MOD_NAME_MOD5 :: "Mod5"
+
+/**
+ * @defgroup virtual-modifier-names Virtual modifiers names
+ *
+ * Common [*virtual* modifiers][virtual modifiers], encoded in [xkeyboard-config]
+ * in the [compat] and [symbols] files. They have been stable since the beginning
+ * of the project and are unlikely to ever change.
+ *
+ * [virtual modifiers]: @ref virtual-modifier-def
+ * [xkeyboard-config]: https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config
+ * [compat]: @ref the-xkb_compat-section
+ * [symbols]: @ref the-xkb_symbols-section
+ *
+ * @{
+ */
+VMOD_NAME_ALT :: "Alt"
+VMOD_NAME_HYPER :: "Hyper"
+VMOD_NAME_LEVEL3 :: "LevelThree"
+VMOD_NAME_LEVEL5 :: "LevelFive"
+VMOD_NAME_META :: "Meta"
+VMOD_NAME_NUM :: "NumLock"
+VMOD_NAME_SCROLL :: "ScrollLock"
+VMOD_NAME_SUPER :: "Super"
+
+/**
+ * @defgroup legacy-virtual-modifier-names Legacy virtual modifier names
+ *
+ * Usual [*virtual* modifiers][virtual modifiers] mappings to
+ * [*real* modifiers][real modifiers].
+ *
+ * @deprecated Use @ref virtual-modifier-names instead
+ *
+ * [virtual modifiers]: @ref virtual-modifier-def
+ * [real modifiers]: @ref real-modifier-def
+ *
+ * @{
+ */
+MOD_NAME_ALT :: MOD_NAME_MOD1 // Deprecated, use `VMOD_NAME_ALT` instead
+MOD_NAME_LOGO :: MOD_NAME_MOD4 // Deprecated, use `VMOD_NAME_SUPER` instead
+MOD_NAME_NUM :: MOD_NAME_MOD2 // Deprecated, use `VMOD_NAME_NUM` instead
+
+/**
+ * @defgroup led-names LEDs names
+ *
+ * LEDs names are encoded in [xkeyboard-config], in the [keycodes] and [compat]
+ * files. They have been stable since the beginning of the project and are
+ * unlikely to ever change.
+ *
+ * [xkeyboard-config]: https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config
+ * [keycodes]: @ref the-xkb_keycodes-section
+ * [compat]: @ref the-xkb_compat-section
+ *
+ * @{
+ */
+LED_NAME_NUM :: "Num Lock"
+LED_NAME_CAPS :: "Caps Lock"
+LED_NAME_SCROLL :: "Scroll Lock"
+LED_NAME_COMPOSE :: "Compose"
+LED_NAME_KANA :: "Kana"
 
 // Bindings for libxkbcommon to support keycode resolution for wl_keyboard
 foreign xkb {
