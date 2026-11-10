@@ -144,6 +144,7 @@ keymaps_for :: proc(activity_focus: Activity_Focus) -> []Keymap {
 // differentiate between `a` and `A` for overwrite or append on a named register.
 //
 // Index 0 is the src and index 1 is the dst.
+MAX_PRESSES :: 1 + 2 * lib.MAX_REG_NAME_LEN // longest key sequence the tables can express (`<space>` + 2 two-key regs)
 MAX_CAPTURES :: 2 // max amount of args for any action we may need to account for.
 Captures :: struct {
     regs: [MAX_CAPTURES]lib.Reg_Id,
@@ -271,6 +272,136 @@ resolve_keymap :: proc(
     return {}, {}, partial ? .Partial : .Miss
 }
 
+// Pack the modifiers xkb currently reports into our own set.
+active_mods :: proc(state: ^xkb.State) -> (mods: Modifier_Flags) {
+    MODS_EFFECTIVE :: xkb.State_Component.XKB_STATE_MODS_EFFECTIVE
+    if xkb.xkb_state_mod_name_is_active(state, xkb.MOD_NAME_CTRL, MODS_EFFECTIVE) == 1 {mods += {.Ctrl}}
+    if xkb.xkb_state_mod_name_is_active(state, xkb.MOD_NAME_SHIFT, MODS_EFFECTIVE) == 1 {mods += {.Shift}}
+    if xkb.xkb_state_mod_name_is_active(state, xkb.MOD_NAME_MOD1, MODS_EFFECTIVE) == 1 {mods += {.Meta}}
+    if xkb.xkb_state_mod_name_is_active(state, xkb.MOD_NAME_MOD4, MODS_EFFECTIVE) == 1 {mods += {.Super}}
+    return
+}
+
+// Unwind one level in this order:
+// - abandon a partially-typed sequence
+// - leave the current activity
+// - dismiss
+unwind :: proc(gui_state: ^Gui_State) {
+    if gui_state.kb.pending_len > 0 {
+        gui_state.kb.pending_len = 0
+        return
+    }
+    if gui_state.activity_focus != .Main {
+        gui_state.activity_focus = .Main
+        gui_render(gui_state)
+        return
+    }
+    gui_state.running = false
+}
+
+// Send a SET to the daemon and act on its reply.
+send_set_reg :: proc(gui_state: ^Gui_State, dest: lib.Reg_Id, src: lib.Reg_Id, mode: lib.Set_Mode) {
+    msg: [lib.CMD_SET_REG_SIZE]byte
+    written := lib.marshal_cmd_set_reg(dest, src, mode, msg[:])
+    _, send_err := linux.send(gui_state.client_fd, msg[:written], {.NOSIGNAL})
+    if send_err != nil {
+        log.errorf(
+            "Failed sending SET reg `%s` from reg `%s` to daemon: errno %v",
+            lib.reg_id_to_string(dest),
+            lib.reg_id_to_string(src),
+            send_err,
+        )
+        return
+    }
+
+    resp_buf: [RESP_BUF_SMALL]u8
+    bytes_read, recv_err := linux.recv(gui_state.client_fd, resp_buf[:], {})
+    if recv_err != .NONE || bytes_read <= 0 {
+        log.errorf(
+            "Failed receiving SET reg `%s` from reg `%s`: errno %v",
+            lib.reg_id_to_string(dest),
+            lib.reg_id_to_string(src),
+            recv_err,
+        )
+        return
+    }
+
+    switch lib.Resp_Status(resp_buf[0]) {
+    case .OK:
+        // TODO: highlight green or something, indicate success
+        gui_state.running = false
+    case .ERROR:
+        log.errorf(
+            "Failed setting register `%s` from register `%s`: %v",
+            lib.reg_id_to_string(dest),
+            lib.reg_id_to_string(src),
+            string(resp_buf[1:bytes_read]),
+        )
+    // TODO: highlight red or something, indicate failure
+    case .REGISTERS:
+        // wtf how'd we get here
+        log.error("Unexpected REGISTERS response for `set` command")
+    }
+}
+
+// Send a CLEAR to the daemon and act on its reply.
+send_clear_reg :: proc(gui_state: ^Gui_State, reg: lib.Reg_Id) {
+    msg: [lib.CMD_CLEAR_SIZE]byte
+    written := lib.marshal_cmd_clear(reg, msg[:])
+    _, send_err := linux.send(gui_state.client_fd, msg[:written], {.NOSIGNAL})
+    if send_err != nil {
+        log.errorf("Failed sending CLEAR reg `%s`: errno %v", lib.reg_id_to_string(reg), send_err)
+        return
+    }
+
+    resp_buf: [RESP_BUF_SMALL]u8
+    bytes_read, recv_err := linux.recv(gui_state.client_fd, resp_buf[:], {})
+    if recv_err != .NONE || bytes_read <= 0 {
+        log.errorf("Failed receiving CLEAR reg `%s`: errno %v", lib.reg_id_to_string(reg), recv_err)
+        return
+    }
+
+    switch lib.Resp_Status(resp_buf[0]) {
+    case .OK:
+        // TODO: needs confirmation step
+        gui_state.running = false
+    case .ERROR:
+        log.errorf("Failed clearing register `%s`: %v", lib.reg_id_to_string(reg), string(resp_buf[1:bytes_read]))
+    case .REGISTERS:
+        // wtf how'd we get here
+        log.error("Unexpected REGISTERS response for `clear` command")
+    }
+}
+
+// Carry out a resolved binding's action.
+perform_action :: proc(gui_state: ^Gui_State, keymap: Keymap, captures: Captures) {
+    switch keymap.action {
+    case .Set_Reg:
+        src, dst, mode, ok := reg_args(captures)
+        if !ok {
+            log.errorf("`%v` resolved with %d captures", keymap.action, captures.len)
+            return
+        }
+        send_set_reg(gui_state, dst, src, mode)
+    case .Clear_Reg:
+        if captures.len < 1 {
+            log.error("`Clear_Reg` resolved with no register")
+            return
+        }
+        send_clear_reg(gui_state, captures.regs[0])
+    case .Open_Mime_List:
+        // TODO: need to implement dropdown mime list
+        log.debugf("Open_Mime_List for `%s` is not implemented yet", lib.reg_id_to_string(captures.regs[0]))
+    case .Scroll_Row_Down, .Scroll_Row_Up, .Scroll_Page_Down, .Scroll_Page_Up:
+        // TODO: need to implement scrolling
+        log.debugf("%v is not implemented yet", keymap.action)
+    case .Cursor_Down, .Cursor_Up, .Commit:
+        log.debugf("%v is not implemented yet", keymap.action)
+    case .Unwind:
+        unwind(gui_state)
+    }
+}
+
 // State of the open mime list. `cursor` indexes `reg`'s mimes and is clamped to that count, never wrapped.
 Mime_List_State :: struct {
     reg:    lib.Reg_Id,
@@ -290,11 +421,14 @@ Frame_Buffer :: struct {
 }
 
 Keyboard :: struct {
-    keyboard: ^wl.keyboard,
-    ctx:      ^xkb.Context,
-    keymap:   ^xkb.Keymap,
-    state:    ^xkb.State,
-    prefix:   Maybe(rune),
+    keyboard:    ^wl.keyboard,
+    ctx:         ^xkb.Context,
+    keymap:      ^xkb.Keymap,
+    state:       ^xkb.State,
+    // Keypresses accumulated so far toward a binding. Cleared on dispatch, on an unmatched key, and
+    // on unwind.
+    pending:     [MAX_PRESSES]Key_Chord,
+    pending_len: u8,
 }
 
 Gui_State :: struct {
@@ -777,9 +911,9 @@ keyboard_listener := wl.keyboard_listener {
         context.logger = _logger
         gui_state := cast(^Gui_State)data
 
-        // Right now we don't care about any repeated/released keystrokes
+        // Releases carry no meaning for a binding and repeats are not delivered by the compositor at all because a
+        // Wayland client drives its own from `repeat_info`, which is not implemented yet.
         if state_ != .pressed {return}
-
         if gui_state.kb.state == nil {return}
 
         // evdev keycodes need +8 offset for xkbcommon
@@ -790,168 +924,40 @@ keyboard_listener := wl.keyboard_listener {
         // `xkb_state_key_get_utf32` applies (e.g. <C-a> yields codepoint 1, but keysym stays `XKB_KEY_a`). For the
         // ASCII printable range, keysym values equal their ASCII codepoint, so `rune(keysym)` is the char.
         keysym := xkb.xkb_state_key_get_one_sym(gui_state.kb.state, keycode)
-        // ESC to exit GUI
-        if keysym == xkb.KEYSYM_Escape {
-            gui_state.running = false
+
+        // Modifier keys are reported in every chord's `mods`, so don't handle key presses that are exclusively
+        // reporting the modifier press itself.
+        if keysym_is_modifier(keysym) {return}
+
+        chord := Key_Chord{active_mods(gui_state.kb.state), keysym}
+        log.debugf("Key pressed: keysym=%d mods=%v", keysym, chord.mods)
+
+        // Match unwind against the bare keypress, the sequence doesn't matter if the user wants to cancel.
+        if _, _, status := resolve_keymap(UNWIND_KEYMAPS, {chord}); status == .Hit {
+            unwind(gui_state)
             return
         }
 
-        codepoint := rune(keysym)
-
-        // Check modifier state
-        ctrl_active :=
-            xkb.xkb_state_mod_name_is_active(gui_state.kb.state, xkb.MOD_NAME_CTRL, .XKB_STATE_MODS_EFFECTIVE) == 1
-        shift_active :=
-            xkb.xkb_state_mod_name_is_active(gui_state.kb.state, xkb.MOD_NAME_SHIFT, .XKB_STATE_MODS_EFFECTIVE) == 1
-
-        log.debugf(
-            "Key pressed: keysym='%d' (codepoint='%c'), ctrl=%v, shift=%v",
-            keysym,
-            codepoint,
-            ctrl_active,
-            shift_active,
-        )
-
-        // Check prefix keys first, regardless of modifiers
-        if codepoint == '@' || codepoint == '*' {
-            if gui_state.kb.prefix != nil {
-                gui_state.kb.prefix = nil
-                return
-            }
-            gui_state.kb.prefix = codepoint
+        kb := &gui_state.kb
+        if kb.pending_len >= MAX_PRESSES {
+            log.errorf("pending sequence outran MAX_PRESSES (%d); resetting", MAX_PRESSES)
+            kb.pending_len = 0
             return
         }
+        kb.pending[kb.pending_len] = chord
+        kb.pending_len += 1
 
-        // Otherwise, consume the keypress and reset prefix to nil.
-        // These operations invoke a SET call from the daemon one way or another.
-        msg: [lib.CMD_SET_REG_SIZE]byte
-        dest_reg: lib.Reg_Id
-        source_reg: lib.Reg_Id
-        set_mode: lib.Set_Mode
-        defer gui_state.kb.prefix = nil
-
-        // The GUI always writes to the clipboard; `@` is only a source modifier (read from primary recency).
-        if ctrl_active {
-            // <C-[>       | cancel / exit edit
-            // <C-{alpha}> | clipboard -> overwrite named register, dismiss
-            switch codepoint {
-            case '[':
-                // Ctrl+[ dismisses (same as Escape)
-                gui_state.running = false
-                return
-            case 'a' ..= 'z':
-                if gui_state.kb.prefix != nil {
-                    log.debugf("`%v<C-%c>` is not a valid key sequence", gui_state.kb.prefix, codepoint)
-                    return
-                }
-                // Send message of form `SET {alpha} clipboard OVERWRITE`
-                source_reg = lib.SELECTION_CLIPBOARD
-                dest_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'a'))
-            case:
-                return
-            }
-            set_mode = lib.Set_Mode.OVERWRITE
-        } else if shift_active {
-            // <S-{alpha}> | clipboard -> append named register, dismiss
-            switch codepoint {
-            case 'A' ..= 'Z':
-                if gui_state.kb.prefix != nil {
-                    log.debugf("`%v<S-%c>` is not a valid key sequence", gui_state.kb.prefix, codepoint)
-                    return
-                }
-                // Send message of form `SET {ALPHA} clipboard APPEND`
-                source_reg = lib.SELECTION_CLIPBOARD
-                dest_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'A'))
-            case:
-                return
-            }
-            set_mode = lib.Set_Mode.APPEND
-        } else {
-            // {digit}  | clipboard recency -> clipboard, dismiss
-            // @{digit} | primary recency -> clipboard, dismiss
-            // {alpha}  | named register -> clipboard, dismiss
-            // The GUI always copies to the clipboard, never the primary selection.
-            dest_reg = lib.SELECTION_CLIPBOARD
-            switch codepoint {
-            case '0' ..= '9':
-                // Send message of form `SET clipboard {digit}`
-                switch gui_state.kb.prefix {
-                case nil:
-                    source_reg = lib.reg_id_from_clipboard_index(cast(u8)(codepoint - '0'))
-                case '@':
-                    source_reg = lib.reg_id_from_primary_index(cast(u8)(codepoint - '0'))
-                case '*':
-                    log.debugf(
-                        "`*%c` is not a valid key sequence, inline edit only works for named registers, did you mean `*{alpha}`?",
-                        codepoint,
-                    )
-                    return
-                }
-            case 'a' ..= 'z':
-                // Send message of form `SET clipboard {alpha}`
-                switch gui_state.kb.prefix {
-                case nil:
-                    source_reg = lib.reg_id_from_named_index(cast(u8)(codepoint - 'a'))
-                case '@':
-                    log.debugf(
-                        "`@%c` is not a valid key sequence, `@` only applies to primary recency digits",
-                        codepoint,
-                    )
-                    return
-                case '*':
-                    // TODO: inline edit from empty and overwrite register
-                    return
-                }
-            case:
-                return
-            }
-            set_mode = lib.Set_Mode.OVERWRITE
-        }
-
-        // Encode and send the SET message
-        written := lib.marshal_cmd_set_reg(dest_reg, source_reg, set_mode, msg[:])
-        _, send_err := linux.send(gui_state.client_fd, msg[:written], {.NOSIGNAL})
-        if send_err != nil {
-            log.errorf(
-                "Failed sending SET reg `%s` from reg `%s` to daemon: errno %v",
-                lib.reg_id_to_string(dest_reg),
-                lib.reg_id_to_string(source_reg),
-                send_err,
-            )
-            return
-        }
-
-        // Receive response from daemon
-        resp_buf: [RESP_BUF_SMALL]u8
-        bytes_read, recv_err := linux.recv(gui_state.client_fd, resp_buf[:], {})
-        if recv_err != .NONE || bytes_read <= 0 {
-            log.errorf(
-                "Failed receiving SET reg `%s` from reg `%s`: errno %v",
-                lib.reg_id_to_string(dest_reg),
-                lib.reg_id_to_string(source_reg),
-                recv_err,
-            )
-            return
-        }
-
-        status := lib.Resp_Status(resp_buf[0])
+        keymap, captures, status := resolve_keymap(keymaps_for(gui_state.activity_focus), kb.pending[:kb.pending_len])
         switch status {
-        case .OK:
-            // TODO: highlight green or something, indicate success
-            // Close GUI
-            gui_state.running = false
-        case .ERROR:
-            err_msg := string(resp_buf[1:bytes_read])
-            log.errorf(
-                "Failed setting register `%s` from register `%s`: %v",
-                lib.reg_id_to_string(dest_reg),
-                lib.reg_id_to_string(source_reg),
-                err_msg,
-            )
-        // TODO: highlight red or something, indicate failure
-        case .REGISTERS:
-            log.error("Unexpected REGISTERS response for `set` command")
-        // TODO: wtf how'd we get here?
+        case .Partial:
+            // A binding could still complete, so hold the buffer and wait for the next press.
+            return
+        case .Miss:
+            log.debugf("no binding for %v", kb.pending[:kb.pending_len])
+            kb.pending_len = 0
+        case .Hit:
+            kb.pending_len = 0
+            perform_action(gui_state, keymap, captures)
         }
     },
     modifiers = proc "c" (

@@ -287,7 +287,6 @@ test_binding_bounds :: proc(t: ^testing.T) {
     // Records what the tables actually demand, so whoever sizes the pending-press buffer has a
     // checked number instead of a hand-derived one -- and so adding a longer binding fails here.
     // A chord consumes one press; a register name consumes up to `lib.MAX_REG_NAME_LEN`.
-    LONGEST_SEQUENCE :: 5 // `<space>` + `@3` + `@.`
     for keymaps in ([?][]Keymap{MAIN_KEYMAPS, MIME_LIST_KEYMAPS, UNWIND_KEYMAPS}) {
         for keymap in keymaps {
             presses, captures := 0, 0
@@ -302,11 +301,11 @@ test_binding_bounds :: proc(t: ^testing.T) {
             }
             testing.expectf(
                 t,
-                presses <= LONGEST_SEQUENCE,
+                presses <= MAX_PRESSES,
                 "%v needs up to %d presses, bound is %d",
                 keymap.action,
                 presses,
-                LONGEST_SEQUENCE,
+                MAX_PRESSES,
             )
             testing.expectf(
                 t,
@@ -315,6 +314,33 @@ test_binding_bounds :: proc(t: ^testing.T) {
                 keymap.action,
                 captures,
                 MAX_CAPTURES,
+            )
+        }
+    }
+}
+
+@(test)
+test_max_presses_covers_every_binding :: proc(t: ^testing.T) {
+    // The pending buffer is a fixed array, so `MAX_PRESSES` must bound what the tables can demand.
+    // Overflowing it would be the one way a sequence could be silently truncated.
+    for keymaps in ([?][]Keymap{MAIN_KEYMAPS, MIME_LIST_KEYMAPS, UNWIND_KEYMAPS}) {
+        for keymap in keymaps {
+            presses := 0
+            for token in keymap.seq {
+                switch _ in token {
+                case Key_Chord:
+                    presses += 1
+                case Reg_Token:
+                    presses += lib.MAX_REG_NAME_LEN
+                }
+            }
+            testing.expectf(
+                t,
+                presses <= MAX_PRESSES,
+                "%v needs up to %d presses, MAX_PRESSES is %d",
+                keymap.action,
+                presses,
+                MAX_PRESSES,
             )
         }
     }
