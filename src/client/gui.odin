@@ -455,6 +455,8 @@ Gui_State :: struct {
     kb:               Keyboard,
     // Context of what "mode" or activity the user is focused in, defines which keymaps are valid
     activity_focus:   Activity_Focus,
+    // Index into the populated-register list of the first row drawn. Clamped on every render.
+    scroll_row:       int,
     // Font description resolved by fontconfig. Outlives the buffer.
     font_desc:        ^pango.Font_Description,
     // Register data, indexed by Reg_Id
@@ -1044,25 +1046,60 @@ draw_register :: proc(gui_state: ^Gui_State, reg_id: lib.Reg_Id, x: f64, y: f64)
     return f64(row_h)
 }
 
-draw_all_registers :: proc(gui_state: ^Gui_State, x: f64, y: f64) {
-    cursor_x := x
-    cursor_y := y
-
-    draw_group :: proc(gui_state: ^Gui_State, first, last: lib.Reg_Id, x: f64, cursor_y: ^f64) {
-        for i := first; i <= last; i += 1 {
-            row_h := draw_register(gui_state, i, x, cursor_y^)
-            cursor_y^ += max(row_h, LINE_HEIGHT)
+// Get the non-empty registers, we don't display empty registers. Returns number of register IDs filled.
+populated_regs :: proc(gui_state: ^Gui_State, reg_ids: []lib.Reg_Id) -> (count: int) {
+    // Small helper adding and counting the non-empty registers in a register category.
+    append_group :: proc(gui_state: ^Gui_State, first, last: lib.Reg_Id, dst: []lib.Reg_Id, count: ^int) {
+        for id := first; id <= last; id += 1 {
+            if lib.resp_reg_is_empty(gui_state.regs[id]) {continue}
+            if count^ >= len(dst) {return}
+            dst[count^] = id
+            count^ += 1
         }
     }
 
-    // Live selections first: they are what the user just copied, and they were previously not drawn at all despite
-    // the GET filter already fetching them.
-    draw_group(gui_state, lib.SELECTION_CLIPBOARD, lib.SELECTION_PRIMARY, cursor_x, &cursor_y)
-    draw_group(gui_state, lib.CLIPBOARD_START, lib.CLIPBOARD_END, cursor_x, &cursor_y)
-    // TODO: Probably increase cursor_x to place clipboard + primary side-by-side at some point
-    draw_group(gui_state, lib.PRIMARY_START, lib.PRIMARY_END, cursor_x, &cursor_y)
-    // TODO: If clipboard + primary are side-by-side, reset cursor_x to x
-    draw_group(gui_state, lib.NAMED_START, lib.NAMED_END, cursor_x, &cursor_y)
+    // Display order
+    append_group(gui_state, lib.SELECTION_CLIPBOARD, lib.SELECTION_PRIMARY, reg_ids, &count)
+    append_group(gui_state, lib.CLIPBOARD_START, lib.CLIPBOARD_END, reg_ids, &count)
+    append_group(gui_state, lib.PRIMARY_START, lib.PRIMARY_END, reg_ids, &count)
+    append_group(gui_state, lib.NAMED_START, lib.NAMED_END, reg_ids, &count)
+    return count
+}
+
+// How many rows fit in the panel.
+visible_row_count :: proc(gui_state: ^Gui_State) -> int {
+    usable := int(gui_state.frame_buf.height) - 2 * TEXT_PADDING_Y
+    if usable < LINE_HEIGHT {return 0}
+    return usable / LINE_HEIGHT
+}
+
+// Move the viewport, clamped so the last row can reach the bottom but no further. Returns whether anything moved, so
+// the caller can skip a redraw that would paint the same pixels.
+scroll_by :: proc(gui_state: ^Gui_State, rows: int) -> bool {
+    buf: [lib.MAX_REGS]lib.Reg_Id
+    total := populated_regs(gui_state, buf[:])
+    max_scroll := max(0, total - visible_row_count(gui_state))
+
+    prev := gui_state.scroll_row
+    gui_state.scroll_row = clamp(gui_state.scroll_row + rows, 0, max_scroll)
+    return gui_state.scroll_row != prev
+}
+
+// Draw the non-empty registers.
+draw_all_registers :: proc(gui_state: ^Gui_State, x: f64, y: f64) {
+    buf: [lib.MAX_REGS]lib.Reg_Id
+    regs := buf[:populated_regs(gui_state, buf[:])]
+
+    // Clamp here too since the rendered regs can shrink or grow.
+    max_scroll := max(0, len(regs) - visible_row_count(gui_state))
+    gui_state.scroll_row = clamp(gui_state.scroll_row, 0, max_scroll)
+
+    cursor_y := y
+    end := min(len(regs), gui_state.scroll_row + visible_row_count(gui_state))
+    for id in regs[gui_state.scroll_row:end] {
+        row_h := draw_register(gui_state, id, x, cursor_y)
+        cursor_y += max(row_h, LINE_HEIGHT)
+    }
 }
 
 gui_render :: proc(gui_state: ^Gui_State) {

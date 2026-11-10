@@ -345,3 +345,103 @@ test_max_presses_covers_every_binding :: proc(t: ^testing.T) {
         }
     }
 }
+
+// Viewport. These build a `Gui_State` with only the fields the viewport reads, so no compositor or
+// cairo context is needed.
+
+fake_state :: proc(populated: []lib.Reg_Id, height: uint) -> Gui_State {
+    gui_state := Gui_State {
+        frame_buf = {height = height},
+    }
+    for id in populated {
+        // One repr is all `resp_reg_is_empty` looks at.
+        gui_state.regs[id] = lib.Resp_Reg {
+            reprs = make([]lib.Resp_Repr, 1),
+        }
+    }
+    return gui_state
+}
+
+free_fake_state :: proc(gui_state: ^Gui_State) {
+    for &reg in gui_state.regs {
+        if len(reg.reprs) > 0 {delete(reg.reprs)}
+    }
+}
+
+@(test)
+test_populated_regs_skips_empties_and_orders_groups :: proc(t: ^testing.T) {
+    // Live selections first, then the clipboard ring, then primary, then named -- and nothing for
+    // the 40-odd ids that hold no data.
+    gui_state := fake_state(
+        {
+            lib.reg_id_from_named_index(0),
+            lib.SELECTION_PRIMARY,
+            lib.reg_id_from_clipboard_index(2),
+            lib.reg_id_from_primary_index(1),
+        },
+        900,
+    )
+    defer free_fake_state(&gui_state)
+
+    buf: [lib.MAX_REGS]lib.Reg_Id
+    got := buf[:populated_regs(&gui_state, buf[:])]
+
+    want := []lib.Reg_Id {
+        lib.SELECTION_PRIMARY,
+        lib.reg_id_from_clipboard_index(2),
+        lib.reg_id_from_primary_index(1),
+        lib.reg_id_from_named_index(0),
+    }
+    testing.expectf(t, len(got) == len(want), "got %d rows, want %d", len(got), len(want))
+    for id, i in want {
+        testing.expectf(
+            t,
+            got[i] == id,
+            "row %d is %s, want %s",
+            i,
+            lib.reg_id_to_string(got[i]),
+            lib.reg_id_to_string(id),
+        )
+    }
+}
+
+@(test)
+test_scroll_clamps_at_both_ends :: proc(t: ^testing.T) {
+    // Three rows in a panel that fits two, so exactly one row of travel.
+    gui_state := fake_state(
+        {lib.reg_id_from_clipboard_index(0), lib.reg_id_from_clipboard_index(1), lib.reg_id_from_clipboard_index(2)},
+        uint(2 * LINE_HEIGHT + 2 * TEXT_PADDING_Y),
+    )
+    defer free_fake_state(&gui_state)
+    testing.expectf(
+        t,
+        visible_row_count(&gui_state) == 2,
+        "expected 2 visible rows, got %d",
+        visible_row_count(&gui_state),
+    )
+
+    testing.expect(t, scroll_by(&gui_state, 1), "first row down should move")
+    testing.expect(t, gui_state.scroll_row == 1)
+
+    testing.expect(t, !scroll_by(&gui_state, 1), "already at the bottom, must report no movement")
+    testing.expect(t, gui_state.scroll_row == 1)
+
+    testing.expect(t, !scroll_by(&gui_state, 50), "a page past the end must clamp, not overshoot")
+    testing.expect(t, gui_state.scroll_row == 1)
+
+    testing.expect(t, scroll_by(&gui_state, -50), "scrolling up from the bottom should move")
+    testing.expect(t, gui_state.scroll_row == 0)
+
+    testing.expect(t, !scroll_by(&gui_state, -1), "already at the top, must report no movement")
+}
+
+@(test)
+test_scroll_is_a_noop_when_everything_fits :: proc(t: ^testing.T) {
+    // Nothing is clipped, so there is nowhere to scroll and no redraw to trigger.
+    gui_state := fake_state({lib.reg_id_from_clipboard_index(0)}, 900)
+    defer free_fake_state(&gui_state)
+
+    testing.expect(t, !scroll_by(&gui_state, 1))
+    testing.expect(t, !scroll_by(&gui_state, 10))
+    testing.expect(t, gui_state.scroll_row == 0)
+}
