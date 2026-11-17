@@ -370,13 +370,14 @@ free_fake_state :: proc(gui_state: ^Gui_State) {
 
 @(test)
 test_populated_regs_skips_empties_and_orders_groups :: proc(t: ^testing.T) {
-    // Live selections first, then the clipboard ring, then primary, then named -- and nothing for
-    // the 40-odd ids that hold no data.
+    // Live selections first -- clipboard before primary -- then the clipboard ring, then primary,
+    // then named. Nothing for the 40-odd ids that hold no data.
     gui_state := fake_state(
         {
             lib.reg_id_from_named_index(0),
             lib.SELECTION_PRIMARY,
             lib.reg_id_from_clipboard_index(2),
+            lib.SELECTION_CLIPBOARD,
             lib.reg_id_from_primary_index(1),
         },
         900,
@@ -387,6 +388,7 @@ test_populated_regs_skips_empties_and_orders_groups :: proc(t: ^testing.T) {
     got := buf[:populated_regs(&gui_state, buf[:])]
 
     want := []lib.Reg_Id {
+        lib.SELECTION_CLIPBOARD,
         lib.SELECTION_PRIMARY,
         lib.reg_id_from_clipboard_index(2),
         lib.reg_id_from_primary_index(1),
