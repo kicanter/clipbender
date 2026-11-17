@@ -966,7 +966,7 @@ COL_GAP :: 2
 TABLE_WIDTH :: REG_COL_WIDTH + COL_GAP + lib.TIMESTAMP_LEN + COL_GAP + MIME_COL_WIDTH + COL_GAP + DATA_COL_WIDTH
 
 // Left-pad register name, left-pad timestamp, no-pad mime(s), no-pad data (mimes and data are padded in `table_cell()`)
-ROW_FMT :: "%-*s  %-*s  %s  %s"
+ROW_FMT :: "%*s  %-*s  %s  %s"
 
 // A row with its trailing padding removed.
 print_table_row :: proc(reg, timestamp, mimes, data: string) {

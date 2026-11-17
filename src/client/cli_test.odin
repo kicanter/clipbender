@@ -754,6 +754,13 @@ test_table_width_matches_a_full_row :: proc(t: ^testing.T) {
     testing.expect_value(t, cells, TABLE_WIDTH)
 }
 
+// Register names run 1 to 2 characters, so left-aligning them staggers the column against the timestamp.
+@(test)
+test_register_column_is_right_aligned :: proc(t: ^testing.T) {
+    row := fmt.tprintf(ROW_FMT, REG_COL_WIDTH, "@a", lib.TIMESTAMP_LEN, "ts", "mime", "data")
+    testing.expect_value(t, row[:REG_COL_WIDTH], "      @a")
+}
+
 // The timestamp heading carries the zone offset in place of a per-row suffix, so it has to fit the column exactly --
 // one character over and every column to its right shifts.
 @(test)
