@@ -185,7 +185,7 @@ test_display_data_binary_is_described_not_rendered :: proc(t: ^testing.T) {
         data     = data[:],
     }
     result := display_data(entry, DATA_COL_WIDTH)
-    testing.expect_value(t, strings.trim_space(result), "[image/png 6 B]")
+    testing.expect_value(t, strings.trim_space(result), "[6 B]")
     testing.expect_value(t, utf8.rune_count_in_string(result), DATA_COL_WIDTH)
 }
 
@@ -200,7 +200,7 @@ test_display_data_describes_unsent_repr :: proc(t: ^testing.T) {
         selected = lib.RESP_SELECTED_NONE,
     }
     result := display_data(entry, DATA_COL_WIDTH)
-    testing.expect_value(t, strings.trim_space(result), "[image/png 600x300 65.8 KiB]")
+    testing.expect_value(t, strings.trim_space(result), "[600x300 65.8 KiB]")
 }
 
 @(test)
@@ -212,7 +212,7 @@ test_display_data_unsent_repr_without_dims :: proc(t: ^testing.T) {
         selected = lib.RESP_SELECTED_NONE,
     }
     result := display_data(entry, DATA_COL_WIDTH)
-    testing.expect_value(t, strings.trim_space(result), "[application/pdf 2.0 KiB]")
+    testing.expect_value(t, strings.trim_space(result), "[2.0 KiB]")
 }
 
 // json_escape_string tests
@@ -761,4 +761,22 @@ test_timestamp_heading_fits_its_column :: proc(t: ^testing.T) {
     offset_buf: [lib.UTC_OFFSET_LEN]u8
     heading := fmt.tprintf("TIMESTAMP %s", lib.format_utc_offset(nil, 0, &offset_buf))
     testing.expect_value(t, len(heading), lib.TIMESTAMP_LEN)
+}
+
+@(test)
+test_table_cell_unbounded_escapes_without_sizing :: proc(t: ^testing.T) {
+    // The GUI clips in pixels, so it needs the escaping without the character budget. A negative
+    // width must neither truncate nor pad -- padding would hand pango trailing spaces to ellipsize.
+    plain := table_cell("short", -1)
+    testing.expectf(t, plain == "short", "unbounded must not pad, got %q", plain)
+
+    long := "the quick brown fox jumps over the lazy dog"
+    testing.expectf(t, table_cell(long, -1) == long, "unbounded must not truncate")
+
+    // Escaping still applies, which is the reason to call it at all.
+    escaped := table_cell("a\tb", -1)
+    testing.expectf(t, escaped != "a\tb", "a control byte must still be escaped, got %q", escaped)
+
+    // Bounded behaviour is unchanged.
+    testing.expect(t, len(table_cell("short", 10)) == 10, "a bounded cell still pads to width")
 }

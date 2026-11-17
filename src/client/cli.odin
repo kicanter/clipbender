@@ -875,8 +875,11 @@ escape_grapheme :: proc(text: string, measured: int) -> (piece: string, cells: i
 //
 // Steps grapheme clusters and sums their display widths rather than counting runes to account for multi-length
 // characters (e.g. CJK text or emojis).
+//
+// A negative `width` means unbounded: escape only, no truncation and no padding.
 table_cell :: proc(str: string, width: int) -> string {
     ELLIPSIS :: "..."
+    unbounded := width < 0
 
     escaped := strings.builder_make(context.temp_allocator)
     cells := 0
@@ -889,11 +892,11 @@ table_cell :: proc(str: string, width: int) -> string {
         cluster := str[grapheme.byte_index:it.curr_offset]
 
         piece, piece_cells := escape_grapheme(cluster, grapheme.width)
-        if cells + piece_cells > width {
+        if !unbounded && cells + piece_cells > width {
             truncated = true
             break
         }
-        if cells + piece_cells <= width - len(ELLIPSIS) {
+        if !unbounded && cells + piece_cells <= width - len(ELLIPSIS) {
             cut_bytes = strings.builder_len(escaped) + len(piece)
             cut_cells = cells + piece_cells
         }
@@ -906,7 +909,7 @@ table_cell :: proc(str: string, width: int) -> string {
         cell = fmt.tprintf("%s%s", cell[:cut_bytes], ELLIPSIS)
         cells = cut_cells + len(ELLIPSIS)
     }
-    if cells >= width {return cell}
+    if unbounded || cells >= width {return cell}
     return fmt.tprintf("%s%s", cell, strings.repeat(" ", width - cells, context.temp_allocator))
 }
 
@@ -930,13 +933,13 @@ display_data :: proc(entry: lib.Resp_Reg, width: int) -> string {
     return table_cell(string(entry.data), width)
 }
 
-// Get a description string of a repr whose data blob is not available/printable e.g. `image/png 600x300 67.4 KiB`.
+// Get a description string of a repr whose data blob is not available/printable, e.g. `[600x300 67.4 KiB]`.
 describe_repr :: proc(repr: lib.Resp_Repr) -> string {
     switch meta in repr.meta {
     case lib.Image_Dims:
-        return fmt.tprintf("[%s %dx%d %s]", repr.mimes[0], meta.width, meta.height, lib.human_readable_size(repr.size))
+        return fmt.tprintf("[%dx%d %s]", meta.width, meta.height, lib.human_readable_size(repr.size))
     }
-    return fmt.tprintf("[%s %s]", repr.mimes[0], lib.human_readable_size(repr.size))
+    return fmt.tprintf("[%s]", lib.human_readable_size(repr.size))
 }
 
 
@@ -958,6 +961,7 @@ REG_COL_WIDTH :: len("REGISTER") // no register name exceeds the heading length
 MIME_COL_WIDTH :: 26 // 24 for the longest common mime, +2 for the `= `/`+ ` mark
 MIME_MARK_WIDTH :: 2 // `= ` or `+ `
 DATA_COL_WIDTH :: 40
+@(private = "file")
 COL_GAP :: 2
 TABLE_WIDTH :: REG_COL_WIDTH + COL_GAP + lib.TIMESTAMP_LEN + COL_GAP + MIME_COL_WIDTH + COL_GAP + DATA_COL_WIDTH
 

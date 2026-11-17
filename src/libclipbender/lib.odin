@@ -2594,6 +2594,38 @@ format_unix_timestamp :: proc(timestamp: i64, buf: ^[TIMESTAMP_LEN]u8, tz: ^date
     return fmt.bprintf(buf[:], "%04d-%02d-%02d %02d:%02d:%02d", y, int(m), d, h, min, s)
 }
 
+// Width of the widest timestamp format, `YYYY-MM-DD`.
+RELATIVE_TIMESTAMP_LEN :: 10
+
+// Format a timestamp as an age. Use a relative description when less than two days ago, otherwise use the absolute
+// date.
+format_relative_timestamp :: proc(
+    timestamp: i64,
+    now: i64,
+    buf: ^[RELATIVE_TIMESTAMP_LEN]u8,
+    tz: ^datetime.TZ_Region = nil,
+) -> string {
+    MINUTE :: 60
+    HOUR :: 60 * MINUTE
+    DAY :: 24 * HOUR
+
+    age := now - timestamp
+    // A timestamp in the future means a clock adjustment, not a real age. Reporting "just now" is
+    // less confusing than a negative count.
+    if age < MINUTE {return fmt.bprint(buf[:], "just now")}
+    switch {
+    case age < HOUR:
+        return fmt.bprintf(buf[:], "%dm ago", age / MINUTE)
+    case age < DAY:
+        return fmt.bprintf(buf[:], "%dh ago", age / HOUR)
+    case age < 2 * DAY:
+        return fmt.bprint(buf[:], "yesterday")
+    }
+    absolute: [TIMESTAMP_LEN]u8
+    full := format_unix_timestamp(timestamp, &absolute, tz)
+    return fmt.bprint(buf[:], full[:RELATIVE_TIMESTAMP_LEN]) // the `YYYY-MM-DD` half
+}
+
 // Return byte count as two parts, the num and unit in binary prefix form.
 human_readable_byte_count :: proc(size: u64) -> (num: string, unit: string) {
     kib_size :: 1024

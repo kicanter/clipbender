@@ -2610,3 +2610,43 @@ test_reg_id_from_string_rejects_and_folds_case :: proc(t: ^testing.T) {
     _, at := reg_id_from_string("@")
     testing.expectf(t, at == .Partial, "`@` should be Partial, got %v", at)
 }
+
+// `format_relative_timestamp` ladder. Each rung is a different answer to "how old is this", and the
+// switchover points are the whole design, so they are worth pinning.
+@(test)
+test_format_relative_timestamp_ladder :: proc(t: ^testing.T) {
+    NOW :: i64(1_700_000_000)
+    cases := [?]struct {
+        age:  i64,
+        want: string,
+    } {
+        {0, "just now"},
+        {59, "just now"},
+        {60, "1m ago"},
+        {59 * 60, "59m ago"},
+        {60 * 60, "1h ago"},
+        {23 * 60 * 60, "23h ago"},
+        {24 * 60 * 60, "yesterday"},
+        {47 * 60 * 60, "yesterday"},
+    }
+    for c in cases {
+        buf: [RELATIVE_TIMESTAMP_LEN]u8
+        got := format_relative_timestamp(NOW - c.age, NOW, &buf)
+        testing.expectf(t, got == c.want, "age %ds formatted %q, want %q", c.age, got, c.want)
+    }
+
+    // Past two days it becomes a date, and must fit the column the constant sizes.
+    buf: [RELATIVE_TIMESTAMP_LEN]u8
+    old := format_relative_timestamp(NOW - 400 * 24 * 60 * 60, NOW, &buf)
+    testing.expectf(
+        t,
+        len(old) == RELATIVE_TIMESTAMP_LEN,
+        "a date rung should be %d wide, got %q",
+        RELATIVE_TIMESTAMP_LEN,
+        old,
+    )
+
+    // A future timestamp is a clock adjustment, not a negative age.
+    future := format_relative_timestamp(NOW + 5000, NOW, &buf)
+    testing.expectf(t, future == "just now", "a future timestamp should read `just now`, got %q", future)
+}

@@ -410,7 +410,8 @@ test_scroll_clamps_at_both_ends :: proc(t: ^testing.T) {
     // Three rows in a panel that fits two, so exactly one row of travel.
     gui_state := fake_state(
         {lib.reg_id_from_clipboard_index(0), lib.reg_id_from_clipboard_index(1), lib.reg_id_from_clipboard_index(2)},
-        uint(2 * LINE_HEIGHT + 2 * TEXT_PADDING_Y),
+        // Plus the divider budget `visible_row_count` reserves, or the panel only fits one row.
+        uint(2 * ROW_HEIGHT + (len(Reg_Category) - 1) * HORZ_RULE_GAP + 2 * (PANEL_MARGIN + TEXT_PADDING_Y)),
     )
     defer free_fake_state(&gui_state)
     testing.expectf(
@@ -444,4 +445,242 @@ test_scroll_is_a_noop_when_everything_fits :: proc(t: ^testing.T) {
     testing.expect(t, !scroll_by(&gui_state, 1))
     testing.expect(t, !scroll_by(&gui_state, 10))
     testing.expect(t, gui_state.scroll_row == 0)
+}
+
+// Mime list. The flattened-mimes walk and the repr mapping decide whether committing needs a fetch,
+// so they are worth pinning without a compositor.
+
+snap_multi_mime :: proc(groups: [][]string, selected: u8) -> lib.Resp_Reg {
+    reprs := make([]lib.Resp_Repr, len(groups))
+    for names, i in groups {
+        mimes := make([]string, len(names))
+        copy(mimes, names)
+        reprs[i] = {
+            mimes = mimes,
+        }
+    }
+    return {reprs = reprs, selected = selected, data_sent = true}
+}
+
+free_multi_mime :: proc(reg: lib.Resp_Reg) {
+    for repr in reg.reprs {delete(repr.mimes)}
+    delete(reg.reprs)
+}
+
+@(test)
+test_mime_list_flattens_across_reprs :: proc(t: ^testing.T) {
+    // Two blobs, four names: the first repr carries two aliases of one blob.
+    reg := snap_multi_mime({{"text/plain", "UTF8_STRING"}, {"text/html", "text/markdown"}}, 0)
+    defer free_multi_mime(reg)
+
+    testing.expectf(t, mime_count(reg) == 4, "expected 4 mimes, got %d", mime_count(reg))
+
+    want := [?]struct {
+        repr: int,
+        mime: string,
+    }{{0, "text/plain"}, {0, "UTF8_STRING"}, {1, "text/html"}, {1, "text/markdown"}}
+    for w, i in want {
+        repr, mime, ok := mime_at(reg, i)
+        testing.expectf(t, ok, "mime %d should exist", i)
+        testing.expectf(t, repr == w.repr, "mime %d is in repr %d, want %d", i, repr, w.repr)
+        testing.expectf(t, mime == w.mime, "mime %d is %q, want %q", i, mime, w.mime)
+    }
+
+    _, _, past_end := mime_at(reg, 4)
+    testing.expect(t, !past_end, "index past the last mime must not resolve")
+}
+
+@(test)
+test_mime_cursor_opens_on_the_selected_repr :: proc(t: ^testing.T) {
+    // Opening on index 0 would point at a different blob than the row is showing.
+    reg := snap_multi_mime({{"image/png"}, {"text/plain", "UTF8_STRING"}, {"text/html"}}, 1)
+    defer free_multi_mime(reg)
+    testing.expectf(
+        t,
+        selected_mime_index(reg) == 1,
+        "cursor should open on repr 1's first mime (index 1), got %d",
+        selected_mime_index(reg),
+    )
+
+    // With no repr selected there is nothing to prefer, so the top is the only sane default.
+    none := snap_multi_mime({{"image/png"}, {"text/plain"}}, lib.RESP_SELECTED_NONE)
+    defer free_multi_mime(none)
+    testing.expect(t, selected_mime_index(none) == 0)
+}
+
+@(test)
+test_mime_aliases_share_a_repr :: proc(t: ^testing.T) {
+    // The property `commit_mime` relies on to skip a fetch: names in one repr share one blob, so
+    // choosing an alias of what is already selected needs no IPC.
+    reg := snap_multi_mime({{"text/plain", "UTF8_STRING", "STRING"}, {"text/html"}}, 0)
+    defer free_multi_mime(reg)
+
+    for i in 0 ..< 3 {
+        repr, _, _ := mime_at(reg, i)
+        testing.expectf(t, repr == int(reg.selected), "alias %d must resolve to the selected repr", i)
+    }
+    other, _, _ := mime_at(reg, 3)
+    testing.expectf(t, other != int(reg.selected), "a different repr must not be mistaken for the selected one")
+}
+
+@(test)
+test_row_columns_do_not_overlap :: proc(t: ^testing.T) {
+    // Columns are laid out by arithmetic on constants, so a mis-sized one shows up as text running
+    // into its neighbour. Asserting the geometry catches that without looking at a screenshot.
+    gui_state := Gui_State {
+        frame_buf = {width = POPUP_WIDTH, height = POPUP_MAX_HEIGHT},
+    }
+    cols := row_columns(&gui_state)
+
+    testing.expectf(
+        t,
+        cols.regname_x + REGNAME_WIDTH <= cols.preview_x,
+        "register name (ends %.0f) overlaps preview (starts %.0f)",
+        cols.regname_x + REGNAME_WIDTH,
+        cols.preview_x,
+    )
+    testing.expectf(
+        t,
+        cols.preview_x + cols.preview_width <= cols.mime_x,
+        "preview (ends %.0f) overlaps mime (starts %.0f)",
+        cols.preview_x + cols.preview_width,
+        cols.mime_x,
+    )
+    testing.expectf(
+        t,
+        cols.mime_x + PANEL_MIME_COLUMN_WIDTH <= cols.time_x,
+        "mime (ends %.0f) overlaps age (starts %.0f)",
+        cols.mime_x + PANEL_MIME_COLUMN_WIDTH,
+        cols.time_x,
+    )
+    testing.expectf(
+        t,
+        cols.time_x + PANEL_TIME_COLUMN_WIDTH <= cols.right,
+        "age (ends %.0f) runs past the panel edge (%.0f)",
+        cols.time_x + PANEL_TIME_COLUMN_WIDTH,
+        cols.right,
+    )
+    testing.expectf(t, cols.preview_width > 0, "preview column collapsed to %.0f", cols.preview_width)
+}
+
+@(test)
+test_column_widths_fit_their_widest_content :: proc(t: ^testing.T) {
+    // `monospace 11` renders at 9px per character, measured. These are the widest strings each
+    // column can be asked to hold, so a narrower column would clip them.
+    PX_PER_CHAR :: 9
+    testing.expectf(
+        t,
+        PANEL_TIME_COLUMN_WIDTH >= lib.RELATIVE_TIMESTAMP_LEN * PX_PER_CHAR,
+        "age column is %d, needs %d for `YYYY-MM-DD`",
+        PANEL_TIME_COLUMN_WIDTH,
+        lib.RELATIVE_TIMESTAMP_LEN * PX_PER_CHAR,
+    )
+    // Worst case label: the elided mime plus a ` +NN` suffix, inside the pill's own padding.
+    PILL_PAD :: 12
+    widest_label :: (MIME_LABEL_CHARS + len(" +12")) * PX_PER_CHAR
+    testing.expectf(
+        t,
+        PANEL_MIME_COLUMN_WIDTH >= widest_label + PILL_PAD,
+        "mime column is %d, needs %d for an elided mime plus ` +12`",
+        PANEL_MIME_COLUMN_WIDTH,
+        widest_label + PILL_PAD,
+    )
+}
+
+@(test)
+test_popup_height_fits_the_populated_set :: proc(t: ^testing.T) {
+    chrome :: 2 * (PANEL_MARGIN + TEXT_PADDING_Y)
+
+    // Three rows means three rows of height, not a fixed 900.
+    three := fake_state(
+        {lib.reg_id_from_clipboard_index(0), lib.reg_id_from_clipboard_index(1), lib.reg_id_from_named_index(0)},
+        0,
+    )
+    defer free_fake_state(&three)
+    // Spans the clipboard ring and the named registers, so one divider claims its gap too.
+    want_three :: chrome + 3 * ROW_HEIGHT + HORZ_RULE_GAP
+    testing.expectf(
+        t,
+        popup_height(&three) == uint(want_three),
+        "three rows across two categories should be %d tall, got %d",
+        want_three,
+        popup_height(&three),
+    )
+
+    // An empty set still gets one row, so the panel is visible rather than a sliver.
+    empty := fake_state({}, 0)
+    defer free_fake_state(&empty)
+    testing.expectf(
+        t,
+        popup_height(&empty) == uint(chrome + ROW_HEIGHT),
+        "an empty set should still be one row tall, got %d",
+        popup_height(&empty),
+    )
+
+    // Every register populated must not exceed the cap, or the panel runs off a short screen.
+    full := Gui_State{}
+    for id in lib.Reg_Id(0) ..= lib.Reg_Id(lib.MAX_REGS - 1) {
+        if !lib.reg_id_is_valid(id) {continue}
+        full.regs[id] = lib.Resp_Reg {
+            reprs = make([]lib.Resp_Repr, 1),
+        }
+    }
+    defer free_fake_state(&full)
+    testing.expectf(
+        t,
+        popup_height(&full) == POPUP_MAX_HEIGHT,
+        "a full register set should clamp to %d, got %d",
+        POPUP_MAX_HEIGHT,
+        popup_height(&full),
+    )
+}
+
+@(test)
+test_group_breaks_counts_category_changes :: proc(t: ^testing.T) {
+    // `populated_regs` emits categories in order, so a change between adjacent rows is a boundary.
+    // Counting them from the ids means there is no second list to keep in step with the rows.
+    cases := [?]struct {
+        rows: []lib.Reg_Id,
+        want: int,
+    } {
+        {{}, 0},
+        {{lib.reg_id_from_clipboard_index(0)}, 0},
+        // Two rows, same ring: no divider between them.
+        {{lib.reg_id_from_clipboard_index(0), lib.reg_id_from_clipboard_index(1)}, 0},
+        // Both live selections are one category, despite being two registers.
+        {{lib.SELECTION_CLIPBOARD, lib.SELECTION_PRIMARY}, 0},
+        // All four categories in display order: three dividers.
+        {
+            {
+                lib.SELECTION_CLIPBOARD,
+                lib.reg_id_from_clipboard_index(0),
+                lib.reg_id_from_primary_index(0),
+                lib.reg_id_from_named_index(0),
+            },
+            3,
+        },
+    }
+    for c in cases {
+        got := group_breaks(c.rows)
+        testing.expectf(t, got == c.want, "%d rows produced %d breaks, want %d", len(c.rows), got, c.want)
+    }
+}
+
+@(test)
+test_visible_rows_leave_room_for_dividers :: proc(t: ^testing.T) {
+    // A row budget that ignored dividers would promise more rows than fit, clipping the last one by
+    // however much height the rules claimed.
+    gui_state := Gui_State {
+        frame_buf = {width = POPUP_WIDTH, height = POPUP_MAX_HEIGHT},
+    }
+    rows := visible_row_count(&gui_state)
+    worst_case := rows * ROW_HEIGHT + (len(Reg_Category) - 1) * HORZ_RULE_GAP + 2 * (PANEL_MARGIN + TEXT_PADDING_Y)
+    testing.expectf(
+        t,
+        worst_case <= POPUP_MAX_HEIGHT,
+        "%d rows plus dividers needs %d, panel is %d",
+        rows,
+        worst_case,
+        POPUP_MAX_HEIGHT,
+    )
 }
