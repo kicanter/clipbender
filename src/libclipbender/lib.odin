@@ -1423,6 +1423,10 @@ unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (cou
             // Guards the array index below: Reg_Id is a u8, so an invalid one would write past a [MAX_REGS] array.
             return 0, fmt.tprintf("REGISTERS response entry %d has invalid register id %d", i, u8(reg_id))
         }
+        // Ensure we don't have existing data for this Reg ID
+        if !resp_reg_is_empty(regs[reg_id]) {
+            return 0, fmt.tprintf("REGISTERS response names register %s twice", reg_id_to_string(reg_id))
+        }
         offset += size_of(Reg_Id)
 
         // Timestamp

@@ -2692,3 +2692,39 @@ test_unmarshal_resp_registers_frees_the_previous_snapshot :: proc(t: ^testing.T)
         len(track.allocation_map),
     )
 }
+
+// A response naming one register twice would overwrite the slot, and the slot is assigned before it is filled -- so
+// nothing is left pointing at the first entry's reprs and mimes to free them.
+@(test)
+test_unmarshal_resp_registers_rejects_a_duplicate_reg_id :: proc(t: ^testing.T) {
+    buf: [1024]byte
+    mimes := [?]string{"text/plain"}
+    reprs := [?]Data_Repr{data_repr_of("payload", mimes[:])}
+    entry := Reg_Entry {
+        reprs     = reprs[:],
+        timestamp = 1000,
+    }
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[reg_id_from_clipboard_index(0)] = &entry
+    policies: [MAX_REGS]Mime_Policy
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
+    testing.expect(t, ok, "response should fit")
+
+    // Find where the entries start so the single entry can be spliced in a second time. The marshaller walks a
+    // Reg_Id-indexed array and cannot emit a duplicate, so the wire bytes have to be forged here.
+    body := buf[1:n]
+    offset := size_of(u8) // past the entry count
+    table, table_err := read_resp_blob_table(body, &offset)
+    testing.expectf(t, table_err == nil, "fixture blob table: %v", table_err)
+    delete(table)
+
+    doubled: [2048]byte
+    written := copy(doubled[:], body)
+    written += copy(doubled[written:], body[offset:])
+    doubled[0] = 2 // entry count now disagrees with the one register actually named
+
+    dec: [MAX_REGS]Resp_Reg
+    defer for &reg in dec {free_resp_reg(&reg)}
+    _, err := unmarshal_resp_registers(doubled[:written], &dec)
+    testing.expect(t, err != nil, "a duplicate register id must be rejected")
+}
