@@ -461,17 +461,33 @@ fetch_reg_mime :: proc(gui_state: ^Gui_State, reg: lib.Reg_Id, mime: string) -> 
 
     switch lib.Resp_Status(resp_buf[0]) {
     case .REGISTERS:
-        // Unmarshals into the same array the full fetch uses, so only this register's slot changes.
-        if _, unmarshal_err := lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &gui_state.regs);
-           unmarshal_err != nil {
+        // Receive new register entry in scratch buffer.
+        scratch: [lib.MAX_REGS]lib.Resp_Reg
+        // Releases whatever we did not move out, including every entry on the error path.
+        defer for &entry in scratch {lib.free_resp_reg(&entry)}
+
+        if _, unmarshal_err := lib.unmarshal_resp_registers(resp_buf[1:bytes_read], &scratch); unmarshal_err != nil {
             return fmt.tprintf("Malformed response: %s", unmarshal_err.?)
         }
+        if lib.resp_reg_is_empty(scratch[reg]) {
+            return fmt.tprintf("Daemon returned no data for `%s` mime `%s`", lib.reg_id_to_string(reg), mime)
+        }
+
+        adopt_reg(&gui_state.regs, &scratch, reg)
     case .ERROR:
         return fmt.tprintf("%s", string(resp_buf[1:bytes_read]))
     case .OK:
         return fmt.tprint("Unexpected OK response to a GET")
     }
     return nil
+}
+
+// Move one register's entry out of a freshly unmarshaled response and into live state, freeing the
+// entry it displaces. Clears the source slot.
+adopt_reg :: proc(dst, src: ^[lib.MAX_REGS]lib.Resp_Reg, reg: lib.Reg_Id) {
+    lib.free_resp_reg(&dst[reg])
+    dst[reg] = src[reg]
+    src[reg] = {}
 }
 
 // Send a SET to the daemon and act on its reply.

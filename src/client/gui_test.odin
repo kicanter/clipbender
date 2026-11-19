@@ -686,3 +686,39 @@ test_visible_rows_leave_room_for_dividers :: proc(t: ^testing.T) {
         POPUP_MAX_HEIGHT,
     )
 }
+
+// A targeted mime fetch cannot unmarshal straight into live state: `unmarshal_resp_registers` zeroes
+// every slot and only refills the ones the response carried, so a single-register reply would blank
+// the rest of the panel. Only the register asked for may cross over.
+@(test)
+test_adopt_reg_leaves_the_other_registers_alone :: proc(t: ^testing.T) {
+    bystander := lib.reg_id_from_clipboard_index(2)
+    target := lib.reg_id_from_named_index(0)
+    live := fake_state({target, bystander}, 900)
+    defer free_fake_state(&live)
+
+    // What a one-register response unmarshals into: the target filled, every other slot zeroed.
+    scratch: [lib.MAX_REGS]lib.Resp_Reg
+    scratch[target] = lib.Resp_Reg {
+        reprs = make([]lib.Resp_Repr, 2),
+    }
+
+    adopt_reg(&live.regs, &scratch, target)
+
+    testing.expectf(
+        t,
+        len(live.regs[target].reprs) == 2,
+        "target should hold the fetched entry, got %d reprs",
+        len(live.regs[target].reprs),
+    )
+    testing.expect(
+        t,
+        !lib.resp_reg_is_empty(live.regs[bystander]),
+        "a register absent from the response must survive a targeted fetch",
+    )
+    testing.expect(
+        t,
+        lib.resp_reg_is_empty(scratch[target]),
+        "the source slot must be cleared so a caller's sweep cannot double-free it",
+    )
+}
