@@ -2,6 +2,7 @@ package libclipbender
 
 import "core:fmt"
 import "core:log"
+import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -2649,4 +2650,45 @@ test_format_relative_timestamp_ladder :: proc(t: ^testing.T) {
     // A future timestamp is a clock adjustment, not a negative age.
     future := format_relative_timestamp(NOW + 5000, NOW, &buf)
     testing.expectf(t, future == "just now", "a future timestamp should read `just now`, got %q", future)
+}
+
+// The same array is unmarshaled into repeatedly -- the popup refetches on every GET. Each call has to
+// release the snapshot it is overwriting, or every refetch strands that snapshot's reprs, mimes, and
+// data. `data_repr_of` borrows via `temp_allocator`, so the tracked allocations here are exactly the
+// clones the unmarshal makes.
+@(test)
+test_unmarshal_resp_registers_frees_the_previous_snapshot :: proc(t: ^testing.T) {
+    track: mem.Tracking_Allocator
+    mem.tracking_allocator_init(&track, context.allocator)
+    defer mem.tracking_allocator_destroy(&track)
+    context.allocator = mem.tracking_allocator(&track)
+
+    buf: [1024]byte
+    mimes := [?]string{"text/plain"}
+    reprs := [?]Data_Repr{data_repr_of("payload", mimes[:])}
+    entry := Reg_Entry {
+        reprs     = reprs[:],
+        timestamp = 1000,
+    }
+    reg_ptrs: [MAX_REGS]^Reg_Entry
+    reg_ptrs[reg_id_from_clipboard_index(0)] = &entry
+    policies: [MAX_REGS]Mime_Policy
+    n, ok := marshal_resp_registers(reg_ptrs, policies, buf[:])
+    testing.expect(t, ok, "response should fit")
+
+    dec: [MAX_REGS]Resp_Reg
+    for round in 0 ..< 2 {
+        _, derr := unmarshal_resp_registers(buf[1:n], &dec)
+        testing.expectf(t, derr == nil, "round %d: %v", round, derr)
+    }
+    for &reg in dec {
+        free_resp_reg(&reg)
+    }
+
+    testing.expectf(
+        t,
+        len(track.allocation_map) == 0,
+        "%d allocations stranded by refetching into the same array",
+        len(track.allocation_map),
+    )
 }

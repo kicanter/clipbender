@@ -1378,10 +1378,14 @@ unmarshal_resp_error :: proc(buf: []byte) -> string {
 // buf starts after first Response_Status byte
 //
 // Scatters each packed wire entry into its Reg_Id slot in `regs`. Slots not present in the response are left zeroed.
+// Takes ownership of whatever `regs` already held and frees it, so the same array can be refetched into repeatedly.
 //
-// NOTE: caller is responsible for freeing all entries via `free_resp_reg`.
+// NOTE: caller is responsible for freeing the entries this leaves behind, via `free_resp_reg`.
 unmarshal_resp_registers :: proc(buf: []byte, regs: ^[MAX_REGS]Resp_Reg) -> (count: int, err: Maybe(string)) {
-    regs^ = {}
+    // Free previous registers if they still exist.
+    for &reg in regs {
+        free_resp_reg(&reg)
+    }
     defer if err != nil {
         for &reg in regs {
             free_resp_reg(&reg)
