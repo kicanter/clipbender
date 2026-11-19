@@ -1179,6 +1179,13 @@ data_repr_single :: proc(data: []byte, mime: string) -> []Data_Repr {
     return reprs
 }
 
+// How a consumer comes to own data handed to it or how to transfer memory between owners.
+Ownership_Transfer :: enum u8 {
+    None,
+    Move, // takes the original
+    Clone, // takes a clone
+}
+
 // Clones a `Data_Repr`, caller is responsible for freeing returned value.
 // Note: data blobs are refcounted so they are not deep-copied.
 clone_data_repr :: proc(repr: Data_Repr) -> Data_Repr {

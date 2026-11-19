@@ -547,7 +547,7 @@ wayland_commit_selection :: proc(
     reprs: []lib.Data_Repr
     // Check if this selection event was triggered by clipbender setting the clipboard/primary, this means we still
     // have ownership of the clipboard at this point. In these scenarios, the sequence of events is:
-    // 1. Set clipboard/primary with register e.g. `clipbender set selection a`
+    // 1. Set clipboard/primary with register e.g. `clipbender set . a`
     // 2. Daemon sets the clipboard selection to register `a` (clipbender takes ownership of clipboard)
     // 3. We set the cached clipboard selection source to this one
     // 4. Compositor echoes a selection event and we arrive back here
@@ -556,10 +556,11 @@ wayland_commit_selection :: proc(
     // the one sending it (in `wayland_read_offer_data()` the pipe read would time out waiting for us to write).
     self_source := false
     if selection.source.handle != nil {
-        // Reuse the reprs from our own cache to give to the register
+        // Reuse the reprs from our own cache to give to the register, we are the owner of the clipboard
         reprs = selection.source.reprs
         self_source = true
     } else {
+        // Someone else owns the clipboard, read the passed data through the pipe
         reprs = wayland_read_offer_reprs(wl_state, store, offer, selection.offer.mimes)
         if len(reprs) == 0 {
             log.errorf("No usable representations from debounced %v offer", type)
@@ -568,51 +569,78 @@ wayland_commit_selection :: proc(
         }
     }
 
-    // Update only the timestamp of the cached live selection when the whole offer matches, otherwise replace it.
+    // We have two possible consumers from a clipboard update, the live selection and the recency ring. When
+    // `self_source` is true, that means we can't just move that data out since it is a part of our cached data source,
+    // we need to clone for any consumer to get that data. If false, we can move the data to one consumer, and must
+    // clone if another consumer also needs it.
     live_selection := get_live_selection(store, type)
-    if live_selection != nil && reprs_are_equal(live_selection.reprs, reprs) {
-        bump_live_selection(store, type)
+    // Whether our live selection differs from the reprs we pulled or not
+    live_needs_data := live_selection == nil || !reprs_are_equal(live_selection.reprs, reprs)
+
+    // Offer-level deduplication, distinct from the repr/mime coalescing in `wayland_read_offer_reprs`. This checks for
+    // if the entire register already exists in a ring.
+    recency_index, recency_hit := find_matching_recency_reg(store, type, reprs)
+    recency_needs_data := !recency_hit
+
+    // The ring is offered the originals first because it is the consumer on the common path, then the live selection
+    // if the ring did not take them. We can't move the reprs data if it's a self-source.
+    ring_takes_reprs := !self_source && recency_needs_data
+    live_takes_reprs := !self_source && !ring_takes_reprs && live_needs_data
+    // We only free when not self-sourced (we already cloned the data from the pipe) and no consumer needs the data.
+    free_reprs := !self_source && !ring_takes_reprs && !live_takes_reprs
+
+    // Live selection takes the new data if it doesn't have it or just bumps the timestamp.
+    if live_needs_data {
+        set_live_selection(store, type, live_takes_reprs ? reprs : lib.clone_data_reprs(reprs))
     } else {
-        // The live selection owns its copy: it and the recency head are independent entries with independent lifetimes.
-        cloned_reprs := lib.clone_data_reprs(reprs)
-        set_live_selection(store, type, cloned_reprs)
+        bump_live_selection(store, type)
     }
 
-    // Offer-level deduplication, distinct from the per-mime coalescing in `wayland_read_offer_reprs`.
+    // Ring gains an entry if it doesn't have it or the matching one it already holds moves to the front.
+    if recency_needs_data {
+        push_recency_reg(store, type, ring_takes_reprs ? reprs : lib.clone_data_reprs(reprs))
+        self_source_str := ""
+        if self_source {self_source_str = " (self-source)"}
+        log.infof("Pushed to %v recency register%s", type, self_source_str)
+    } else {
+        reg_id: lib.Reg_Id
+        switch type {
+        case .CLIPBOARD:
+            reg_id = lib.reg_id_from_clipboard_index(u8(recency_index))
+        case .PRIMARY:
+            reg_id = lib.reg_id_from_primary_index(u8(recency_index))
+        }
+        log.debugf(
+            "%v offer matches register %s, moving that register to the front",
+            type,
+            lib.reg_id_to_string(reg_id),
+        )
+        move_recency_reg_to_front(store, type, u8(recency_index))
+    }
+
+    // Insinuates no self-sourced and no consumer took the data i.e. it's not being used but still allocated.
+    if free_reprs {
+        lib.free_data_reprs(reprs)
+    }
+    return true
+}
+
+// Index of the recency register holding exactly these reprs, if any.
+find_matching_recency_reg :: proc(
+    store: ^Register_Store,
+    type: lib.Selection_Type,
+    reprs: []lib.Data_Repr,
+) -> (
+    index: int,
+    found: bool,
+) {
     for i in 0 ..< lib.RECENCY_SIZE {
         reg := get_recency_reg(store, type, u8(i))
         if reg != nil && reprs_are_equal(reg.reprs, reprs) {
-            reg_id: lib.Reg_Id
-            switch type {
-            case .CLIPBOARD:
-                reg_id = lib.reg_id_from_clipboard_index(u8(i))
-            case .PRIMARY:
-                reg_id = lib.reg_id_from_primary_index(u8(i))
-            }
-
-            log.debugf(
-                "%v offer matches register %s, moving that register to the front",
-                type,
-                lib.reg_id_to_string(reg_id),
-            )
-            move_recency_reg_to_front(store, type, u8(i)) // only updates timestamp if index == 0
-            if !self_source {
-                lib.free_data_reprs(reprs)
-            }
-            return true
+            return i, true
         }
     }
-
-    // Clone if the reprs belong to our own cached source, which keeps ownership of them.
-    self_source_str := ""
-    if self_source {
-        reprs = lib.clone_data_reprs(reprs)
-        self_source_str = " (self-source)"
-    }
-    // Ownership of reprs transferred
-    push_recency_reg(store, type, reprs)
-    log.infof("Pushed to %v recency register%s", type, self_source_str)
-    return true
+    return 0, false
 }
 
 // Read every advertised mime and coalesce the ones that produced identical bytes into a single repr. Costs a pipe round
