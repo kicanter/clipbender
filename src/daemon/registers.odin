@@ -121,9 +121,9 @@ push_recency_reg :: proc(
 }
 
 // Move the entry at `recency` to the front (recency 0), shifting the entries in between back one slot. Refreshes the
-// moved entry's timestamp. No allocations, just shuffling existing entries. Head/count unchanged.
+// entry's timestamp. No allocations, just shuffling existing entries. Head/count unchanged.
 move_ring_entry_to_front :: proc(ring: ^Recency_Ring, recency: u8) {
-    if recency == 0 || recency >= ring.count {return}
+    if recency >= ring.count {return}
 
     saved := ring.entries[(ring.head - recency + lib.RECENCY_SIZE) % lib.RECENCY_SIZE]
     // Shift each entry one step toward the head, opening up the front slot

@@ -409,6 +409,15 @@ test_move_recency_to_front :: proc(t: ^testing.T) {
     testing.expect_value(t, string(entry_data(r0)), "a")
     testing.expect_value(t, string(entry_data(r1)), "c")
     testing.expect_value(t, string(entry_data(r2)), "b")
+
+    // Recency 0 shifts nothing, but the timestamp still has to advance: it records when the content was last seen, so
+    // re-copying whatever is already at the front must register.
+    stale := i64(1)
+    r0.timestamp = stale
+    move_recency_reg_to_front(&store, .CLIPBOARD, 0)
+    front := get_recency_reg(&store, .CLIPBOARD, 0)
+    testing.expect_value(t, string(entry_data(front)), "a")
+    testing.expectf(t, front.timestamp > stale, "front entry's timestamp should refresh, got %v", front.timestamp)
 }
 
 // Full persistence cycle: marshal_state -> unmarshal_state -> load_registers repopulates a fresh
