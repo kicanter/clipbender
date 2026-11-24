@@ -136,6 +136,24 @@ move_ring_entry_to_front :: proc(ring: ^Recency_Ring, recency: u8) {
     ring.entries[ring.head] = saved
 }
 
+// Index of the recency register holding exactly these reprs, if any.
+find_matching_recency_reg :: proc(
+    store: ^Register_Store,
+    type: lib.Selection_Type,
+    reprs: []lib.Data_Repr,
+) -> (
+    index: int,
+    found: bool,
+) {
+    for i in 0 ..< lib.RECENCY_SIZE {
+        reg := get_recency_reg(store, type, u8(i))
+        if reg != nil && lib.data_reprs_equal(reg.reprs, reprs) {
+            return i, true
+        }
+    }
+    return 0, false
+}
+
 // Move the `recency` most recent `Register_Entry` to the front of the `type` selection ring
 move_recency_reg_to_front :: proc(store: ^Register_Store, type: lib.Selection_Type, recency: u8) {
     switch type {

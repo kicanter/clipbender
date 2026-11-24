@@ -605,24 +605,6 @@ wayland_commit_selection :: proc(
     return true
 }
 
-// Index of the recency register holding exactly these reprs, if any.
-find_matching_recency_reg :: proc(
-    store: ^Register_Store,
-    type: lib.Selection_Type,
-    reprs: []lib.Data_Repr,
-) -> (
-    index: int,
-    found: bool,
-) {
-    for i in 0 ..< lib.RECENCY_SIZE {
-        reg := get_recency_reg(store, type, u8(i))
-        if reg != nil && lib.data_reprs_equal(reg.reprs, reprs) {
-            return i, true
-        }
-    }
-    return 0, false
-}
-
 // Read every advertised mime and coalesce the ones that produced identical bytes into a single repr. Costs a pipe round
 // trip for every mime advertised. Mime order is preserved, so the first repr holds whatever the app advertised first
 // (its own preference signal).
