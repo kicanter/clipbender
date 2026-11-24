@@ -2728,3 +2728,47 @@ test_unmarshal_resp_registers_rejects_a_duplicate_reg_id :: proc(t: ^testing.T) 
     _, err := unmarshal_resp_registers(doubled[:written], &dec)
     testing.expect(t, err != nil, "a duplicate register id must be rejected")
 }
+
+// `data_reprs_equal` dedup comparison. Mime order is not semantically load-bearing, so two offers naming the same mimes
+// in a different order are the same representation and must not both be stored.
+@(test)
+test_data_reprs_equal_ignores_mime_order :: proc(t: ^testing.T) {
+    data := "hello"
+    a := []Data_Repr{data_repr_of(data, []string{"text/plain;charset=utf-8", "text/plain"})}
+    b := []Data_Repr{data_repr_of(data, []string{"text/plain", "text/plain;charset=utf-8"})}
+    testing.expect(t, data_reprs_equal(a, b), "same mimes in a different order should compare equal")
+    testing.expect(t, data_reprs_equal(b, a), "comparison should be symmetric")
+}
+
+@(test)
+test_data_reprs_equal_rejects_differences :: proc(t: ^testing.T) {
+    data := "hello"
+    base := []Data_Repr{data_repr_of(data, []string{"text/plain", "text/html"})}
+
+    diff_bytes := []Data_Repr{data_repr_of("hellO", []string{"text/plain", "text/html"})}
+    testing.expect(t, !data_reprs_equal(base, diff_bytes), "differing data should not compare equal")
+
+    diff_mime := []Data_Repr{data_repr_of(data, []string{"text/plain", "text/xml"})}
+    testing.expect(t, !data_reprs_equal(base, diff_mime), "a differing mime name should not compare equal")
+
+    fewer := []Data_Repr{data_repr_of(data, []string{"text/plain"})}
+    testing.expect(t, !data_reprs_equal(base, fewer), "a differing mime count should not compare equal")
+
+    two_reprs := []Data_Repr {
+        data_repr_of(data, []string{"text/plain", "text/html"}),
+        data_repr_of(data, []string{"image/png"}),
+    }
+    testing.expect(t, !data_reprs_equal(base, two_reprs), "a differing repr count should not compare equal")
+}
+
+// A trailing-whitespace difference is a real byte difference and must keep comparing unequal -- the terminal-selection
+// duplicate bug is not to be "fixed" by normalising content here.
+@(test)
+test_data_reprs_equal_whitespace_is_significant :: proc(t: ^testing.T) {
+    mimes := []string{"text/plain"}
+    a := []Data_Repr{data_repr_of("foo", mimes)}
+    b := []Data_Repr{data_repr_of("foo ", mimes)}
+    c := []Data_Repr{data_repr_of("foo  ", mimes)}
+    testing.expect(t, !data_reprs_equal(a, b), "one trailing space is a real difference")
+    testing.expect(t, !data_reprs_equal(b, c), "two trailing spaces differ from one")
+}

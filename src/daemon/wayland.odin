@@ -504,26 +504,6 @@ wayland_stage_selection :: proc(wl_state: ^Wayland_State, selection: ^Selection_
     selection.offer.staged = true
 }
 
-// For deduplication, check if two `Data_Repr`s are equivalent (mimes are order-independent). We use a basic nested
-// iteration instead of building a set because for the small numbers of mimes we will see, the allocation + hashing
-// overhead of the set performs worse than the basic loops.
-// Note: only catches equality if `a` and `b` have the same order of reprs
-reprs_are_equal :: proc(a: []lib.Data_Repr, b: []lib.Data_Repr) -> bool {
-    if len(a) != len(b) {return false}
-    for repr_a, i in a {
-        repr_b := b[i]
-        if len(repr_a.mimes) != len(repr_b.mimes) {return false}
-        outer: for mime in repr_a.mimes {
-            for other in repr_b.mimes {
-                if mime == other {continue outer}
-            }
-            return false
-        }
-        if repr_a.blob != repr_b.blob && !slice.equal(repr_a.blob.data, repr_b.blob.data) {return false}
-    }
-    return true
-}
-
 // Called when a debounce timer successfully expires. Reads the pending offer and pushes to recency ring.
 // Returns true if it pushed a new entry to the recency ring (a persistable mutation), false otherwise.
 wayland_commit_selection :: proc(
@@ -575,7 +555,7 @@ wayland_commit_selection :: proc(
     // clone if another consumer also needs it.
     live_selection := get_live_selection(store, type)
     // Whether our live selection differs from the reprs we pulled or not
-    live_needs_data := live_selection == nil || !reprs_are_equal(live_selection.reprs, reprs)
+    live_needs_data := live_selection == nil || !lib.data_reprs_equal(live_selection.reprs, reprs)
 
     // Offer-level deduplication, distinct from the repr/mime coalescing in `wayland_read_offer_reprs`. This checks for
     // if the entire register already exists in a ring.
@@ -636,7 +616,7 @@ find_matching_recency_reg :: proc(
 ) {
     for i in 0 ..< lib.RECENCY_SIZE {
         reg := get_recency_reg(store, type, u8(i))
-        if reg != nil && reprs_are_equal(reg.reprs, reprs) {
+        if reg != nil && lib.data_reprs_equal(reg.reprs, reprs) {
             return i, true
         }
     }

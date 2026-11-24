@@ -1240,6 +1240,26 @@ free_data_repr :: proc(repr: Data_Repr) {
     delete(repr.mimes)
 }
 
+// For deduplication, check if two `Data_Repr`s are equivalent (mimes are order-independent). We use a basic nested
+// iteration instead of building a set because for the small numbers of mimes we will see, the allocation + hashing
+// overhead of the set performs worse than the basic loops.
+// Note: only catches equality if `a` and `b` have the same order of reprs
+data_reprs_equal :: proc(a: []Data_Repr, b: []Data_Repr) -> bool {
+    if len(a) != len(b) {return false}
+    for repr_a, i in a {
+        repr_b := b[i]
+        if len(repr_a.mimes) != len(repr_b.mimes) {return false}
+        outer: for mime in repr_a.mimes {
+            for other in repr_b.mimes {
+                if mime == other {continue outer}
+            }
+            return false
+        }
+        if repr_a.blob != repr_b.blob && !slice.equal(repr_a.blob.data, repr_b.blob.data) {return false}
+    }
+    return true
+}
+
 // Free every repr in the slice plus the reprs slice itself.
 free_data_reprs :: proc(reprs: []Data_Repr) {
     for repr in reprs {
